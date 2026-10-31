@@ -1,0 +1,7 @@
+{
+  "name": "undo-tools",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Node tools for Undo. No install step: the only dependency is vendored in vendor/noble."
+}

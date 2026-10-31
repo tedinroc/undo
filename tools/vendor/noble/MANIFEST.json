@@ -1,0 +1,37 @@
+{
+  "note": "Vendored ESM from npm. See vendor.mjs for the only edits made.",
+  "packages": {
+    "curves": {
+      "name": "@noble/curves",
+      "version": "1.9.7",
+      "integrity": "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="
+    },
+    "hashes": {
+      "name": "@noble/hashes",
+      "version": "1.8.0",
+      "integrity": "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A=="
+    }
+  },
+  "files": {
+    "curves/_shortw_utils.js": "1e3190d6205910fc8bd690725782b2e433f3d9f24e90078b6fc8589a7803873b",
+    "curves/abstract/curve.js": "de0d93b50cf546054fb1f7519b9b633797fe1dfc9ebc92a523255012aaef4fc1",
+    "curves/abstract/edwards.js": "29fb30833933a35d945189443698ca744331cdae8412b04c5e426b4b67d80800",
+    "curves/abstract/hash-to-curve.js": "da887823237d1bdb3352614ab69fefe13334c6b7042db0477982760f305168bc",
+    "curves/abstract/modular.js": "618fc929fbd00b4c85ddffe5c98e992efc494846472041a7604e1d605f1289be",
+    "curves/abstract/montgomery.js": "35516282d35b0d5ee24db0d9068e33362d0c5c28a8d457d0ec34fe78872b6bb4",
+    "curves/abstract/weierstrass.js": "2407625c76d088ba7426258ea2d246031723e43b87d9196be66b8e56004f8d7b",
+    "curves/ed25519.js": "b22aa435e6b956847132a28f7c196a08b678c50f446ecc54492634fea0973c3c",
+    "curves/nist.js": "c139fc857f19f08b25199ddf098f603afa6131d43833e1a6d2a89615b9cfbd30",
+    "curves/secp256k1.js": "abe324699ae6bb0b39a8230103ad21061a91ac3a7e191446244770bc24fcab79",
+    "curves/utils.js": "1e67811de32b37c6f8712fab5e361fc25e081f0fc468da05af19eb775d008105",
+    "hashes/_md.js": "711c87e165cdd5faa5ec1e836411bee19ab3a518545dc0c2ee53b23b84f5d780",
+    "hashes/_u64.js": "6689ae1660e03864120a4a084010cd546a9f40b573482debf0d9e6a436703938",
+    "hashes/crypto.js": "87bea3ec8d754506a254c1bd8a311d68e97893ab856a435556b6508025aabdd7",
+    "hashes/hkdf.js": "0594166562ad8e869ea3507f71c2531197d620cd08a5676202964fdeef435d4e",
+    "hashes/hmac.js": "c8a6da1f83adac607fbc9afcea9c900d80f7ee763616e9c4b782dd5557d83aff",
+    "hashes/legacy.js": "c547c76eaba40625c53f8b9a362166ba2e650122b5b10689a8d9c76cc58bce67",
+    "hashes/sha2.js": "9cb6d482b07fb063a0d2b6890b7b5bc4edc41c184ce3d2ce4653688d81f9770a",
+    "hashes/sha3.js": "09d141f13fcf5156195cbab2624f8786ba1bccbbbb64dfa5f36b80bfbfbd628d",
+    "hashes/utils.js": "c79100fa890e0473647baf28b8d87c1073f588868f6836019e72577e086bab43"
+  }
+}
