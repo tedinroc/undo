@@ -1,0 +1,1701 @@
+//! Named scenarios from the spec, including the fee-swap attack. No property testing here.
+
+mod common;
+use common::*;
+use undo_core::*;
+
+const COIN: Sats = 1_000_000;
+
+// ------------------------------------------------------------------ the critical finding
+
+/// Attack review, critical: `reclaim` plus the BIP-143 fee swap. With K_s and K_u, sign inputs A and
+/// B once with A true and B false, then again with B true and A false over the same output. Taking
+/// sig(A) from the first and sig(B) from the second pays 999,500 sats of real fee at a declared
+/// 1,000. Here the second session cannot come into existence by any route the first leaves open.
+/// `consensus.rs` shows the combination really is valid when a signer does produce both.
+#[test]
+fn fee_swap_two_sessions_second_session_is_refused() {
+    let (a, b) = (op(1), op(2));
+    let false_value = 1_500;
+    let fee = 1_000;
+    let mut h = H::test_coin();
+
+    // Session one: A true, B false, no change, to the vault. The contract's fee check passes.
+    let first = h.self_spend(&[(a, COIN), (b, false_value)], fee).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.execute_all_signed(first.id);
+    assert_eq!(h.v.pinned_value(&a), Some(COIN));
+    assert_eq!(h.v.pinned_value(&b), Some(false_value));
+
+    // Route 1: re-propose straight away. Both outpoints are spent.
+    assert_eq!(
+        h.self_spend(&[(a, false_value), (b, COIN)], fee).unwrap_err(),
+        Error::OutpointBusy(a)
+    );
+
+    // Route 2: reclaim takes exactly one outpoint, by its signature. Each reclaim is single-input,
+    // so its digest commits to a different hashPrevouts and cannot combine with session one.
+    h.advance(h.v.policy.t_stuck_ms);
+    let r_a = h.reclaim(a, false_value, fee).unwrap();
+    assert_eq!(h.v.requests[&r_a.id].inputs.len(), 1);
+    assert_eq!(h.execute(first.id, 1).unwrap_err(), Error::RequestNotFound, "superseded");
+
+    // Route 3: use reclaim then cancel to bring both outpoints back to Free, then propose the
+    // swapped multi-input request. This is the only way both are Free again, and rule 2 stops it.
+    h.cancel(r_a.id).unwrap();
+    let r_b = h.reclaim(b, COIN, fee).unwrap();
+    h.cancel(r_b.id).unwrap();
+    assert_eq!(h.v.outpoint_state(&a), OutpointState::Free);
+    assert_eq!(h.v.outpoint_state(&b), OutpointState::Free);
+    assert_eq!(
+        h.self_spend(&[(a, false_value), (b, COIN)], fee).unwrap_err(),
+        Error::PinnedInMultiInput(a)
+    );
+    // The same values in the same order are refused too. A pin is about the session, not the value.
+    assert_eq!(
+        h.self_spend(&[(a, COIN), (b, false_value)], fee).unwrap_err(),
+        Error::PinnedInMultiInput(a)
+    );
+    // Pairing a pinned coin with a fresh one is refused as well.
+    assert_eq!(
+        h.self_spend(&[(op(3), COIN), (a, false_value)], fee).unwrap_err(),
+        Error::PinnedInMultiInput(a)
+    );
+
+    // Pins never moved, and a single-input request may still re-declare.
+    assert_eq!(h.v.pinned_value(&a), Some(COIN));
+    assert_eq!(h.v.pinned_value(&b), Some(false_value));
+    let single = h.self_spend(&[(a, 900_000)], fee).unwrap();
+    assert_eq!(h.v.requests[&single.id].inputs[0].value, 900_000);
+}
+
+/// Partial signing must pin as well. `execute(max_inputs=1)` signs A only, and then B must not be
+/// usable to rebuild the session.
+#[test]
+fn fee_swap_after_partial_execute_is_refused() {
+    let (a, b) = (op(1), op(2));
+    let mut h = H::test_coin();
+    let first = h.self_spend(&[(a, COIN), (b, 1_500)], 1_000).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    let batch = h.execute(first.id, 1).unwrap();
+    assert_eq!(batch.indices, vec![0]);
+    assert_eq!(h.v.pinned_value(&b), Some(1_500), "every declared value pins at first execute");
+    assert_eq!(h.cancel(first.id).unwrap_err(), Error::NotPending, "cancel closes for all inputs");
+
+    h.advance(h.v.policy.t_stuck_ms);
+    let r = h.reclaim(a, 1_500, 1_000).unwrap();
+    h.cancel(r.id).unwrap();
+    assert_eq!(h.v.outpoint_state(&b), OutpointState::Spent { request: first.id });
+    // A is Free and pinned by now, so the pin rule fires before B's busy state is reached.
+    assert_eq!(h.self_spend(&[(a, 1_500), (b, COIN)], 1_000).unwrap_err(), Error::PinnedInMultiInput(a));
+}
+
+/// The review's larger form: 16 coins and balanced subsets burn 49% in two sessions and 87% in eight.
+/// After the first session every outpoint is pinned, so no later session exists at any size.
+#[test]
+fn fee_swap_sixteen_coins_no_second_session() {
+    let coins: Vec<Outpoint> = (1..=16).map(op).collect();
+    let mut h = H::test_coin();
+    let mut declared: Vec<(Outpoint, Sats)> = coins.iter().map(|c| (*c, 600)).collect();
+    for item in declared.iter_mut().take(8) {
+        item.1 = 500_000;
+    }
+    let fee = estimate_vsize(16, &Outputs {
+        dest_script: h.v.vault_spk.clone(),
+        dest_value: 1,
+        change_value: None,
+    });
+    let first = h.self_spend(&declared, fee).unwrap();
+    let cap = first.fee;
+    h.raise_fee_cap(first.id, cap).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.execute_all_signed(first.id);
+    h.advance(h.v.policy.t_stuck_ms);
+    for (i, coin) in coins.iter().enumerate() {
+        // Each coin is walked back to Free through its own reclaim and cancel.
+        let value = if i < 8 { 600 } else { 500_000 };
+        let r = h.reclaim(*coin, value.max(2_000), 1_000).unwrap();
+        h.cancel(r.id).unwrap();
+    }
+    let swapped: Vec<(Outpoint, Sats)> =
+        coins.iter().enumerate().map(|(i, c)| (*c, if i < 8 { 600 } else { 500_000 })).collect();
+    assert_eq!(h.self_spend(&swapped, fee).unwrap_err(), Error::PinnedInMultiInput(coins[0]));
+    for pair in coins.chunks(2) {
+        assert!(matches!(
+            h.self_spend(&[(pair[0], 600), (pair[1], 500_000)], 400).unwrap_err(),
+            Error::PinnedInMultiInput(_)
+        ));
+    }
+}
+
+// ------------------------------------------------------------------ bump
+
+#[test]
+fn bump_is_the_one_multi_input_exception_and_keeps_every_value() {
+    let (a, b) = (op(1), op(2));
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let first = h.propose(&[(a, 50_000), (b, 60_000)], &dest, 40_000, Some(69_500)).unwrap();
+    assert_eq!(first.fee, 500);
+    assert_eq!(h.bump(first.id, 900).unwrap_err(), Error::NotExecuted);
+    h.advance(h.v.delay_now(h.now));
+    h.execute_all_signed(first.id);
+
+    assert!(matches!(h.bump(first.id, 900).unwrap_err(), Error::BumpTooSoon { .. }));
+    h.advance(h.v.fixed.bump_wait_ms);
+    assert_eq!(h.bump(first.id, 500).unwrap_err(), Error::BumpNotHigher);
+
+    let used_before = h.v.fee_used_24h(h.now);
+    let second = h.bump(first.id, 900).unwrap();
+    assert_ne!(second.id, first.id, "a bump never mutates a request");
+    assert!(!h.v.requests.contains_key(&first.id));
+    let r = h.v.requests[&second.id].clone();
+    assert_eq!(r.inputs, vec![Input { outpoint: a, value: 50_000 }, Input { outpoint: b, value: 60_000 }]);
+    assert_eq!(r.outputs.dest_value, 40_000, "destination unchanged");
+    assert_eq!(r.outputs.change_value, Some(69_100), "change pays for it");
+    assert_eq!(r.base_unlock, first.base_unlock, "base inherited, no new delay");
+    h.execute_all_signed(second.id);
+    assert_eq!(h.v.fee_used_24h(h.now), used_before + 400, "only the difference is charged");
+    assert_eq!(h.bump(second.id, 1_001).unwrap_err(), Error::BumpTooSoon { ready_at: h.now + h.v.fixed.bump_wait_ms });
+    h.advance(h.v.fixed.bump_wait_ms);
+    assert_eq!(h.bump(second.id, 1_001).unwrap_err(), Error::FeeOverCap { fee: 1_001, cap: 1_000 });
+}
+
+#[test]
+fn bump_without_change_lowers_the_destination_amount() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let first = h.propose(&[(op(1), 50_000)], &dest, 49_600, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute_all_signed(first.id);
+    h.advance(h.v.fixed.bump_wait_ms);
+    let second = h.bump(first.id, 700).unwrap();
+    assert_eq!(h.v.requests[&second.id].outputs.dest_value, 49_300);
+}
+
+#[test]
+fn bump_needs_fresh_half_signatures_for_every_input() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let first = h.propose(&[(op(1), 50_000), (op(2), 50_000)], &dest, 99_500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute_all_signed(first.id);
+    h.advance(h.v.fixed.bump_wait_ms);
+    let (caller, intent) = (h.spend_caller(), h.sp());
+    let got = h.tx(|v, now| v.bump(&caller, intent, first.id, 700, vec![vec![1]], now));
+    assert_eq!(got.unwrap_err(), Error::HalfSigCount);
+}
+
+/// Spec 4.1: a thief proposes a real outpoint with a false amount and nobody cancels, so the
+/// outpoint is Spent with a useless signature. Reclaim gets it back.
+#[test]
+fn reclaim_frees_a_griefed_coin_and_supersedes_the_old_request() {
+    let (a, b) = (op(1), op(2));
+    let mut h = H::test_coin();
+    let griefed = h.self_spend(&[(a, 40_000), (b, 40_000)], 500).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    let batch = h.execute(griefed.id, 1).unwrap();
+
+    assert!(matches!(h.reclaim(a, COIN, 1_000).unwrap_err(), Error::NotStuck { .. }));
+    h.advance(h.v.policy.t_stuck_ms);
+    let r = h.reclaim(a, COIN, 1_000).unwrap();
+
+    // Old request gone: its remaining input cannot be signed and a late callback writes nothing.
+    assert_eq!(h.execute(griefed.id, 16).unwrap_err(), Error::RequestNotFound);
+    assert_eq!(
+        h.v.on_signed(griefed.id, batch.attempt, 0, [7; 32], [7; 32], Some(vec![1]), h.now),
+        SignedOutcome::DroppedUnknownRequest
+    );
+    assert_eq!(h.v.outpoint_state(&b), OutpointState::Spent { request: griefed.id });
+
+    assert_eq!(h.v.requests[&r.id].tier, Tier::SelfSpend);
+    assert_eq!(r.base_unlock, h.now + h.v.policy.t_known_ms);
+    assert_eq!(h.v.requests[&r.id].outputs.dest_script, h.v.vault_spk);
+    assert_eq!(h.v.pinned_value(&a), Some(40_000), "the pin stays at the first declared value");
+    h.advance(h.v.policy.t_known_ms);
+    h.execute_all_signed(r.id);
+    assert_eq!(h.v.outpoint_state(&a), OutpointState::Spent { request: r.id });
+}
+
+#[test]
+fn reclaim_refuses_a_free_or_pending_outpoint() {
+    let mut h = H::test_coin();
+    assert_eq!(h.reclaim(op(1), COIN, 1_000).unwrap_err(), Error::NotReclaimable);
+    h.self_spend(&[(op(1), COIN)], 1_000).unwrap();
+    h.advance(h.v.policy.t_stuck_ms);
+    assert_eq!(h.reclaim(op(1), COIN, 1_000).unwrap_err(), Error::NotReclaimable);
+}
+
+// ------------------------------------------------------------------ epoch and rotation
+
+#[test]
+fn rotation_kills_every_pending_request_at_once() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let r1 = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    let r2 = h.propose(&[(op(2), COIN)], &dest, COIN - 500, None).unwrap();
+    let epoch = h.v.spend_epoch;
+    let grant = h.rotate(SPEND_2).unwrap();
+    assert_eq!(h.v.spend_epoch, epoch + 1);
+    assert!(h.v.live_pending(h.now).is_empty(), "dead the moment the epoch moved");
+
+    h.advance(h.v.policy.t_new_unguarded_ms);
+    assert_eq!(h.execute(r1.id, 16).unwrap_err(), Error::RequestNotFound);
+    assert_eq!(h.execute(r2.id, 16).unwrap_err(), Error::RequestNotFound);
+
+    // Old key: refused. New key: refused until the grant applies, then fine.
+    assert_eq!(h.propose(&[(op(3), COIN)], &dest, COIN - 500, None).unwrap_err(), Error::SpendKeySuspended);
+    h.apply(grant).unwrap();
+    assert_eq!(h.v.k_s, SPEND_2);
+    assert!(!h.v.k_s_suspended);
+    // Lazy freeing already ran, so the same outpoints are free to the new key.
+    let again = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    assert_eq!(h.v.requests[&again.id].epoch, epoch + 1);
+    // The thief's old key is refused for good.
+    let intent = h.sp();
+    let got = h.tx(|v, now| {
+        v.propose(
+            &Caller::SpendKey(SPEND),
+            intent,
+            ProposeArgs { inputs: vec![], outputs: Outputs { dest_script: vec![], dest_value: 0, change_value: None }, half_sigs: vec![] },
+            now,
+        )
+    });
+    assert_eq!(got.unwrap_err(), Error::Unauthorized);
+}
+
+#[test]
+fn new_key_waits_t_known_and_cold_key_can_veto_it() {
+    let mut h = H::test_coin();
+    let grant = h.rotate(SPEND_2).unwrap();
+    assert!(matches!(h.apply(grant).unwrap_err(), Error::GrantNotReady { .. }));
+    h.advance(h.v.policy.t_known_ms - 1);
+    assert!(matches!(h.apply(grant).unwrap_err(), Error::GrantNotReady { .. }));
+    h.advance(1);
+    let mut vetoed = h.clone();
+    vetoed.veto(grant).unwrap();
+    assert_eq!(vetoed.apply(grant).unwrap_err(), Error::GrantNotFound);
+    assert!(vetoed.v.k_s_suspended);
+    h.apply(grant).unwrap();
+    assert_eq!(h.v.k_s, SPEND_2);
+}
+
+#[test]
+fn a_signing_request_survives_rotation_because_a_signature_may_be_public() {
+    let (a, b) = (op(1), op(2));
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let r = h.propose(&[(a, COIN), (b, COIN)], &dest, 2 * COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    let batch = h.execute(r.id, 1).unwrap();
+    h.sign_batch(r.id, &batch);
+    h.rotate(SPEND_2).unwrap();
+    let rest = h.execute(r.id, 16).unwrap();
+    assert_eq!(rest.indices, vec![1], "retry signs only the missing input");
+}
+
+// ------------------------------------------------------------------ freeze
+
+#[test]
+fn freeze_blocks_everything_except_cancel_and_only_cold_lifts_it() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let grant = h.add_dest(&dest).unwrap();
+    let r = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    let until = h.now + h.v.csv_period_ms();
+    assert!(matches!(h.freeze(until + 1).unwrap_err(), Error::FreezeTooLong { .. }));
+    h.freeze(until).unwrap();
+
+    assert!(h.v.grants.is_empty(), "freeze cancels pending grants");
+    assert!(!h.v.is_live(r.id, h.now), "freeze kills pending requests by epoch");
+    let frozen = Error::Frozen { until };
+    assert_eq!(h.propose(&[(op(2), COIN)], &dest, COIN - 500, None).unwrap_err(), frozen);
+    assert_eq!(h.execute(r.id, 16).unwrap_err(), frozen);
+    assert_eq!(h.rotate(SPEND_2).unwrap_err(), frozen);
+    assert_eq!(h.add_dest(&dest).unwrap_err(), frozen);
+    assert_eq!(h.remove_dest(&dest).unwrap_err(), frozen);
+    assert_eq!(h.set_guard(None).unwrap_err(), frozen);
+    assert_eq!(h.set_policy(Policy { fee_cap_tx: 900, ..h.v.policy }).unwrap_err(), frozen);
+    assert_eq!(h.clear_hold(r.id).unwrap_err(), frozen);
+    assert_eq!(h.recover_cancel().unwrap_err(), frozen);
+    assert_eq!(h.apply(grant).unwrap_err(), frozen);
+
+    // Only K_e lifts it early.
+    h.unfreeze().unwrap();
+    assert_eq!(h.unfreeze().unwrap_err(), Error::NotFrozen);
+    h.propose(&[(op(2), COIN)], &dest, COIN - 500, None).unwrap();
+}
+
+/// The spec lets the passkey cancel during a freeze. A freeze has already killed every Pending
+/// request and blocks new ones, so the exception has nothing to act on. The role check still runs.
+#[test]
+fn cancel_during_a_freeze_finds_nothing_left_to_cancel() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    h.freeze(h.now + h.v.csv_period_ms()).unwrap();
+    assert_eq!(h.cancel(r.id).unwrap_err(), Error::RequestNotFound);
+    assert_eq!(h.cancel_cold(r.id).unwrap_err(), Error::RequestNotFound);
+    let exp = h.now + HOUR;
+    let got = h.tx(|v, now| v.cancel(&Caller::SpendKey(SPEND), exp, r.id, now));
+    assert_eq!(got.unwrap_err(), Error::Unauthorized);
+}
+
+#[test]
+fn a_freeze_lapses_on_its_own_and_does_not_restore_dead_requests() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x88);
+    let r = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    let period = h.v.csv_period_ms();
+    assert_eq!(period, HOUR, "6 blocks at 10 min, the spec's about 1 h");
+    h.freeze(h.now + period).unwrap();
+    h.advance(period);
+    assert!(!h.v.is_frozen(h.now));
+    assert_eq!(h.execute(r.id, 16).unwrap_err(), Error::RequestNotFound);
+    assert_eq!(h.v.outpoint_state(&op(1)), OutpointState::Pending(r.id), "not swept: refused call wrote nothing");
+    let again = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    assert_ne!(again.id, r.id);
+}
+
+#[test]
+fn test_coin_freeze_is_three_minutes() {
+    let h = H::test_coin();
+    assert_eq!(h.v.csv_period_ms(), 3 * MINUTE);
+}
+
+// ------------------------------------------------------------------ recovery cap
+
+fn recovery_lands_within_three_t_recover(mut h: H) {
+    let t = h.v.fixed.t_recover_ms;
+    let start = h.now;
+    for attempt in 0..2 {
+        h.recover_begin(passkey(0x40)).unwrap();
+        h.advance(t - 1);
+        assert!(matches!(h.recover_finish().unwrap_err(), Error::RecoveryNotReady { .. }));
+        h.recover_cancel().unwrap();
+        assert_eq!(h.v.recover_cancels, attempt + 1);
+        h.advance(1);
+    }
+    // Third attempt: the passkey cannot cancel it.
+    h.recover_begin(passkey(0x40)).unwrap();
+    assert_eq!(h.recover_cancel().unwrap_err(), Error::RecoveryCancelCapReached);
+    h.advance(t);
+    h.recover_finish().unwrap();
+    assert_eq!(h.now - start, 3 * t, "3 x T_recover at this instance's constants");
+    assert_eq!(h.v.passkey, passkey(0x40));
+    assert_eq!(h.v.recover_cancels, 0, "reset only by a completed recovery");
+
+    // The old passkey is gone from every method.
+    let intent = h.pk();
+    let exp = h.now + HOUR;
+    let old = Caller::Passkey(passkey(0x30).pubkey);
+    assert_eq!(h.tx(|v, now| v.cancel(&old, exp, 0, now)).unwrap_err(), Error::Unauthorized);
+    assert_eq!(h.tx(|v, now| v.recover_cancel(&old, intent, now)).unwrap_err(), Error::Unauthorized);
+
+    // The counter is available again, for the new passkey, on a later recovery.
+    h.recover_begin(passkey(0x41)).unwrap();
+    h.recover_cancel().unwrap();
+}
+
+#[test]
+fn recovery_cap_at_test_coin_constants_is_45_minutes() {
+    let h = H::test_coin();
+    assert_eq!(h.v.fixed.t_recover_ms * 3, 45 * MINUTE);
+    recovery_lands_within_three_t_recover(h);
+}
+
+#[test]
+fn recovery_cap_at_mainnet_proof_constants_is_3_hours() {
+    let h = H::mainnet();
+    assert_eq!(h.v.fixed.t_recover_ms * 3, 3 * HOUR);
+    recovery_lands_within_three_t_recover(h);
+}
+
+/// The attempt count must not reset with time. At the deployed constants T_recover is at least as
+/// long as the CSV period, so a per-CSV cap would let the passkey cancel forever.
+#[test]
+fn recovery_cap_does_not_reset_with_time() {
+    for mut h in [H::test_coin(), H::mainnet()] {
+        assert!(h.v.fixed.t_recover_ms >= h.v.csv_period_ms());
+        for _ in 0..2 {
+            h.recover_begin(passkey(0x40)).unwrap();
+            h.recover_cancel().unwrap();
+            h.advance(365 * DAY);
+        }
+        h.recover_begin(passkey(0x40)).unwrap();
+        assert_eq!(h.recover_cancel().unwrap_err(), Error::RecoveryCancelCapReached);
+    }
+}
+
+#[test]
+fn passkey_cannot_stretch_recovery_through_policy() {
+    // T_recover is not a Policy field, so the 3 x T_recover bound holds against a passkey thief who
+    // tightens every delay first.
+    let mut h = H::mainnet();
+    let max = h.v.bounds.max;
+    let fixed_before = h.v.fixed;
+    h.set_policy(Policy { fee_cap_tx: h.v.policy.fee_cap_tx, fee_budget_24h: h.v.policy.fee_budget_24h, outflow_cap_24h: h.v.policy.outflow_cap_24h, ..max }).unwrap();
+    assert_eq!(h.v.fixed, fixed_before);
+}
+
+#[test]
+fn recovery_finish_voids_grants_from_the_old_passkey() {
+    let mut h = H::test_coin();
+    let thief = p2wpkh(0x99);
+    h.add_dest(&thief).unwrap();
+    h.recover_begin(passkey(0x40)).unwrap();
+    h.advance(h.v.fixed.t_recover_ms);
+    h.recover_finish().unwrap();
+    assert!(h.v.grants.is_empty());
+    assert!(!h.v.known.contains(&thief));
+}
+
+#[test]
+fn k_e_can_recover_during_its_own_freeze_with_no_passkey_interference() {
+    let mut h = H::mainnet();
+    h.freeze(h.now + h.v.csv_period_ms()).unwrap();
+    h.recover_begin(passkey(0x40)).unwrap();
+    assert!(matches!(h.recover_cancel().unwrap_err(), Error::Frozen { .. }));
+    h.advance(h.v.fixed.t_recover_ms);
+    h.recover_finish().unwrap();
+    assert_eq!(h.v.passkey, passkey(0x40));
+}
+
+// ------------------------------------------------------------------ delayed grants
+
+#[test]
+fn a_destination_becomes_known_only_after_t_new_and_only_through_the_grant() {
+    let mut h = H::test_coin();
+    let dest = p2tr(0x88);
+    let grant = h.add_dest(&dest).unwrap();
+    let early = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    assert_eq!(early.tier, Tier::New, "not known while the grant waits");
+    h.advance(h.v.policy.t_new_ms - 1);
+    assert!(matches!(h.apply(grant).unwrap_err(), Error::GrantNotReady { .. }));
+    h.advance(1);
+    h.apply(grant).unwrap();
+    let known = h.propose(&[(op(2), COIN)], &dest, COIN - 500, None).unwrap();
+    assert_eq!(known.tier, Tier::Known);
+    assert_eq!(known.base_unlock, h.now + h.v.policy.t_known_ms);
+}
+
+#[test]
+fn removing_a_destination_is_instant_and_kills_requests_and_waiting_adds() {
+    let mut h = H::test_coin();
+    let dest = p2tr(0x88);
+    let grant = h.add_dest(&dest).unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    h.apply(grant).unwrap();
+    let r = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    let used = h.v.outflow_used_24h(h.now);
+    assert_eq!(used, COIN - 500, "reserved at propose");
+    let other = h.add_dest(&p2wpkh(0x89)).unwrap();
+    h.remove_dest(&dest).unwrap();
+    assert!(!h.v.known.contains(&dest));
+    assert!(!h.v.requests.contains_key(&r.id));
+    assert_eq!(h.v.outpoint_state(&op(1)), OutpointState::Free);
+    assert_eq!(h.v.outflow_used_24h(h.now), 0, "released with the request");
+
+    let again = h.add_dest(&dest).unwrap();
+    h.remove_dest(&dest).unwrap();
+    assert_eq!(h.apply(again).unwrap_err(), Error::GrantNotFound);
+    assert!(h.v.grants.iter().any(|g| g.id == other));
+}
+
+#[test]
+fn tightening_is_instant_loosening_waits_and_can_be_vetoed() {
+    let mut h = H::mainnet();
+    let old = h.v.policy;
+    let tighter = Policy { t_new_ms: old.t_new_ms + MINUTE, ..old };
+    assert_eq!(h.set_policy(tighter).unwrap(), PolicyOutcome::Applied);
+    assert_eq!(h.v.policy, tighter);
+
+    // Back down is loosening.
+    let PolicyOutcome::Grant(grant) = h.set_policy(old).unwrap() else { panic!("must wait") };
+    assert_eq!(h.v.policy, tighter);
+    assert!(matches!(h.apply(grant).unwrap_err(), Error::GrantNotReady { .. }));
+    h.advance(tighter.t_new_ms);
+    let mut vetoed = h.clone();
+    vetoed.veto(grant).unwrap();
+    assert_eq!(vetoed.v.policy, tighter);
+    h.apply(grant).unwrap();
+    assert_eq!(h.v.policy, old);
+
+    // A mix of one tighter and one looser field waits as a whole.
+    let mixed = Policy { t_new_ms: old.t_new_ms + MINUTE, fee_cap_tx: 500, hold_ms: old.hold_ms, t_known_ms: old.t_known_ms, ..old };
+    assert_eq!(h.set_policy(mixed).unwrap(), PolicyOutcome::Applied, "both tighten");
+    let looser = Policy { t_new_ms: mixed.t_new_ms + MINUTE, fee_cap_tx: 700, ..mixed };
+    assert!(matches!(h.set_policy(looser).unwrap(), PolicyOutcome::Grant(_)));
+}
+
+#[test]
+fn set_policy_is_bounded_both_ways() {
+    let mut h = H::mainnet();
+    let p = h.v.policy;
+    let max = h.v.bounds.max;
+    let min = h.v.bounds.min;
+    for bad in [
+        Policy { t_new_unguarded_ms: max.t_new_unguarded_ms + 1, ..p },
+        Policy { hold_ms: max.hold_ms + 1, ..p },
+        Policy { fee_cap_tx: min.fee_cap_tx - 1, ..p },
+        Policy { fee_budget_24h: min.fee_budget_24h - 1, ..p },
+        Policy { t_known_ms: p.t_new_ms + 1, ..p },
+    ] {
+        assert_eq!(h.set_policy(bad).unwrap_err(), Error::PolicyOutOfBounds);
+    }
+    assert_eq!(h.set_policy(p).unwrap_err(), Error::PolicyUnchanged);
+}
+
+#[test]
+fn a_tightening_drops_a_loosening_still_waiting() {
+    let mut h = H::mainnet();
+    let old = h.v.policy;
+    let tighter = Policy { fee_cap_tx: 800, ..old };
+    h.set_policy(tighter).unwrap();
+    let PolicyOutcome::Grant(grant) = h.set_policy(old).unwrap() else { panic!() };
+    let tightest = Policy { fee_cap_tx: 700, ..tighter };
+    h.set_policy(tightest).unwrap();
+    h.advance(old.t_new_ms);
+    assert_eq!(h.apply(grant).unwrap_err(), Error::GrantNotFound);
+    assert_eq!(h.v.policy, tightest);
+}
+
+#[test]
+fn pending_grants_are_bounded() {
+    let mut h = H::test_coin();
+    for i in 0..MAX_GRANTS {
+        h.add_dest(&p2wpkh(i as u8)).unwrap();
+    }
+    assert_eq!(h.add_dest(&p2wpkh(0xf0)).unwrap_err(), Error::TooManyGrants);
+}
+
+// ------------------------------------------------------------------ guard, hold and delay
+
+#[test]
+fn guard_death_delays_and_blocks_nothing() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    assert_eq!(h.v.delay_now(h.now), 10 * MINUTE, "no heartbeat yet");
+    h.heartbeat().unwrap();
+    assert_eq!(h.v.delay_now(h.now), 5 * MINUTE);
+    h.advance(20 * MINUTE);
+    assert_eq!(h.v.delay_now(h.now), 5 * MINUTE, "exactly 20 min is not older than 20 min");
+    h.advance(1);
+    assert_eq!(h.v.delay_now(h.now), 10 * MINUTE);
+    let r = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    assert_eq!(r.base_unlock, h.now + 10 * MINUTE);
+    h.advance(10 * MINUTE);
+    h.execute(r.id, 16).unwrap();
+}
+
+#[test]
+fn hold_is_bounded_once_and_clearing_returns_to_base_only() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    h.heartbeat().unwrap();
+    let r = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    let hold = h.v.policy.hold_ms;
+
+    h.assess(r.id, false).unwrap();
+    assert!(h.v.requests[&r.id].assessed);
+    assert_eq!(h.v.requests[&r.id].unlock, r.base_unlock);
+    // hold=true overrides an earlier hold=false until unlock.
+    h.assess(r.id, true).unwrap();
+    assert_eq!(h.v.requests[&r.id].unlock, r.base_unlock + hold);
+    assert_eq!(h.assess(r.id, true).unwrap_err(), Error::HoldAlreadyUsed);
+    assert_eq!(h.assess(r.id, false).unwrap_err(), Error::HoldAlreadyUsed, "false cannot undo a hold");
+
+    h.advance(r.base_unlock - h.now);
+    assert!(matches!(h.execute(r.id, 16).unwrap_err(), Error::NotUnlocked { .. }));
+    h.clear_hold(r.id).unwrap();
+    assert_eq!(h.v.requests[&r.id].unlock, r.base_unlock, "back to base, never earlier");
+    assert_eq!(h.clear_hold(r.id).unwrap_err(), Error::NoHold);
+    assert_eq!(h.assess(r.id, true).unwrap_err(), Error::HoldAlreadyUsed, "one hold per request");
+    h.execute(r.id, 16).unwrap();
+}
+
+#[test]
+fn a_hold_cannot_be_added_at_or_after_unlock() {
+    let mut h = H::test_coin();
+    h.heartbeat().unwrap();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    h.advance(r.base_unlock - h.now);
+    assert_eq!(h.assess(r.id, true).unwrap_err(), Error::PastUnlock);
+}
+
+#[test]
+fn clearing_a_hold_before_the_base_never_unlocks_early() {
+    let mut h = H::test_coin();
+    h.heartbeat().unwrap();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    h.assess(r.id, true).unwrap();
+    h.clear_hold(r.id).unwrap();
+    assert_eq!(h.execute(r.id, 16).unwrap_err(), Error::NotUnlocked { unlock: r.base_unlock });
+}
+
+#[test]
+fn replacing_the_guard_waits_and_the_old_guard_loses_its_role() {
+    let mut h = H::test_coin();
+    let grant = h.set_guard(Some("other.test".to_string())).unwrap();
+    h.heartbeat().unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    h.apply(grant).unwrap();
+    assert_eq!(h.heartbeat().unwrap_err(), Error::Unauthorized);
+    let none = h.set_guard(None).unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    h.apply(none).unwrap();
+    assert_eq!(h.v.delay_now(h.now), h.v.policy.t_new_unguarded_ms);
+}
+
+// ------------------------------------------------------------------ expiry and lazy free
+
+#[test]
+fn execute_wins_the_expiry_race_in_the_same_block() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    assert_eq!(r.expires_at, r.base_unlock + h.v.fixed.expiry_window_ms);
+    let mut late = h.clone();
+    h.advance(r.expires_at - h.now);
+    h.execute(r.id, 16).unwrap();
+
+    late.advance(r.expires_at - late.now + 1);
+    assert_eq!(late.execute(r.id, 16).unwrap_err(), Error::RequestNotFound);
+    assert!(!late.v.is_live(r.id, late.now));
+    // Next write frees it, and reserved outflow goes with it.
+    let again = late.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    assert_ne!(again.id, r.id);
+    assert!(!late.v.requests.contains_key(&r.id));
+    assert_eq!(late.v.outflow_used_24h(late.now), COIN - 500, "only the new reservation");
+}
+
+#[test]
+fn a_hold_extends_expiry_so_it_cannot_eat_the_window() {
+    let mut h = H::test_coin();
+    h.heartbeat().unwrap();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    h.assess(r.id, true).unwrap();
+    let req = &h.v.requests[&r.id];
+    assert_eq!(req.expires_at, req.unlock + h.v.fixed.expiry_window_ms);
+}
+
+#[test]
+fn pending_cap_is_three_and_dead_requests_do_not_count() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    for i in 1..=3 {
+        h.propose(&[(op(i), COIN)], &dest, COIN - 500, None).unwrap();
+    }
+    assert_eq!(h.propose(&[(op(4), COIN)], &dest, COIN - 500, None).unwrap_err(), Error::PendingCap);
+    h.rotate(SPEND_2).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    let grant = h.v.grants[0].id;
+    h.apply(grant).unwrap();
+    for i in 4..=6 {
+        h.propose(&[(op(i), COIN)], &dest, COIN - 500, None).unwrap();
+    }
+    assert_eq!(h.v.pending.len(), 3);
+}
+
+#[test]
+fn outpoints_are_scoped_to_their_vault() {
+    let mut a = H::test_coin();
+    let mut b = H::test_coin();
+    a.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    b.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+}
+
+#[test]
+fn terminal_requests_are_deleted_and_unpinned_outpoints_leave_the_ledger() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    for _ in 0..5 {
+        let next = {
+            let last = h.v.pending[0];
+            h.cancel(last).unwrap();
+            h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap()
+        };
+        assert_eq!(h.v.requests.len(), 1, "no growth per cycle");
+        assert_ne!(next.id, r.id);
+    }
+    h.cancel(h.v.pending[0]).unwrap();
+    assert!(h.v.requests.is_empty());
+    assert!(h.v.ledger.is_empty());
+}
+
+/// Review finding: signed requests stayed forever, so history weighed on every later call. A signed
+/// request can now leave after the window, and nothing a coin needs goes with it.
+#[test]
+fn signed_requests_prune_after_the_window_and_pins_stay() {
+    let mut h = H::test_coin();
+    let window = h.v.fixed.expiry_window_ms;
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    let now = h.now;
+    assert_eq!(h.v.prune_signed(r.id, now).unwrap_err(), Error::NotSigned, "pending");
+    h.advance(h.v.delay_now(h.now));
+    let batch = h.execute(r.id, 16).unwrap();
+    let now = h.now;
+    assert_eq!(h.v.prune_signed(r.id, now).unwrap_err(), Error::NotSigned, "signing");
+    h.advance(10 * MINUTE);
+    h.sign_batch(r.id, &batch);
+    assert_eq!(h.v.requests[&r.id].signed_at, Some(h.now), "the window counts from the signature");
+    let now = h.now;
+    assert_eq!(h.v.prune_signed(r.id, now).unwrap_err(), Error::PruneTooSoon { ready_at: now + window });
+    let late = now + window - 1;
+    assert_eq!(h.v.prune_signed(r.id, late).unwrap_err(), Error::PruneTooSoon { ready_at: now + window });
+
+    h.advance(window);
+    let now = h.now;
+    h.v.prune_signed(r.id, now).unwrap();
+    assert!(!h.v.requests.contains_key(&r.id));
+    assert_eq!(h.v.prune_signed(r.id, now).unwrap_err(), Error::RequestNotFound, "once");
+    assert_eq!(h.v.outpoint_state(&op(1)), OutpointState::Spent { request: r.id });
+    assert_eq!(h.v.pinned_value(&op(1)), Some(COIN), "the pin stays: the fee rules need it forever");
+
+    // A late callback finds nothing, and the coin is still reclaimable and still refused elsewhere.
+    assert_eq!(h.v.on_signed(r.id, 1, 0, [7; 32], [7; 32], Some(vec![1]), now), SignedOutcome::DroppedUnknownRequest);
+    assert!(matches!(h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap_err(), Error::OutpointBusy(_)));
+    assert!(matches!(h.reclaim(op(1), COIN, 1_000), Ok(_)), "reclaim needs only the ledger");
+}
+
+// ------------------------------------------------------------------ fee budget
+
+#[test]
+fn fee_budget_is_charged_at_execute_not_at_propose() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x88);
+    let mut ids = vec![];
+    for i in 1..=3 {
+        ids.push(h.propose(&[(op(i), COIN)], &dest, COIN - 1_000, None).unwrap().id);
+    }
+    assert_eq!(h.v.fee_used_24h(h.now), 0, "proposals charge nothing");
+    h.cancel(ids[0]).unwrap();
+    h.cancel(ids[1]).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 0, "cancelled proposals charged nothing");
+    h.advance(h.v.delay_now(h.now));
+    h.execute(ids[2], 16).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 1_000);
+    // Retry and partial execute do not charge twice.
+    h.height += RETRY_AFTER_BLOCKS;
+    h.execute(ids[2], 16).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 1_000);
+}
+
+#[test]
+fn fee_budget_refuses_when_exhausted_and_recovers_after_24_h() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x88);
+    for i in 1..=3 {
+        let r = h.propose(&[(op(i), COIN)], &dest, COIN - 1_000, None).unwrap();
+        h.advance(h.v.delay_now(h.now));
+        h.execute(r.id, 16).unwrap();
+    }
+    assert_eq!(h.v.fee_used_24h(h.now), 3_000);
+    let r = h.propose(&[(op(4), COIN)], &dest, COIN - 1_000, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    assert!(matches!(h.execute(r.id, 16).unwrap_err(), Error::FeeBudgetExceeded { .. }));
+    assert!(h.v.is_live(r.id, h.now), "refused, not consumed");
+    // A day later the budget is back, at the last moment of the request's own 1-day window.
+    h.advance(DAY);
+    assert_eq!(h.v.fee_used_24h(h.now), 0);
+    h.execute(r.id, 16).unwrap();
+}
+
+/// The spec says charging at execute means fake proposals cannot use up the owner's budget. That
+/// holds only for proposals that never reach execute. A K_s holder who waits out the delay can
+/// execute a fake request, and execute is open to anyone. So this griefing is bounded, not gone:
+/// a slot of the budget per delay, ended by rotation, and the passkey override gets the owner out.
+#[test]
+fn executed_fake_requests_do_charge_the_budget_and_rotation_ends_it() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x88);
+    for i in 10..=12 {
+        let fake = h.propose(&[(op(i), COIN)], &dest, COIN - 1_000, None).unwrap();
+        h.advance(h.v.delay_now(h.now));
+        h.execute(fake.id, 16).unwrap();
+    }
+    assert_eq!(h.v.fee_used_24h(h.now), h.v.policy.fee_budget_24h, "real budget gone, no real fee paid");
+
+    // The owner's refresh is blocked by the budget, until the passkey names it.
+    let refresh = h.self_spend(&[(op(1), COIN)], 1_000).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    assert!(matches!(h.execute(refresh.id, 16).unwrap_err(), Error::FeeBudgetExceeded { .. }));
+    h.raise_fee_cap(refresh.id, 1_000).unwrap();
+    h.execute(refresh.id, 16).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 4_000, "the override still charges");
+
+    h.rotate(SPEND_2).unwrap();
+    assert_eq!(h.propose(&[(op(20), COIN)], &dest, COIN - 1_000, None).unwrap_err(), Error::SpendKeySuspended);
+}
+
+#[test]
+fn fee_rules_at_the_input_limits() {
+    let mut h = H::test_coin();
+    let spk = h.v.vault_spk.clone();
+    let outputs = |value| Outputs { dest_script: spk.clone(), dest_value: value, change_value: None };
+    let coins = |n: u8| -> Vec<(Outpoint, Sats)> { (1..=n).map(|i| (op(i), COIN)).collect() };
+
+    // At 1 sat/vB, the 1,000-sat cap stops at 8 inputs.
+    assert!(estimate_vsize(8, &outputs(1)) <= 1_000);
+    assert!(estimate_vsize(9, &outputs(1)) > 1_000);
+    let dest = p2wsh(0x88);
+    let nine: Vec<_> = coins(9);
+    let total9: Sats = nine.iter().map(|c| c.1).sum();
+    assert!(matches!(
+        h.propose(&nine, &dest, total9 - 1_000, None).unwrap_err(),
+        Error::FeeRateTooLow { .. }
+    ));
+    assert!(matches!(
+        h.propose(&nine, &dest, total9 - 1_100, None).unwrap_err(),
+        Error::FeeOverCap { .. }
+    ));
+
+    // A 16-input self-spend has a path, through the named override.
+    let sixteen = coins(16);
+    let fee = estimate_vsize(16, &outputs(1));
+    assert!(fee > 1_000);
+    let r = h.self_spend(&sixteen, fee).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    assert_eq!(h.execute(r.id, 16).unwrap_err(), Error::FeeOverCap { fee, cap: 1_000 });
+    h.raise_fee_cap(r.id, fee).unwrap();
+    assert_eq!(h.execute(r.id, 16).unwrap().indices.len(), 16);
+    assert_eq!(h.v.fee_used_24h(h.now), fee);
+
+    // Over MAX_INPUTS is refused, and a tiny fee is too.
+    let mut h = H::test_coin();
+    let seventeen = coins(17);
+    assert_eq!(h.self_spend(&seventeen, 2_000).unwrap_err(), Error::TooManyInputs);
+    assert!(matches!(h.self_spend(&coins(1), 100).unwrap_err(), Error::FeeRateTooLow { .. }));
+}
+
+#[test]
+fn fee_override_is_for_one_self_spend_up_to_a_twentieth() {
+    let mut h = H::test_coin();
+    let spk = h.v.vault_spk.clone();
+    let new = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    assert_eq!(h.raise_fee_cap(new.id, 600).unwrap_err(), Error::NotSelfSpend);
+    let r = h.propose(&[(op(2), COIN)], &spk, COIN - 40_000, None).unwrap();
+    let limit = (COIN - 40_000) / 20;
+    assert_eq!(h.raise_fee_cap(r.id, limit + 1).unwrap_err(), Error::OverrideTooHigh { limit });
+    h.raise_fee_cap(r.id, limit).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.execute(r.id, 16).unwrap();
+    assert_eq!(h.raise_fee_cap(r.id, limit).unwrap_err(), Error::NotPending);
+    // A fee above a twentieth has no path, so propose refuses it outright.
+    let mut h = H::test_coin();
+    let spk = h.v.vault_spk.clone();
+    assert!(matches!(
+        h.propose(&[(op(3), COIN)], &spk, COIN - 60_000, None).unwrap_err(),
+        Error::FeeOverCap { .. }
+    ));
+}
+
+// ------------------------------------------------------------------ self-spend slot
+
+#[test]
+fn self_spend_slot_is_one_per_t_new_and_refunds_on_cancel() {
+    let mut h = H::test_coin();
+    let t_new = h.v.policy.t_new_ms;
+    let first = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    assert!(matches!(h.self_spend(&[(op(2), COIN)], 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+    h.cancel(first.id).unwrap();
+    let second = h.self_spend(&[(op(2), COIN)], 500).unwrap();
+
+    // Executing it spends the slot for good.
+    h.advance(h.v.policy.t_known_ms);
+    h.execute(second.id, 16).unwrap();
+    assert!(matches!(h.self_spend(&[(op(3), COIN)], 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+    h.advance(t_new - h.v.policy.t_known_ms);
+    h.self_spend(&[(op(3), COIN)], 500).unwrap();
+}
+
+/// Review finding: with the slot taken, a 294-sat spend with the rest as change was accepted. Its
+/// change is a new coin with age zero, so it restarts CSV exactly as a self-spend does, and a stolen
+/// spend key could keep a signed chain of them.
+#[test]
+fn a_spend_with_change_needs_the_slot_like_a_self_spend() {
+    let mut h = H::test_coin();
+    let dust = p2wpkh(0x88);
+    let own = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    let refused = h.propose(&[(op(2), COIN)], &dust, 294, Some(COIN - 794)).unwrap_err();
+    assert!(matches!(refused, Error::SelfSpendSlotUsed { .. }), "{refused:?}");
+
+    // The other way round: a dust spend holds the slot against a self-spend and a reclaim.
+    h.cancel(own.id).unwrap();
+    let spend = h.propose(&[(op(2), COIN)], &dust, 294, Some(COIN - 794)).unwrap();
+    assert_eq!(spend.tier, Tier::New);
+    assert!(matches!(h.self_spend(&[(op(3), COIN)], 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+
+    // Known destinations pay it too: a thief holding the passkey could add one.
+    let grant = h.add_dest(&p2wpkh(0x99)).unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    h.apply(grant).unwrap();
+    let known = h.propose(&[(op(4), COIN)], &p2wpkh(0x99), 294, Some(COIN - 794)).unwrap();
+    assert_eq!(known.tier, Tier::Known);
+    assert!(matches!(h.propose(&[(op(5), COIN)], &p2wpkh(0x99), 294, Some(COIN - 794)).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+
+    // A spend with no change leaves no new coin behind, so it costs no slot and needs none.
+    let sweep = h.propose(&[(op(6), COIN)], &dust, COIN - 500, None);
+    assert!(sweep.is_ok(), "{sweep:?}");
+}
+
+/// The fee window lives in the row every call reads, so it must not keep what a day has passed.
+#[test]
+fn the_fee_window_leaves_the_row_after_a_day() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    for i in 0..3u8 {
+        let r = h.propose(&[(op(i), COIN)], &dest, COIN - 500, None).unwrap();
+        h.advance(h.v.delay_now(h.now));
+        h.execute(r.id, 16).unwrap();
+    }
+    assert_eq!(h.v.fee_window_entries(), 3);
+    h.advance(DAY);
+    let r = h.propose(&[(op(9), COIN)], &dest, COIN - 500, None).unwrap();
+    assert_eq!(h.v.fee_window_entries(), 0, "the next state change sweeps them");
+    h.advance(h.v.delay_now(h.now));
+    h.execute(r.id, 16).unwrap();
+    assert_eq!(h.v.fee_window_entries(), 1);
+}
+
+/// Removing a destination kills what was going there, and a killed spend no longer holds the slot.
+#[test]
+fn removing_a_destination_refunds_the_slot_of_a_spend_it_killed() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x88);
+    let grant = h.add_dest(&dest).unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    h.apply(grant).unwrap();
+    h.propose(&[(op(1), COIN)], &dest, 294, Some(COIN - 794)).unwrap();
+    assert!(matches!(h.self_spend(&[(op(2), COIN)], 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+    let (caller, intent, now) = (h.pass_caller(), h.pk(), h.now);
+    h.v.remove_destination(&caller, intent, &dest, now).unwrap();
+    assert!(h.self_spend(&[(op(2), COIN)], 500).is_ok());
+}
+
+/// The slot, not the fee budget, is what bounds a day of dust spends when the budget is large. Each
+/// signed link is one CSV restart a thief can hold back and broadcast later.
+#[test]
+fn a_day_of_change_spends_is_bounded_by_the_slot() {
+    let mut p = Policy::test_coin(OUTFLOW_CAP);
+    p.t_new_ms = HOUR;
+    p.t_new_unguarded_ms = HOUR;
+    p.fee_budget_24h = 1_000_000_000;
+    let mut wide = Bounds::test_coin(OUTFLOW_CAP);
+    wide.max.t_new_ms = HOUR;
+    wide.max.t_new_unguarded_ms = HOUR;
+    wide.max.fee_budget_24h = p.fee_budget_24h;
+    let mut v = Vault::create(create_args(p, Fixed::test_coin(), wide, p2wsh(0x77))).unwrap();
+    v.activate(&k_m()).unwrap();
+    let mut h = H::new(v);
+    let start = h.now;
+    let mut pending: Vec<(Ms, RequestId)> = Vec::new();
+    let (mut proposed, mut signed, mut coin) = (0u32, 0u32, 0u8);
+    while h.now < start + DAY {
+        if let Ok(r) = h.propose(&[(op(coin), COIN)], &p2wpkh(0x88), 294, Some(COIN - 794)) {
+            pending.push((r.base_unlock, r.id));
+            coin = coin.wrapping_add(1);
+            proposed += 1;
+        }
+        pending.retain(|(unlock, id)| {
+            if *unlock > h.now {
+                return true;
+            }
+            let batch = h.execute(*id, MAX_INPUTS).unwrap();
+            h.sign_batch(*id, &batch);
+            signed += 1;
+            false
+        });
+        h.advance(MINUTE);
+    }
+    assert_eq!(proposed, 24, "one per T_new, one attempt every minute");
+    assert_eq!(signed, 23, "the last one unlocks as the day ends");
+}
+
+/// On the deployed test-coin values the fee budget is tighter than the slot, and both still hold.
+#[test]
+fn a_day_of_change_spends_on_the_test_coin_values() {
+    let mut h = H::test_coin();
+    let start = h.now;
+    let (mut signed, mut coin) = (0u32, 0u8);
+    while h.now < start + DAY {
+        if let Ok(r) = h.propose(&[(op(coin), COIN)], &p2wpkh(0x88), 294, Some(COIN - 500)) {
+            coin = coin.wrapping_add(1);
+            h.advance(h.v.delay_now(h.now));
+            if let Ok(batch) = h.execute(r.id, MAX_INPUTS) {
+                h.sign_batch(r.id, &batch);
+                signed += 1;
+            }
+        }
+        h.advance(MINUTE);
+    }
+    assert!(signed <= 288, "one per T_new at most, got {signed}");
+    assert!(signed <= 5_000 / 206 + 1, "the fee budget binds here, got {signed}");
+}
+
+#[test]
+fn cancelling_an_old_self_spend_does_not_refund_a_later_one() {
+    let mut h = H::test_coin();
+    let old = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    let newer = h.self_spend(&[(op(2), COIN)], 500).unwrap();
+    h.cancel(old.id).unwrap();
+    assert!(matches!(h.self_spend(&[(op(3), COIN)], 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+    h.cancel(newer.id).unwrap();
+    h.self_spend(&[(op(3), COIN)], 500).unwrap();
+}
+
+#[test]
+fn reclaim_shares_the_self_spend_slot_and_outflow_stays_zero() {
+    let mut h = H::test_coin();
+    let griefed = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(griefed.id, 16).unwrap();
+    h.advance(h.v.policy.t_stuck_ms);
+    let before = h.v.outflow_used_24h(h.now);
+    let r = h.reclaim(op(1), COIN, 1_000).unwrap();
+    assert_eq!(h.v.outflow_used_24h(h.now), before, "a reclaim moves nothing out");
+    assert!(matches!(h.self_spend(&[(op(2), COIN)], 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+    h.cancel(r.id).unwrap();
+    h.self_spend(&[(op(2), COIN)], 500).unwrap();
+}
+
+#[test]
+fn rotation_refunds_a_slot_held_by_a_request_it_killed() {
+    let mut h = H::test_coin();
+    h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    let grant = h.rotate(SPEND_2).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(grant).unwrap();
+    h.self_spend(&[(op(2), COIN)], 500).unwrap();
+}
+
+#[test]
+fn self_spends_have_zero_outflow_and_use_t_known() {
+    let mut h = H::test_coin();
+    let r = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    assert_eq!(r.tier, Tier::SelfSpend);
+    assert_eq!(r.base_unlock, h.now + h.v.policy.t_known_ms);
+    assert_eq!(h.v.outflow_used_24h(h.now), 0);
+}
+
+// ------------------------------------------------------------------ outflow cap
+
+#[test]
+fn known_destination_falls_back_to_t_new_past_the_cap() {
+    let mut h = H::test_coin();
+    let dest = p2tr(0x88);
+    let grant = h.add_dest(&dest).unwrap();
+    h.advance(h.v.policy.t_new_ms);
+    h.apply(grant).unwrap();
+    let cap = h.v.policy.outflow_cap_24h;
+
+    let first = h.propose(&[(op(1), cap + 500)], &dest, cap, None).unwrap();
+    assert_eq!(first.tier, Tier::Known, "exactly the cap does not pass it");
+    let over = h.propose(&[(op(2), 5_000)], &dest, 4_500, None).unwrap();
+    assert_eq!(over.tier, Tier::New, "reserved at propose");
+    assert_eq!(over.base_unlock, h.now + h.v.delay_now(h.now));
+
+    h.cancel(first.id).unwrap();
+    let again = h.propose(&[(op(3), 5_000)], &dest, 4_500, None).unwrap();
+    assert_eq!(again.tier, Tier::Known, "cancel released the reservation");
+}
+
+// ------------------------------------------------------------------ callback safety
+
+#[test]
+fn stale_attempts_and_wrong_digests_are_dropped_and_retry_signs_only_what_is_missing() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN), (op(2), COIN), (op(3), COIN)], &p2wsh(0x88), 3 * COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    let first = h.execute(r.id, 2).unwrap();
+    assert_eq!(first.indices, vec![0, 1]);
+    assert!(matches!(h.execute(r.id, 2).unwrap_err(), Error::InFlight { .. }));
+
+    // One good answer, one wrong digest.
+    assert_eq!(h.v.on_signed(r.id, first.attempt, 0, [7; 32], [7; 32], Some(vec![1]), h.now), SignedOutcome::Stored { complete: false });
+    assert_eq!(h.v.on_signed(r.id, first.attempt, 1, [8; 32], [7; 32], Some(vec![1]), h.now), SignedOutcome::DroppedDigestMismatch);
+    assert!(h.v.requests[&r.id].sigs[1].is_none());
+    assert_eq!(h.v.on_signed(r.id, first.attempt, 2, [7; 32], [7; 32], Some(vec![1]), h.now), SignedOutcome::DroppedNotInFlight);
+
+    let second = h.execute(r.id, 16).unwrap();
+    assert_eq!(second.indices, vec![1, 2], "only the missing inputs");
+    assert!(second.attempt > first.attempt);
+    assert_eq!(h.v.on_signed(r.id, first.attempt, 1, [7; 32], [7; 32], Some(vec![1]), h.now), SignedOutcome::DroppedStaleAttempt);
+    assert_eq!(h.v.requests[&r.id].in_flight, vec![1, 2], "a stale retry cannot undercount in_flight");
+
+    assert_eq!(h.v.on_signed(r.id, second.attempt, 1, [7; 32], [7; 32], None, h.now), SignedOutcome::Failed);
+    assert_eq!(h.v.on_signed(r.id, second.attempt, 2, [7; 32], [7; 32], Some(vec![1]), h.now), SignedOutcome::Stored { complete: false });
+    let third = h.execute(r.id, 16).unwrap();
+    assert_eq!(third.indices, vec![1]);
+    assert_eq!(h.v.on_signed(r.id, third.attempt, 1, [7; 32], [7; 32], Some(vec![1]), h.now), SignedOutcome::Stored { complete: true });
+    assert_eq!(h.v.requests[&r.id].status, RequestStatus::Signed);
+    assert_eq!(h.execute(r.id, 16).unwrap_err(), Error::AlreadySigned);
+    assert_eq!(h.v.outpoint_state(&op(1)), OutpointState::Spent { request: r.id });
+}
+
+#[test]
+fn a_lost_callback_unlocks_retry_after_250_blocks() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wsh(0x88), COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(r.id, 16).unwrap();
+    h.height += RETRY_AFTER_BLOCKS - 1;
+    assert!(matches!(h.execute(r.id, 16).unwrap_err(), Error::InFlight { .. }));
+    h.height += 1;
+    assert_eq!(h.execute(r.id, 16).unwrap().attempt, 2);
+}
+
+#[test]
+fn no_cancel_after_execute() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wsh(0x88), COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(r.id, 16).unwrap();
+    assert_eq!(h.cancel(r.id).unwrap_err(), Error::NotPending);
+    assert_eq!(h.cancel_cold(r.id).unwrap_err(), Error::NotPending);
+}
+
+// ------------------------------------------------------------------ creation
+
+fn args() -> CreateArgs {
+    create_args(Policy::test_coin(OUTFLOW_CAP), Fixed::test_coin(), Bounds::test_coin(OUTFLOW_CAP), p2wsh(0x77))
+}
+
+#[test]
+fn csv_is_block_based_and_bounded() {
+    for bad in [0u32, 65_536, 1 << 22 | 1, 1 << 31] {
+        let got = Vault::create(CreateArgs { csv_blocks: bad, ..args() });
+        assert_eq!(got.unwrap_err(), Error::BadCsv, "csv={bad}");
+    }
+    for good in [1u32, 6, 26_280, 65_535] {
+        Vault::create(CreateArgs { csv_blocks: good, ..args() }).unwrap();
+    }
+}
+
+#[test]
+fn keys_must_be_pairwise_different_and_well_formed() {
+    let cases = [
+        CreateArgs { k_u: k_m(), ..args() },
+        CreateArgs { k_e_leaf: k_u(), ..args() },
+        CreateArgs { k_e_leaf: k_m(), ..args() },
+        CreateArgs { k_e_intent: k_e_leaf(), ..args() },
+        CreateArgs { passkey: Passkey { pubkey: k_m(), ..passkey(0x30) }, ..args() },
+    ];
+    for case in cases {
+        assert_eq!(Vault::create(case).unwrap_err(), Error::DuplicateKeys);
+    }
+    let bad_prefix = compressed(0x25, 4);
+    assert_eq!(Vault::create(CreateArgs { k_u: bad_prefix, ..args() }).unwrap_err(), Error::BadKey);
+    assert_eq!(Vault::create(CreateArgs { k_m: vec![2; 32], ..args() }).unwrap_err(), Error::BadKey);
+    assert_eq!(Vault::create(CreateArgs { vault_spk: p2wpkh(1), ..args() }).unwrap_err(), Error::BadVaultScript);
+}
+
+#[test]
+fn a_wrong_k_m_never_activates_and_inactive_vaults_refuse_propose() {
+    let mut v = Vault::create(args()).unwrap();
+    assert_eq!(v.activate(&compressed(0x66, 2)).unwrap_err(), Error::KmMismatch);
+    assert!(!v.active);
+    let mut h = H::new(v);
+    assert_eq!(h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap_err(), Error::Inactive);
+    h.v.activate(&k_m()).unwrap();
+    assert_eq!(h.v.activate(&k_m()).unwrap_err(), Error::AlreadyActive);
+    h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+}
+
+#[test]
+fn delays_outside_the_instance_bounds_are_refused_at_creation() {
+    let policy = Policy { t_known_ms: 1, ..Policy::test_coin(OUTFLOW_CAP) };
+    assert_eq!(Vault::create(CreateArgs { policy, ..args() }).unwrap_err(), Error::PolicyOutOfBounds);
+}
+
+// ------------------------------------------------------------------ shape
+
+#[test]
+fn only_exact_witness_templates_pass_with_a_dust_minimum() {
+    let mut h = H::test_coin();
+    let mut bad_templates = vec![
+        vec![0x6a, 0x04, 1, 2, 3, 4],                 // OP_RETURN
+        vec![0x76, 0xa9, 0x14],                       // bare or legacy start
+        p2wpkh(1)[..21].to_vec(),                     // short
+    ];
+    let mut long = p2wsh(1);
+    long.push(0);
+    bad_templates.push(long);
+    let mut v1_wrong_len = vec![0x51, 0x14];
+    v1_wrong_len.extend([1; 20]);
+    bad_templates.push(v1_wrong_len);
+    for script in bad_templates {
+        assert_eq!(h.propose(&[(op(1), COIN)], &script, COIN - 500, None).unwrap_err(), Error::BadDestination);
+    }
+    assert_eq!(h.propose(&[(op(1), COIN)], &p2wpkh(1), 293, Some(COIN - 793)).unwrap_err(), Error::DustOutput);
+    assert_eq!(h.propose(&[(op(1), COIN)], &p2wsh(1), 329, Some(COIN - 829)).unwrap_err(), Error::DustOutput);
+    assert_eq!(h.propose(&[(op(1), COIN)], &p2wpkh(1), COIN - 829, Some(329)).unwrap_err(), Error::DustOutput);
+    let first = h.propose(&[(op(1), COIN)], &p2wpkh(1), 294, Some(COIN - 794)).unwrap();
+    // Both carry change, so the second needs the slot back.
+    h.cancel(first.id).unwrap();
+    h.propose(&[(op(2), COIN)], &p2tr(1), 330, Some(COIN - 830)).unwrap();
+}
+
+#[test]
+fn inputs_must_be_distinct_nonzero_and_cover_the_outputs() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(1);
+    assert_eq!(h.propose(&[], &dest, 1_000, None).unwrap_err(), Error::NoInputs);
+    assert_eq!(h.propose(&[(op(1), COIN), (op(1), COIN)], &dest, COIN, None).unwrap_err(), Error::DuplicateInput(op(1)));
+    assert_eq!(h.propose(&[(op(1), 0)], &dest, 1_000, None).unwrap_err(), Error::BadValue);
+    assert_eq!(h.propose(&[(op(1), MAX_MONEY + 1)], &dest, 1_000, None).unwrap_err(), Error::BadValue);
+    assert_eq!(h.propose(&[(op(1), 1_000)], &dest, 1_001, None).unwrap_err(), Error::OutputsExceedInputs);
+    let args = ProposeArgs {
+        inputs: vec![Input { outpoint: op(1), value: COIN }],
+        outputs: Outputs { dest_script: dest.clone(), dest_value: COIN - 500, change_value: None },
+        half_sigs: vec![],
+    };
+    let (caller, intent) = (h.spend_caller(), h.sp());
+    assert_eq!(h.tx(|v, now| v.propose(&caller, intent, args, now)).unwrap_err(), Error::HalfSigCount);
+}
+
+// ------------------------------------------------------------------ replay
+
+#[test]
+fn intents_are_one_shot_and_expire() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(1);
+    let replay = h.sp();
+    h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    let (caller, args) = (
+        h.spend_caller(),
+        ProposeArgs {
+            inputs: vec![Input { outpoint: op(2), value: COIN }],
+            outputs: Outputs { dest_script: dest.clone(), dest_value: COIN - 500, change_value: None },
+            half_sigs: vec![vec![1]],
+        },
+    );
+    let got = h.tx(|v, now| v.propose(&caller, replay, args.clone(), now));
+    assert_eq!(got.unwrap_err(), Error::BadNonce { expected: 1 });
+    let late = Intent { nonce: h.v.spend_nonce, expires_at: h.now - 1 };
+    let got = h.tx(|v, now| v.propose(&caller, late, args, now));
+    assert_eq!(got.unwrap_err(), Error::IntentExpired);
+
+    // A replayed freeze cannot renew itself.
+    let (cold, intent) = (h.cold_caller(), h.ck());
+    let until = h.now + h.v.csv_period_ms();
+    h.tx(|v, now| v.freeze(&cold, intent, until, now)).unwrap();
+    assert_eq!(h.tx(|v, now| v.freeze(&cold, intent, until, now)).unwrap_err(), Error::BadNonce { expected: 1 });
+}
+
+// ------------------------------------------------------------------ roles
+
+/// C14 and the key table in 1.1: each method answers only to its role. "Allowed" here means the
+/// call got past the role check; it may still fail on state.
+#[test]
+fn role_matrix() {
+    type Op = (&'static str, fn(&mut Vault, &Caller, Intent, Ms) -> Result<(), Error>, &'static [&'static str]);
+    fn propose_args() -> ProposeArgs {
+        ProposeArgs {
+            inputs: vec![Input { outpoint: op(9), value: COIN }],
+            outputs: Outputs { dest_script: p2wpkh(1), dest_value: COIN - 500, change_value: None },
+            half_sigs: vec![vec![1]],
+        }
+    }
+    let ops: Vec<Op> = vec![
+        ("propose", |v, c, i, n| v.propose(c, i, propose_args(), n).map(|_| ()), &["spend"]),
+        ("reclaim", |v, c, i, n| v.reclaim(c, i, op(1), COIN, 1_000, vec![1], n).map(|_| ()), &["spend"]),
+        ("bump", |v, c, i, n| v.bump(c, i, 0, 2_000, vec![vec![1]], n).map(|_| ()), &["spend"]),
+        ("cancel", |v, c, _, n| v.cancel(c, n + HOUR, 0, n), &["passkey", "cold"]),
+        ("cancel_all_and_rotate", |v, c, i, n| v.cancel_all_and_rotate(c, i, SPEND_2, n).map(|_| ()), &["passkey"]),
+        ("clear_hold", |v, c, i, n| v.clear_hold(c, i, 0, n), &["passkey"]),
+        ("remove_destination", |v, c, i, n| v.remove_destination(c, i, &p2wpkh(1), n), &["passkey"]),
+        ("add_destination", |v, c, i, n| v.add_destination(c, i, p2wpkh(1), n).map(|_| ()), &["passkey"]),
+        ("set_policy", |v, c, i, n| { let p = Policy { fee_cap_tx: 900, ..v.policy }; v.set_policy(c, i, p, n).map(|_| ()) }, &["passkey"]),
+        ("set_guard", |v, c, i, n| v.set_guard(c, i, None, n).map(|_| ()), &["passkey"]),
+        ("raise_fee_cap", |v, c, i, n| v.raise_fee_cap(c, i, 0, 1, n), &["passkey"]),
+        ("recover_cancel", |v, c, i, n| v.recover_cancel(c, i, n), &["passkey"]),
+        ("freeze", |v, c, i, n| v.freeze(c, i, n + 1, n), &["cold"]),
+        ("unfreeze", |v, c, i, n| v.unfreeze(c, i, n), &["cold"]),
+        ("veto_grant", |v, c, i, n| v.veto_grant(c, i, 0, n), &["cold"]),
+        ("recover_begin", |v, c, i, n| v.recover_begin(c, i, passkey(0x40), n), &["cold"]),
+        ("heartbeat", |v, c, _, n| v.heartbeat(c, n), &["guard"]),
+        ("assess", |v, c, _, n| v.assess(c, 0, true, n), &["guard"]),
+    ];
+    let h = {
+        let mut h = H::test_coin();
+        h.propose(&[(op(1), COIN)], &p2wpkh(1), COIN - 500, None).unwrap();
+        h.add_dest(&p2wpkh(2)).unwrap();
+        h
+    };
+    let callers = [
+        ("spend", Caller::SpendKey(SPEND)),
+        ("passkey", Caller::Passkey(h.v.passkey.pubkey.clone())),
+        ("cold", Caller::Cold(k_e_intent())),
+        ("guard", Caller::Guard(GUARD.to_string())),
+        ("anyone", Caller::Anyone),
+        ("stale spend key", Caller::SpendKey(SPEND_2)),
+        ("other guard", Caller::Guard("other.test".to_string())),
+    ];
+    for (name, run, allowed) in &ops {
+        for (who, caller) in &callers {
+            let mut v = h.v.clone();
+            let nonce = match who {
+                &"spend" => v.spend_nonce,
+                &"passkey" => v.passkey_nonce,
+                &"cold" => v.cold_nonce,
+                _ => 0,
+            };
+            let intent = Intent { nonce, expires_at: h.now + HOUR };
+            let result = run(&mut v, caller, intent, h.now);
+            let refused = result == Err(Error::Unauthorized);
+            assert_eq!(refused, !allowed.contains(who), "{name} by {who}: {result:?}");
+        }
+    }
+}
+
+// ------------------------------------------------------------------ constants
+
+#[test]
+fn deployed_constants_match_the_delay_table() {
+    let t = Policy::test_coin(1);
+    assert_eq!(
+        (t.t_known_ms, t.t_new_ms, t.t_new_unguarded_ms, t.hold_ms, t.t_stuck_ms, t.fee_cap_tx, t.fee_budget_24h),
+        (MINUTE, 5 * MINUTE, 10 * MINUTE, 5 * MINUTE, 10 * MINUTE, 1_000, 5_000)
+    );
+    let m = Policy::mainnet_proof(1);
+    assert_eq!(
+        (m.t_known_ms, m.t_new_ms, m.t_new_unguarded_ms, m.hold_ms, m.t_stuck_ms, m.fee_cap_tx, m.fee_budget_24h),
+        (5 * MINUTE, 10 * MINUTE, 20 * MINUTE, 20 * MINUTE, HOUR, 1_000, 3_000)
+    );
+    assert_eq!(Fixed::test_coin().t_recover_ms, 15 * MINUTE);
+    assert_eq!(Fixed::mainnet_proof().t_recover_ms, HOUR);
+    assert_eq!(Fixed::test_coin().expiry_window_ms, HOUR);
+    assert_eq!(Fixed::mainnet_proof().expiry_window_ms, DAY);
+    assert_eq!(Fixed::test_coin().bump_wait_ms, 5 * MINUTE);
+    assert_eq!(Fixed::mainnet_proof().bump_wait_ms, 30 * MINUTE);
+    assert_eq!(HEARTBEAT_STALE_MS, 20 * MINUTE);
+    assert_eq!((MAX_INPUTS, MAX_PENDING, RECOVERY_CANCEL_CAP), (16, 3, 2));
+    assert!(Bounds::test_coin(1).allows(&t));
+    assert!(Bounds::mainnet(1).allows(&m));
+    // The upgrade arithmetic: largest withdrawal + T_stuck + T_known at the instance maxima.
+    let tmax = Bounds::test_coin(1).max;
+    assert_eq!(tmax.t_new_unguarded_ms + tmax.hold_ms + tmax.t_stuck_ms + tmax.t_known_ms, 26 * MINUTE);
+    let mmax = Bounds::mainnet(1).max;
+    assert_eq!(mmax.t_new_unguarded_ms + mmax.hold_ms + mmax.t_stuck_ms + mmax.t_known_ms, 97 * HOUR);
+}
+
+// ------------------------------------------------------------------ the slot against a reclaim
+
+/// A reclaim pays back to the vault, so it needs the slot like any other coin with age zero.
+#[test]
+fn reclaim_is_refused_while_the_slot_is_held() {
+    let mut h = H::test_coin();
+    let griefed = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(griefed.id, 16).unwrap();
+    h.advance(h.v.policy.t_stuck_ms);
+    let holder = h.self_spend(&[(op(2), COIN)], 500).unwrap();
+    assert!(matches!(h.reclaim(op(1), COIN, 500).unwrap_err(), Error::SelfSpendSlotUsed { .. }));
+
+    h.cancel(holder.id).unwrap();
+    let r = h.reclaim(op(1), COIN, 500).unwrap();
+    assert!(matches!(h.reclaim(op(1), COIN, 600).unwrap_err(), Error::NotReclaimable), "the coin is Pending again");
+    h.cancel(r.id).unwrap();
+    h.self_spend(&[(op(3), COIN)], 500).unwrap();
+}
+
+// ------------------------------------------------------------------ pre-signed chains of restarts
+
+fn coin_of(r: &Request, vout: u32) -> Outpoint {
+    Outpoint { txid: txid_of(r), vout }
+}
+
+/// Executes a self-spend of `coin` when unlocked and returns the coin it pays back to the vault.
+fn link(h: &mut H, coin: Outpoint, value: Sats, fee: Sats) -> Result<Outpoint, Error> {
+    let r = h.self_spend(&[(coin, value)], fee)?;
+    h.advance(r.base_unlock - h.now);
+    let child = coin_of(&h.v.requests[&r.id], 0);
+    h.execute_all_signed(r.id);
+    Ok(child)
+}
+
+/// The finding: the slot spaced a thief's links by `T_new`, but each signed link could spend the
+/// coin the last one had not broadcast yet, so a thief held one CSV restart per `T_new`. This walks
+/// the longest chain the rules allow over the same window on each preset, and gives the number.
+fn longest_chain(mut h: H, window: Ms) -> (usize, Ms) {
+    const FEE: Sats = 200;
+    let start = h.now;
+    let (wait, slot, known) = (h.v.chain_wait_ms(), h.v.policy.t_new_ms, h.v.policy.t_known_ms);
+    let spacing = wait.max(slot);
+    let mut coin = op(1);
+    let mut value = COIN;
+    let mut links = 0;
+    // The first link waits for nothing. After it the thief proposes the moment both rules allow, and
+    // one millisecond sooner is refused, so this really is the fastest walk.
+    while h.now < start + window {
+        coin = link(&mut h, coin, value, FEE).unwrap();
+        value -= FEE;
+        links += 1;
+        h.advance(spacing - known - 1);
+        assert!(h.self_spend(&[(coin, value)], FEE).is_err(), "one millisecond early");
+        h.advance(1);
+    }
+    (links, h.v.csv_period_ms())
+}
+
+#[test]
+fn a_signed_chain_grows_only_as_fast_as_the_rules_say_on_each_preset() {
+    // Two hours of a thief's time on each deployed preset. Spacing is the larger of T_new and the
+    // chain wait, so the walk takes ceil(window / spacing) links.
+    const WINDOW: Ms = 2 * HOUR;
+
+    let test = H::test_coin();
+    assert_eq!(test.v.chain_wait_ms(), 135_000, "6 blocks of 30 s, three quarters");
+    let (links, csv) = longest_chain(test, WINDOW);
+    assert_eq!(links, 24, "one per T_new, the tighter rule on this preset");
+    assert_eq!(csv, 3 * MINUTE);
+    println!("MEASURE chain test-coin window_min=120 links={links} restart_min={}", links as u64 * csv / MINUTE);
+
+    let proof = H::mainnet();
+    assert_eq!(proof.v.chain_wait_ms(), 45 * MINUTE, "6 blocks of 10 min, three quarters");
+    let (links, csv) = longest_chain(proof, WINDOW);
+    assert_eq!(links, 3, "one per chain wait, the tighter rule on this preset");
+    assert_eq!(csv, HOUR);
+    println!("MEASURE chain mainnet-proof window_min=120 links={links} restart_min={}", links as u64 * csv / MINUTE);
+}
+
+/// Over a whole day the fee budget stops a chain before the slot does on this preset.
+#[test]
+fn a_day_of_chain_links_stops_at_the_fee_budget_on_test_coins() {
+    let mut h = H::test_coin();
+    let spacing = h.v.policy.t_new_ms;
+    let fee = estimate_vsize(1, &Outputs { dest_script: h.v.vault_spk.clone(), dest_value: 1, change_value: None }) * MIN_FEE_RATE;
+    let mut coin = op(1);
+    let mut value = COIN;
+    let mut links = 0u64;
+    loop {
+        let r = h.self_spend(&[(coin, value)], fee).unwrap();
+        h.advance(r.base_unlock - h.now);
+        let next = coin_of(&h.v.requests[&r.id], 0);
+        match h.execute(r.id, 16) {
+            Ok(_) => links += 1,
+            Err(e) => {
+                assert!(matches!(e, Error::FeeBudgetExceeded { .. }), "{e:?}");
+                break;
+            }
+        }
+        coin = next;
+        value -= fee;
+        h.advance(spacing - h.v.policy.t_known_ms);
+    }
+    assert_eq!(links, h.v.policy.fee_budget_24h / fee, "budget over the lowest fee the floor allows");
+    println!("MEASURE chain test-coin day links={links} fee={fee}");
+}
+
+/// Every form of paying back to the vault waits: a self-spend, a spend with change, a reclaim. A
+/// spend with no change leaves no new coin, so it restarts nothing and does not wait.
+#[test]
+fn every_form_of_restart_waits_for_the_chain_and_a_clean_exit_does_not() {
+    let mut h = H::mainnet();
+    let wait = h.v.chain_wait_ms();
+    let t_new = h.v.policy.t_new_ms;
+    let young = link(&mut h, op(1), COIN, 500).unwrap();
+    let born = h.now;
+    assert_eq!(h.v.ledger[&young].born_at, Some(born));
+    assert_eq!(h.v.outpoint_state(&young), OutpointState::Free);
+    h.advance(t_new);
+
+    let ready_at = born + wait;
+    let too_young = Error::ChainTooYoung { ready_at };
+    assert_eq!(h.self_spend(&[(young, COIN - 500)], 500).unwrap_err(), too_young);
+    assert_eq!(h.propose(&[(young, COIN - 500)], &p2wpkh(0x88), 294, Some(COIN - 1_500)).unwrap_err(), too_young);
+    // With another coin alongside it, the young one still holds the whole transaction back.
+    assert_eq!(h.self_spend(&[(op(7), COIN), (young, COIN - 500)], 500).unwrap_err(), too_young);
+    let view = h.v.check_propose(&[Input { outpoint: young, value: COIN - 500 }], &Outputs { dest_script: h.v.vault_spk.clone(), dest_value: COIN - 1_000, change_value: None }, h.now);
+    assert_eq!(view.unwrap_err(), too_young, "the free view agrees");
+
+    // A whole coin to somewhere else is not a restart.
+    let out = h.propose(&[(young, COIN - 500)], &p2wpkh(0x88), COIN - 1_000, None).unwrap();
+    assert_eq!(out.tier, Tier::New);
+    h.advance(out.base_unlock - h.now);
+    h.execute_all_signed(out.id);
+
+    // A reclaim of that coin would be a restart, so it waits too, for T_stuck and then for the chain.
+    let mut h = H::new(mainnet_vault_with_long_csv());
+    let wait = h.v.chain_wait_ms();
+    let young = link(&mut h, op(1), COIN, 500).unwrap();
+    let born = h.now;
+    let out = h.propose(&[(young, COIN - 500)], &p2wpkh(0x88), COIN - 1_000, None).unwrap();
+    h.advance(out.base_unlock - h.now);
+    h.execute_all_signed(out.id);
+    h.advance(h.v.policy.t_stuck_ms);
+    assert!(h.now + h.v.policy.t_known_ms < born + wait, "this test is inside the wait");
+    assert_eq!(h.reclaim(young, COIN - 500, 500).unwrap_err(), Error::ChainTooYoung { ready_at: born + wait });
+    h.advance(born + wait - h.now - h.v.policy.t_known_ms);
+    h.reclaim(young, COIN - 500, 500).unwrap();
+}
+
+fn mainnet_vault_with_long_csv() -> Vault {
+    let mut args = create_args(Policy::mainnet_proof(OUTFLOW_CAP), Fixed::mainnet_proof(), Bounds::mainnet(OUTFLOW_CAP), p2wsh(0x77));
+    args.csv_blocks = 144;
+    let mut v = Vault::create(args).unwrap();
+    v.activate(&k_m()).unwrap();
+    v
+}
+
+/// A child proposed against a parent that has not gone out has no birth time to wait for, so it holds
+/// the parent back instead. Once it is cancelled the parent goes, and the next try waits as usual.
+#[test]
+fn a_child_proposed_before_its_parent_went_out_stops_the_parent() {
+    let mut h = H::mainnet();
+    let wait = h.v.chain_wait_ms();
+    let t_new = h.v.policy.t_new_ms;
+    let parent = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    let young = coin_of(&h.v.requests[&parent.id], 0);
+    h.advance(t_new);
+    let child = h.self_spend(&[(young, COIN - 500)], 500).unwrap();
+    assert_eq!(h.execute(parent.id, 16).unwrap_err(), Error::ChainOutOfOrder(young));
+    h.cancel(child.id).unwrap();
+    h.execute_all_signed(parent.id);
+    let born = h.now;
+    assert_eq!(h.self_spend(&[(young, COIN - 500)], 500).unwrap_err(), Error::ChainTooYoung { ready_at: born + wait });
+}
+
+/// The chain built from the far end: each link is signed before the contract has heard of the one it
+/// spends, so there is no birth time to wait for. The parent then cannot go out.
+#[test]
+fn a_chain_built_backwards_stops_at_its_parent() {
+    let mut h = H::mainnet();
+    let t_new = h.v.policy.t_new_ms;
+    let spk = h.v.vault_spk.clone();
+    let parent_args = Outputs { dest_script: spk.clone(), dest_value: COIN - 500, change_value: None };
+    let predicted = coin_of(&request_for(&h, op(1), COIN, &parent_args), 0);
+
+    let child = h.self_spend(&[(predicted, COIN - 500)], 500).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.execute_all_signed(child.id);
+    assert_eq!(h.v.outpoint_state(&predicted), OutpointState::Spent { request: child.id });
+
+    h.advance(t_new);
+    let parent = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    assert_eq!(coin_of(&h.v.requests[&parent.id], 0), predicted, "the prediction was exact");
+    h.advance(h.v.policy.t_known_ms);
+    assert_eq!(h.execute(parent.id, 16).unwrap_err(), Error::ChainOutOfOrder(predicted));
+    assert_eq!(h.v.requests[&parent.id].status, RequestStatus::Pending, "and it can still be cancelled");
+    h.cancel(parent.id).unwrap();
+
+    // Only proposed, not signed, the child still blocks the parent, until a cancel clears it.
+    let mut h = H::mainnet();
+    let child = h.self_spend(&[(predicted, COIN - 500)], 500).unwrap();
+    h.cancel(child.id).unwrap();
+    let parent = h.self_spend(&[(op(1), COIN)], 500).unwrap();
+    let child = {
+        h.advance(t_new);
+        h.self_spend(&[(predicted, COIN - 500)], 500).unwrap()
+    };
+    assert_eq!(h.execute(parent.id, 16).unwrap_err(), Error::ChainOutOfOrder(predicted));
+    h.cancel(child.id).unwrap();
+    h.execute_all_signed(parent.id);
+}
+
+fn request_for(h: &H, coin: Outpoint, value: Sats, outputs: &Outputs) -> Request {
+    let mut scratch = h.clone();
+    let args = ProposeArgs { inputs: vec![Input { outpoint: coin, value }], outputs: outputs.clone(), half_sigs: vec![vec![0xaa; 65]] };
+    let (caller, intent) = (scratch.spend_caller(), scratch.sp());
+    let now = scratch.now;
+    let id = scratch.v.propose(&caller, intent, args, now).unwrap().id;
+    scratch.v.requests[&id].clone()
+}
+
+/// A birth time outlives the requests that touch the coin. Otherwise a cancel, which a thief holding
+/// the passkey can do, would make a young coin look like one the vault never made.
+#[test]
+fn a_cancel_does_not_make_a_young_coin_look_old() {
+    let mut h = H::mainnet();
+    let wait = h.v.chain_wait_ms();
+    let young = link(&mut h, op(1), COIN, 500).unwrap();
+    let born = h.now;
+    let out = h.propose(&[(young, COIN - 500)], &p2wpkh(0x88), COIN - 1_000, None).unwrap();
+    h.cancel(out.id).unwrap();
+    assert_eq!(h.v.ledger[&young].born_at, Some(born), "still there");
+    assert_eq!(h.v.ledger[&young].pinned_value, None);
+    h.advance(h.v.policy.t_new_ms);
+    assert_eq!(h.self_spend(&[(young, COIN - 500)], 500).unwrap_err(), Error::ChainTooYoung { ready_at: born + wait });
+}
+
+/// A spend's change is a coin of the vault like a self-spend's output, and at its own index.
+#[test]
+fn change_gets_a_birth_time_at_its_own_index() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), 50_000, Some(COIN - 50_500)).unwrap();
+    let txid = txid_of(&h.v.requests[&r.id]);
+    h.advance(r.base_unlock - h.now);
+    h.execute_all_signed(r.id);
+    assert_eq!(h.v.ledger[&Outpoint { txid, vout: 1 }].born_at, Some(h.now));
+    assert!(!h.v.ledger.contains_key(&Outpoint { txid, vout: 0 }), "the destination is not the vault's coin");
+
+    let mut h = H::test_coin();
+    let spk = h.v.vault_spk.clone();
+    let r = h.propose(&[(op(1), COIN)], &spk, 50_000, Some(COIN - 50_500)).unwrap();
+    let txid = txid_of(&h.v.requests[&r.id]);
+    h.advance(r.base_unlock - h.now);
+    h.execute_all_signed(r.id);
+    assert!(h.v.ledger.contains_key(&Outpoint { txid, vout: 0 }));
+    assert!(h.v.ledger.contains_key(&Outpoint { txid, vout: 1 }));
+
+    // A sweep leaves nothing behind.
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 500, None).unwrap();
+    let txid = txid_of(&h.v.requests[&r.id]);
+    h.advance(r.base_unlock - h.now);
+    h.execute_all_signed(r.id);
+    assert!(h.v.ledger.keys().all(|o| o.txid != txid));
+}
+
+/// The owner's refresh at the page's 80% warning goes through, on the same coin, at T_known.
+#[test]
+fn a_refresh_at_the_page_warning_is_not_held_back() {
+    let mut h = H::new(mainnet_vault_with_long_csv());
+    let csv = h.v.csv_period_ms();
+    let young = link(&mut h, op(1), COIN, 500).unwrap();
+    h.advance(csv * 4 / 5 - h.v.policy.t_known_ms);
+    let refresh = h.self_spend(&[(young, COIN - 500)], 500).unwrap();
+    assert_eq!(refresh.tier, Tier::SelfSpend);
+    h.advance(h.v.policy.t_known_ms);
+    h.execute_all_signed(refresh.id);
+}
+
+/// Exactly at the end of the wait is allowed, and one millisecond before is not.
+#[test]
+fn the_chain_wait_boundary_is_exact() {
+    let mut h = H::mainnet();
+    let wait = h.v.chain_wait_ms();
+    let known = h.v.policy.t_known_ms;
+    let young = link(&mut h, op(1), COIN, 500).unwrap();
+    let born = h.now;
+    h.advance(wait - known - 1);
+    assert_eq!(h.self_spend(&[(young, COIN - 500)], 500).unwrap_err(), Error::ChainTooYoung { ready_at: born + wait });
+    h.advance(1);
+    h.self_spend(&[(young, COIN - 500)], 500).unwrap();
+}
+
+/// A reclaim with the same value and fee builds the same transaction, so the same coin. It may go out
+/// again, and it does not make the coin any younger or older.
+#[test]
+fn signing_the_same_transaction_again_keeps_the_first_birth_time() {
+    let mut h = H::test_coin();
+    let young = link(&mut h, op(1), COIN, 500).unwrap();
+    let born = h.now;
+    h.advance(h.v.policy.t_new_ms.max(h.v.policy.t_stuck_ms));
+    let again = h.reclaim(op(1), COIN, 500).unwrap();
+    assert_eq!(coin_of(&h.v.requests[&again.id], 0), young, "the same transaction");
+    h.advance(h.v.policy.t_known_ms);
+    h.execute_all_signed(again.id);
+    assert_eq!(h.v.ledger[&young].born_at, Some(born));
+}
+
+/// An inactive vault does nothing but wait for its signer check.
+#[test]
+fn an_inactive_vault_refuses_spend_key_methods_and_execute() {
+    let v = Vault::create(create_args(Policy::test_coin(OUTFLOW_CAP), Fixed::test_coin(), Bounds::test_coin(OUTFLOW_CAP), p2wsh(0x77))).unwrap();
+    let mut h = H::new(v);
+    assert_eq!(h.self_spend(&[(op(1), COIN)], 500).unwrap_err(), Error::Inactive);
+    assert_eq!(h.reclaim(op(1), COIN, 500).unwrap_err(), Error::Inactive);
+    assert_eq!(h.execute(0, 16).unwrap_err(), Error::Inactive);
+    assert_eq!(h.bump(0, 900).unwrap_err(), Error::Inactive);
+}

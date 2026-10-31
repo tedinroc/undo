@@ -1,0 +1,21 @@
+# Tests for undo-core, in their own workspace. undo-core itself stays free of dependencies, and
+# nothing here enters the contract build or the root Cargo.lock.
+[package]
+name = "undo-core-props"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace]
+resolver = "2"
+
+[dependencies]
+undo-core = { path = ".." }
+
+[dev-dependencies]
+proptest = "=1.12.0"
+bitcoin = { version = "=0.32.102", features = ["bitcoinconsensus"] }
+
+[profile.test]
+opt-level = 1
