@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Commits in this repo carry no co-author trailer and no generated-by line. AI assistance is
+# disclosed in the README instead.
+set -euo pipefail
+msg="${1:?commit message file}"
+
+# `git commit -v` appends the diff below a scissors line. It never reaches the commit.
+body="$(sed '/^# -\{8,\} >8 -\{8,\}$/,$d' "$msg")"
+
+if printf '%s\n' "$body" | LC_ALL=C grep -i -E -q 'co-?authored-?by|noreply@anthropic|generated with .*claude'; then
+  echo "commit-msg: refused: remove the co-author or generated-by line" >&2
+  exit 1
+fi

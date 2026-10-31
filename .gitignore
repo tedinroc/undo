@@ -1,0 +1,29 @@
+# Build output
+target/
+node_modules/
+.wrangler/
+dist/
+*.log
+.DS_Store
+
+# Local toolchains and reference copies
+.tools/
+.ref/
+
+# Secrets and key material never live in the tree
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.near-credentials/
+*recovery*.json
+*.seed
+*seed*.txt
+*dispenser*.json
+*funding*.json
+*cold-key*
+*cold-file*
+
+# Private planning and submission payloads
+private/

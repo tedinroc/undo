@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Every commit carries the public identity and a +0800 timestamp. Run with TZ=Asia/Taipei.
+set -euo pipefail
+want="Ted Chen <37988075+tedinroc@users.noreply.github.com>"
+for var in GIT_AUTHOR_IDENT GIT_COMMITTER_IDENT; do
+  ident="$(git var "$var")"
+  case "$ident" in
+    "$want "*) ;;
+    *) echo "pre-commit: refused: $var is not the public identity, run scripts/setup-repo.sh" >&2; exit 1 ;;
+  esac
+  tz="${ident##* }"
+  if [ "$tz" != "+0800" ]; then
+    echo "pre-commit: refused: $var timezone is $tz, run with TZ=Asia/Taipei" >&2
+    exit 1
+  fi
+done

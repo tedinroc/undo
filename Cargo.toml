@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "contracts/*", "tests"]
+# The sandbox tests need a native host build; `cargo build` at the root stays small.
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+authors = ["Ted Chen"]
+publish = false
+
+# No rustflags in any committed config. scripts/build.sh sets them all in one place, because
+# Cargo ignores target.*.rustflags once RUSTFLAGS is exported, and the remap values are absolute
+# paths that must not be committed.
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

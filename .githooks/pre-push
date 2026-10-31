@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Runs the secret scan and the identity scan on the tree, then on every commit being pushed:
+# author, committer, timezone, message, file names and file contents. Hooks can be skipped at
+# commit time, so this repeats what commit-msg and pre-commit enforce. The blocked list comes
+# from a file outside the repo.
+set -uo pipefail
+remote="${1:-}"
+url="${2:-}"
+repo="$(git rev-parse --show-toplevel)"
+want="Ted Chen <37988075+tedinroc@users.noreply.github.com>"
+zero='^0+$'
+bad=0
+
+refuse() { echo "pre-push: $1" >&2; bad=$((bad + 1)); }
+
+case "$url" in
+  https://github.com/tedinroc/undo|https://github.com/tedinroc/undo.git|git@github.com:tedinroc/undo|git@github.com:tedinroc/undo.git|ssh://git@github.com/tedinroc/undo|ssh://git@github.com/tedinroc/undo.git) ;;
+  *) echo "pre-push: refused: remote $remote is not tedinroc/undo" >&2; exit 1 ;;
+esac
+
+"$repo/scripts/check-identity.sh" --tree || exit 1
+"$repo/scripts/secret-scan.sh" || exit 1
+
+source "$repo/scripts/lib-identity.sh"
+identity_load_patterns || exit 2
+SECRET_SCAN_LIB_ONLY=1 source "$repo/scripts/secret-scan.sh"
+
+word_args=()
+for p in "${IDENTITY_PATTERNS[@]}"; do word_args+=(-e "$p"); done
+secret_args=()
+for p in "${SECRET_PATTERNS[@]}"; do secret_args+=(-e "$p"); done
+
+scan_commit() {
+  local c="$1" short line
+  short="$(git rev-parse --short "$c")" || { refuse "$c: not a commit"; return; }
+  [ "$(git log -1 --format='%an <%ae>' "$c")" = "$want" ] || refuse "$short: author is not the public identity"
+  [ "$(git log -1 --format='%cn <%ce>' "$c")" = "$want" ] || refuse "$short: committer is not the public identity"
+  case "$(git log -1 --format='%ai' "$c")" in *" +0800") ;; *) refuse "$short: author timezone is not +0800" ;; esac
+  case "$(git log -1 --format='%ci' "$c")" in *" +0800") ;; *) refuse "$short: committer timezone is not +0800" ;; esac
+
+  if git log -1 --format='%B' "$c" | LC_ALL=C grep -i -E -q 'co-?authored-?by|noreply@anthropic|generated with .*claude'; then
+    refuse "$short: message has a co-author or generated-by line"
+  fi
+  if git log -1 --format='%B' "$c" | LC_ALL=C grep -a -q -i -F "${word_args[@]}"; then
+    refuse "$short: message has a blocked word"
+  fi
+  if git ls-tree -r --name-only "$c" | LC_ALL=C grep -a -q -i -F "${word_args[@]}"; then
+    refuse "$short: a file name has a blocked word"
+  fi
+  while IFS= read -r line; do
+    [ -z "$line" ] || refuse "blocked word in $line"
+  done < <(LC_ALL=C git grep -a -l -i -F "${word_args[@]}" "$c" -- 2>/dev/null)
+  while IFS= read -r line; do
+    [ -z "$line" ] || refuse "secret shape in $line"
+  done < <(LC_ALL=C git grep -a -l -E "${secret_args[@]}" "$c" -- 2>/dev/null)
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  # A branch delete sends nothing.
+  if [[ "$local_sha" =~ $zero ]]; then
+    continue
+  fi
+  if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" = "tag" ]; then
+    if git cat-file tag "$local_sha" | LC_ALL=C grep -a -q -i -F "${word_args[@]}"; then
+      refuse "$local_ref: tag text has a blocked word"
+    fi
+  fi
+  # Every reachable commit, not just the new ones: this push may be the one that opens the history.
+  commits="$(git rev-list "$local_sha" 2>/dev/null)" || { refuse "$local_ref: cannot read its history"; continue; }
+  [ -n "$commits" ] || { refuse "$local_ref: no commits to check"; continue; }
+  for c in $commits; do scan_commit "$c"; done
+done
+
+if [ "$bad" -gt 0 ]; then
+  echo "pre-push: refused: $bad problems" >&2
+  exit 1
+fi
