@@ -262,8 +262,13 @@ async function activation(run) {
   const wrong = newOwnerKeys().ku.pub;
   const deposit = 100;
   const bad = await run.client.create(run.payer, keys, { csv: 6, km: wrong, depositMilli: deposit });
-  const after = BigInt((await run.near.account(run.payer.accountId)).amount);
-  const spent = before - after;
+  // Prepaid gas is bought up front and the deposit and gas refunds land in later blocks, so one read
+  // right after the call shows a loss that is about to come back.
+  let spent = before - BigInt((await run.near.account(run.payer.accountId)).amount);
+  for (let i = 0; i < 30 && spent >= milliNear(deposit) / 2n; i += 1) {
+    await new Promise((r) => setTimeout(r, 2000));
+    spent = before - BigInt((await run.near.account(run.payer.accountId)).amount);
+  }
   const refunded = spent < milliNear(deposit) / 2n;
   return {
     good_vault: { vault: good.hex, active: good.view.active, tx: good.tx, gas: createGas(good.result, run.client) },

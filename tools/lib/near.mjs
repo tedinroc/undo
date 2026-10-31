@@ -125,13 +125,13 @@ export class Near {
     }
     if (data.error) {
       const cause = data.error.cause?.name ?? data.error.name;
-      throw new RpcError(`rpc ${method}: ${cause ?? 'error'}`, data.error);
+      throw new RpcError(`rpc ${method}: ${cause ?? data.error.message ?? 'error'}`, data.error);
     }
     return data.result;
   }
 
   /** Only for calls that are safe to repeat. Moves to the next URL on a network failure. */
-  async rpc(method, params, { attempts = 4 } = {}) {
+  async rpc(method, params, { attempts = 8 } = {}) {
     let last;
     for (let i = 0; i < attempts; i += 1) {
       const url = this.urls[i % this.urls.length];
@@ -141,6 +141,11 @@ export class Near {
         last = err;
         if (err instanceof RpcError && err.data) {
           const cause = err.data.cause?.name;
+          // A public RPC answers a rate limit as a JSON error with no cause. The call never ran.
+          if (/rate limit/i.test(JSON.stringify(err.data))) {
+            await sleep(5000 * (i + 1));
+            continue;
+          }
           if (cause !== 'TIMEOUT_ERROR' && cause !== 'NO_SYNCED_BLOCKS') throw err;
         }
         await sleep(400 * (i + 1));
