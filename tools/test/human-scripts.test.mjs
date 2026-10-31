@@ -290,6 +290,10 @@ test('00 makes the private folder outside the repo, private, and keeps what is t
   assert.equal(readFileSync(join(dir, 'quota-log.csv'), 'utf8'), 'kept\n', 'a second run keeps the log');
   assert.equal(readFileSync(join(dir, 'blocked-names.txt'), 'utf8'), 'kept\n', 'a second run keeps the list');
 
+  chmodSync(dir, 0o755);
+  assert.equal(run().status, 0);
+  assert.equal(statSync(dir).mode & 0o077, 0, 'a folder left open is closed again');
+
   const named = run({ UNDO_PRIVATE_DIR: join(root, 'with-account'), UNDO_CF_ACCOUNT_ID: 'abc123' });
   assert.equal(named.status, 0, named.stderr);
   assert.match(readFileSync(join(root, 'with-account', 'HANDOFF.md'), 'utf8'), /CLOUDFLARE_ACCOUNT_ID=abc123/);

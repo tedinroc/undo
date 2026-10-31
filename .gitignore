@@ -24,6 +24,8 @@ dist/
 *funding*.json
 *cold-key*
 *cold-file*
+*vault-keys*
+g2-state*
 
 # Private planning and submission payloads
 private/

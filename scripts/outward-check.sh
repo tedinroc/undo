@@ -73,6 +73,15 @@ if [ "${#extra[@]}" -gt 0 ]; then
   "$HERE/secret-scan.sh" --files "${extra[@]}"; worst $?
 fi
 
+# A rehearsal's result must never pass for a real one.
+if [ -f "$REPO/proofs/g2.json" ]; then
+  node "$REPO/tools/test/check-g2-proof.mjs" "$REPO/proofs/g2.json" || worst 1
+fi
+if grep -rlq 'rehearsal-regtest-mock-signer' "$REPO/proofs" 2>/dev/null; then
+  echo "OUTWARD FAIL: a rehearsal's proof is in proofs/"
+  worst 1
+fi
+
 # An account id in a config file links the deploy to a Cloudflare account.
 while IFS= read -r -d '' f; do
   case "$f" in

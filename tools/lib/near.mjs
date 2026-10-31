@@ -32,7 +32,13 @@ export function parseSecretKey(text) {
 
 /** near-cli's legacy file, or a node's validator_key.json. The secret never leaves this process. */
 export function loadKeyFile(path) {
-  const data = JSON.parse(readFileSync(path, 'utf8'));
+  let data;
+  try {
+    data = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (err) {
+    // Node quotes the text around a parse error, and here that text is a key.
+    throw new Error(err.code ? `key file: ${err.code}` : 'key file is not JSON');
+  }
   const text = data.private_key ?? data.secret_key;
   if (!text) throw new Error('key file has no key');
   return { ...parseSecretKey(text), accountId: data.account_id };
@@ -114,6 +120,8 @@ export class Near {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: (this.id += 1), method, params }),
+      // Signed transactions stay on the host that was asked for.
+      redirect: 'error',
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     const text = await res.text();

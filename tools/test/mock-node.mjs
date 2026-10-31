@@ -20,7 +20,8 @@ export function answer({ secret, tweakHex, payloadHex }) {
   };
 }
 
-export function startMockNode({ near, mock, responder, secret, pollMs = 150 }) {
+/** `respond` may change the answer, or return null to stay silent. `again` answers a repeated request. */
+export function startMockNode({ near, mock, responder, secret, pollMs = 150, respond = answer, again = false }) {
   let stopped = false;
   const answered = new Set();
   const loop = async () => {
@@ -30,9 +31,11 @@ export function startMockNode({ near, mock, responder, secret, pollMs = 150 }) {
         for (const request of pending) {
           const id = `${request.tweak}:${request.payload.Ecdsa}`;
           if (answered.has(id)) continue;
+          const response = respond({ secret, tweakHex: request.tweak, payloadHex: request.payload.Ecdsa });
+          if (!response) continue;
           answered.add(id);
-          const response = answer({ secret, tweakHex: request.tweak, payloadHex: request.payload.Ecdsa });
           await near.send(responder, mock.accountId, [action.call('respond', { request, response }, 100n * TGAS, 0n)]);
+          if (again) setTimeout(() => answered.delete(id), 3000);
         }
       } catch {
         // A mock's poll failing is not news. The driver's own timeout reports what matters.

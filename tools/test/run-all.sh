@@ -27,11 +27,13 @@ record="$(mktemp)"
 trap 'rm -f "$record"' EXIT
 step "vendored noble matches its manifest" node "$TOOLS/vendor/noble/vendor.mjs" --check
 step "offline tests" node --test "$TOOLS/test/offline.test.mjs"
+step "G2 checks, offline" node --test "$TOOLS/test/g2-units.test.mjs"
 step "human scripts, under shims" env UNDO_NEAR_RECORD="$record" node --test "$TOOLS/test/human-scripts.test.mjs"
 step "near-cli commands against --help, network denied" node "$TOOLS/test/near-cli-check.mjs" "$record"
 step "escape.mjs on a regtest node" node "$TOOLS/test/regtest-escape.mjs"
 [ "$mutants" -eq 0 ] || step "mutants" node "$TOOLS/test/mutants.mjs"
 [ "$sandbox" -eq 0 ] || step "G1 driver and intents on sandbox, protocols 86 and 88" "$TOOLS/test/run-sandbox.sh" 86 88
+[ "$sandbox" -eq 0 ] || step "G2 driver rehearsal: regtest, local NEAR node, mock signer" node "$TOOLS/test/g2-rehearsal.mjs"
 step "identity and secrets in the tree" "$REPO/scripts/check-identity.sh" --tree
 step "secret scan" "$REPO/scripts/secret-scan.sh"
 step "secret scan knows this project's key formats" "$REPO/scripts/test-secret-scan.sh"

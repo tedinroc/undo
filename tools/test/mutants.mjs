@@ -44,6 +44,47 @@ const MUTANTS = [
   ['human-key: dispenser overwrites', 'human-key.mjs', "if (existsSync(path)) {\n    const data", "if (false) {\n    const data"],
   ['human-key: address before read-back', 'human-key.mjs', "if (!back || addressOf('mainnet', fixedHex(back, 32, 'keychain item')) !== address) throw new Error('the Keychain did not keep the key. Nothing to fund');", ''],
   ['human-key: secret on the command line', 'human-key.mjs', "spawnSync('security', ['-i'], {", "spawnSync('security', ['-i', toHex(secret)], {"],
+  ['g2: any status counts as a refusal', 'lib/esplora.mjs', "if (status !== 400) return { kind: 'transient', status, text };", ''],
+  ['g2: a busy node counts as a refusal', 'lib/esplora.mjs', "if (NODE_BUSY.test(text)) return { kind: 'transient', status, text };", ''],
+  ['g2: tip takes an empty answer', 'lib/esplora.mjs', "return trimmed !== '' && Number.isSafeInteger(height) && height >= 0 ? height : undefined;", 'return height;'],
+  ['g2: a 404 reads as no answer needed', 'lib/esplora.mjs', 'const value = text === null ? undefined : parse(text);', "const value = text === null ? [] : parse(text);"],
+  ['g2: anything reads as a coin list', 'lib/esplora.mjs', 'return Array.isArray(list) ? list : undefined;', 'return list ?? undefined;'],
+  ['g2: non-hex reads as bytes', 'lib/esplora.mjs', "return text && /^[0-9a-f]+$/i.test(text) ? text.toLowerCase() : null;", 'return text ?? null;'],
+  ['g2: utxo set answer is not already', 'lib/esplora.mjs', '|already-in-utxo|already in utxo/i', '/i'],
+  ['g2: NEAR follows redirects', 'lib/near.mjs', "      redirect: 'error',\n", ''],
+  ['g2: NEAR key file quoted', 'lib/near.mjs', "throw new Error(err.code ? `key file: ${err.code}` : 'key file is not JSON');", 'throw err;'],
+  ['g2: K_u control keeps the signature', 'lib/g2-check.mjs', 'tx.inputs[0].witness[1] = new Uint8Array(0);', ''],
+  ['g2: CSV control at nSequence csv', 'lib/g2-check.mjs', 'makeTx([coin], file.csv - 1,', 'makeTx([coin], file.csv,'],
+  ['g2: checker takes any label', 'test/check-g2-proof.mjs', "need(p.label === 'live-mutinynet', `its label is ${p.label}, not a live run`);", ''],
+  ['g2: any refusal proves the CSV', 'lib/esplora.mjs', "if (/non-BIP68-final|sequence[- ]locks? (not|on)/i.test(text)) return 'bip68';", "return 'bip68';"],
+  ['g2: a web page counts as a node', 'lib/esplora.mjs', "if (/<html/i.test(text)) return { kind: 'transient', status, text: 'a web page, not a node' };", ''],
+  ['g2: any 2xx counts as accepted', 'lib/esplora.mjs', "return text.toLowerCase() === txid ? { kind: 'accepted', status, text } : { kind: 'transient', status, text: 'a 2xx that does not name this transaction' };", "return { kind: 'accepted', status, text };"],
+  ['g2: redirects followed', 'lib/esplora.mjs', "redirect: 'error', ", ''],
+  ['g2: no look after a 5xx', 'lib/esplora.mjs', "if (seen?.txid === txid) return { kind: 'accepted', status: answer.status, text: answer.text, landed_despite: true };", ''],
+  ['g2: already taken on faith', 'lib/esplora.mjs', "if (seen?.txid === txid) return { kind: 'accepted', status: answer.status, text: answer.text, already: true };", "return { kind: 'accepted', status: answer.status, text: answer.text, already: true };"],
+  ['g2: Esplora allow list ignored', 'lib/esplora.mjs', "if (regtest ? !isLocal(esplora) : !ESPLORA_ALLOW.includes(esplora)) throw new EndpointRefused('that Esplora is not on the allow list');", ''],
+  ['g2: RPC allow list ignored', 'lib/esplora.mjs', "if (regtest ? !isLocal(url) : !NEAR_RPC_ALLOW.includes(url)) throw new EndpointRefused('that NEAR RPC is not on the allow list');", ''],
+  ['g2: rehearsal may use any host', 'lib/esplora.mjs', "u.protocol === 'http:' && LOCAL_HOSTS.has(u.hostname)", 'true'],
+  ['g2: high S not checked', 'lib/g2-check.mjs', "if (toBig(s) > HALF_ORDER) return { reason: 'high_s', detail: name };", ''],
+  ['g2: signature not verified', 'lib/g2-check.mjs', "if (!verifies(r, s, digest, pub)) return { reason: 'bad_signature', detail: name };", ''],
+  ['g2: hash type not checked', 'lib/g2-check.mjs', "if (sig[sig.length - 1] !== 1) return { reason: 'bad_sighash_type', detail: name };", ''],
+  ['g2: padded r allowed', 'lib/g2-check.mjs', "if (lenR > 1 && sig[4] === 0 && !(sig[5] & 0x80)) return 'padded r';", ''],
+  ['g2: padded s allowed', 'lib/g2-check.mjs', "if (lenS > 1 && sig[lenR + 6] === 0 && !(sig[lenR + 7] & 0x80)) return 'padded s';", ''],
+  ['g2: signatures may swap', 'lib/g2-check.mjs', "checkSig(w[0], digest, km, 'K_m') ?? checkSig(w[1], digest, ku, 'K_u')", "checkSig(w[1], digest, ku, 'K_u')"],
+  ['g2: K_u not checked', 'lib/g2-check.mjs', "checkSig(w[0], digest, km, 'K_m') ?? checkSig(w[1], digest, ku, 'K_u')", "checkSig(w[0], digest, km, 'K_m')"],
+  ['g2: amount not compared', 'lib/g2-check.mjs', "if (Number(output.value) !== amount) return { reason: 'wrong_amount', detail: String(output.value) };", ''],
+  ['g2: output not compared', 'lib/g2-check.mjs', "if (!equal(output.spk, to)) return { reason: 'wrong_output', detail: toHex(output.spk) };", ''],
+  ['g2: input not compared', 'lib/g2-check.mjs', "if (input.coin.txid !== coin.txid || input.coin.vout !== coin.vout) return { reason: 'wrong_input', detail: `${input.coin.txid}:${input.coin.vout}` };", ''],
+  ['g2: sequence not compared', 'lib/g2-check.mjs', "if (input.sequence !== sequence) return { reason: 'wrong_sequence', detail: String(input.sequence) };", ''],
+  ['g2: script not compared', 'lib/g2-check.mjs', "if (!equal(input.witness[witnessItems - 1], script)) return { reason: 'wrong_witness_script', detail: 'not the vault script' };", ''],
+  ['g2: read-back skips the bytes', 'lib/g2-check.mjs', "if (hexBack !== rawHex) return { reason: 'readback_bytes', detail: 'the mined bytes differ from the bytes sent' };", ''],
+  ['g2: read-back takes unconfirmed', 'lib/g2-check.mjs', "if (!status?.confirmed || !Number.isInteger(status.block_height)) return { reason: 'readback_not_mined', detail: 'not confirmed' };", ''],
+  ['g2: read-back skips the witness', 'lib/g2-check.mjs', "if (items(vin.witness) !== items(witnessHex)) return { reason: 'readback_witness', detail: 'witness differs' };", ''],
+  ['g2: maturity one block late', 'lib/g2-check.mjs', 'coinHeight + csv - 1', 'coinHeight + csv'],
+  ['g2: dispenser network ignored', 'lib/dispenser.mjs', "if (w.network !== network) throw new Error(`dispenser file is not for ${network}`);", ''],
+  ['g2: dispenser address unchecked', 'lib/dispenser.mjs', "if (p2wpkhAddress(network, pub) !== w.address) throw new Error('dispenser address is not the key\\'s address');", ''],
+  ['g2: unconfirmed coins spent', 'lib/dispenser.mjs', 'utxos.filter((u) => u.status?.confirmed)', 'utxos'],
+  ['g2: dispenser secret enumerable', 'lib/dispenser.mjs', "{ value: secret, enumerable: false }", '{ value: secret, enumerable: true }'],
   ['human 01: no yes needed', '../scripts/human/01-testnet-accounts.sh', 'if [ "$answer" != "yes" ]; then', 'if false; then'],
   ['human 02: no yes needed', '../scripts/human/02-dispenser-address.sh', 'if [ "$answer" != "yes" ]; then', 'if false; then'],
   ['human 03: no yes needed', '../scripts/human/03-funding-key.sh', 'if [ "$answer" != "yes" ]; then', 'if false; then'],
@@ -60,14 +101,28 @@ const only = process.argv[2];
 let survived = 0;
 let notApplied = 0;
 const base = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'undo-mutants-'));
+const freshCopy = () => {
+  const repo = join(base, 'repo');
+  rmSync(repo, { recursive: true, force: true });
+  mkdirSync(join(repo, 'proofs'), { recursive: true });
+  cpSync(TOOLS, join(repo, 'tools'), { recursive: true, filter: (p) => !p.includes('rust-check') });
+  cpSync(join(REPO, 'scripts'), join(repo, 'scripts'), { recursive: true });
+  return repo;
+};
+const runTests = (repo) => spawnSync('node', ['--test', join(repo, 'tools/test/offline.test.mjs'), join(repo, 'tools/test/g2-units.test.mjs'), join(repo, 'tools/test/human-scripts.test.mjs')], {
+  encoding: 'utf8', env: { ...process.env, UNDO_BLOCKED_WORDS: resolve(REPO, '../plan/blocked-words.txt') }, timeout: 180_000,
+});
 try {
+  // The control. If the tests fail on an unbroken copy, every mutant below would read as killed.
+  const control = runTests(freshCopy());
+  if (control.status !== 0) {
+    console.log(`CONTROL FAILED: the tests do not pass on an unbroken copy, so no score means anything.\n${control.stdout.split('\n').filter((l) => l.startsWith('not ok')).join('\n')}`);
+    process.exit(2);
+  }
+  console.log('control passed: the tests pass on an unbroken copy');
   for (const [name, file, from, to] of MUTANTS) {
     if (only && !name.includes(only)) continue;
-    const repo = join(base, 'repo');
-    rmSync(repo, { recursive: true, force: true });
-    mkdirSync(repo, { recursive: true });
-    cpSync(TOOLS, join(repo, 'tools'), { recursive: true, filter: (p) => !p.includes('rust-check') });
-    cpSync(join(REPO, 'scripts'), join(repo, 'scripts'), { recursive: true });
+    const repo = freshCopy();
     const path = resolve(repo, 'tools', file);
     const text = readFileSync(path, 'utf8');
     if (!text.includes(from)) {
@@ -76,8 +131,7 @@ try {
       continue;
     }
     writeFileSync(path, text.replace(from, to));
-    const env = { ...process.env, UNDO_BLOCKED_WORDS: resolve(REPO, '../plan/blocked-words.txt') };
-    const r = spawnSync('node', ['--test', join(repo, 'tools/test/offline.test.mjs'), join(repo, 'tools/test/human-scripts.test.mjs')], { encoding: 'utf8', env, timeout: 180_000 });
+    const r = runTests(repo);
     if (r.status === 0) {
       console.log(`SURVIVED ${name}`);
       survived += 1;
