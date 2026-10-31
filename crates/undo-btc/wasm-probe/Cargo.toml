@@ -1,0 +1,23 @@
+[package]
+name = "undo-btc-wasm-probe"
+version = "0.0.1"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+undo-btc = { path = ".." }
+
+[workspace]
+
+# Same as the repo's release profile, so the scan sees what a contract build would keep.
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

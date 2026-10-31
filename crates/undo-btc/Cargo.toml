@@ -1,0 +1,33 @@
+[package]
+name = "undo-btc"
+description = "Bitcoin side of Undo: the two-branch P2WSH script, BIP-143 sighash, witness assembly and the recovery file."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+# The default build has no dependencies, so a contract can use it from wasm and supply its own
+# SHA-256 through the `Sha256` trait. `tools` adds signing, the recovery file and the dry run.
+[features]
+default = []
+sha2 = ["dep:sha2"]
+tools = ["sha2", "dep:bitcoin", "dep:serde", "dep:serde_json"]
+
+[dependencies]
+sha2 = { version = "0.10", optional = true }
+bitcoin = { version = "0.32", optional = true, features = ["bitcoinconsensus"] }
+serde = { version = "1", optional = true, features = ["derive"] }
+serde_json = { version = "1", optional = true }
+
+[dev-dependencies]
+# Turns `tools` on for this crate's own tests, so a bare `cargo test -p undo-btc` runs them all.
+undo-btc = { path = ".", features = ["tools"] }
+# Independent checkers. Nothing in src/ is checked only against itself.
+bitcoin = { version = "0.32", features = ["bitcoinconsensus"] }
+sha2 = "0.10"
+serde_json = "1"
+
+[[bin]]
+name = "recovery-dry-run"
+required-features = ["tools"]
