@@ -1,0 +1,108 @@
+# Attack review: regression map
+
+An attack review ran before this contract existed, against an earlier prototype and against the
+design text. It produced 24 findings, numbered here from 0. Its scratch tests were ported into this
+repo. This file says where each one went.
+
+Run everything on protocols 86 and 88:
+
+```
+scripts/build.sh
+scripts/protocol-check.sh
+```
+
+Every test here uses the mock signer or libbitcoinconsensus. None of them has touched a live network.
+
+## Ported tests
+
+The review's four scratch files, test by test. "Control" means the test shows the attack really is
+valid to Bitcoin, so the check that stops it has to live elsewhere. A control passing is the expected
+result, and its partner is the test that shows the refusal.
+
+| Review test | Finding | Ported as | Result expected now |
+|---|---:|---|---|
+| `script.rs: branches` | 4 | `review_script: f4_two_branches_behave_as_drawn` | The two branches behave as drawn. `K_e` has no co-sign slot. |
+| `script.rs: fee_swap_two_sessions` | 0 | `review_script: f0_fee_swap_two_sessions_valid` | Control. 999,500 sats of real fee at a declared 1,000. |
+| `script.rs: fee_swap_many_inputs` | 0 | `review_script: f0_fee_swap_many_inputs_valid` | Control. |
+| `script.rs: fee_swap_big_coin_plus_dust_is_bounded` | 0 | `review_script: f0_fee_swap_big_coin_plus_dust_valid` | Control. |
+| `script.rs: csv_operand_abuse` | 15 | `review_script: f15_csv_operand_abuse`, `review_contract: f15_create_vault_refuses_csv_abuse` | The library accepts the operands. The crate and the contract refuse them. |
+| `script.rs: consensus_lib_blind_spots` | 15 | `review_script: f15_consensus_lib_blind_spots` | The library accepts all four. The crate's bytes are the minimal, low-S forms. Coin age is left to regtest in `crates/undo-btc`. |
+| `script.rs: key_collisions` | 1 | `review_script: f1_key_collisions_valid_but_cannot_be_built` | Control, plus the crate refusing to build them. |
+| `contract.rs: contract_digests_compose_into_uncapped_fee` | 0 | `review_contract: f0_contract_digests_do_not_compose` | A second multi-input session is refused while held and after, by the pin. A lone re-declared signature cannot join the first session. The same test carries a control with the signature the contract refused. |
+| `contract.rs: false_amount_pins_outpoint_forever` | 0 | `review_contract: f0_false_amount_no_longer_freezes_a_coin` | `reclaim` gets the coin back after `T_stuck`, and its spend passes consensus. |
+| `contract.rs: cancel_keeps_storage_and_free_for_all_on_outpoint` | 5 | `review_contract: f5_cancel_cycle_keeps_no_storage` | Five cycles leave storage and credit exactly where they were. |
+| `contract.rs: create_vault_accepts_foreign_or_junk_keys` | 1 | `review_contract: f1_create_vault_refuses_foreign_or_junk` | An attacker's `K_m` never activates and leaves no row. Junk keys, missing proofs and out-of-range delays are refused. |
+| `contract.rs: public_relay_key_allowance_is_burned_by_failing_calls` | 10 | `review_relay: f10_griefed_general_key_cannot_stop_a_cancel_on_the_owner_key` | The burn still happens, because that is NEAR's behaviour. A cancel on a separate key still lands. |
+| `contract.rs: contract_at_storage_floor_loses_on_signed` | 11 | `review_contract: f11_on_signed_stores_with_zero_credit_at_the_floor`, `f11_control_without_the_reservation_fails_on_storage` | With zero credit and only the reservation in the account, the signature is stored. With nothing kept, the same steps fail with `LackBalanceForState`. |
+| `relay.rs: relay_burn` | 10 | `review_relay: f10_griefed_general_key_...`, `f10_measure_failing_call_cost_by_prepaid_gas` | Prints what a failing call holds and what it finally spends. |
+| `fckey.rs: fc_key_deposit_and_large_gas` | 19 | `review_fckey: f19_function_call_key_proposes_against_credit`, `f19_measure_allowance_needed_for_execute` | A deposit through the key is refused by the protocol. A proposal with none passes on credit. Execute runs through the key at 8 inputs, and the needed allowance is printed. |
+
+## Added for findings the scratch files did not exercise
+
+| Test | Finding |
+|---|---:|
+| `review_contract: f5_thief_requests_die_with_rotation_and_decoys_are_capped` | 5 |
+| `review_contract: f8_callback_checks_attempt_and_digest` | 8 |
+| `review_contract: f8_reclaim_needs_fresh_half_signature` | 8 |
+| `review_contract: f13_execute_takes_caller_gas_and_survives_a_junk_signer` | 13 |
+| `review_contract: f14_sixteen_input_exit_through_the_named_override` | 14 |
+| `review_contract: f17_webauthn_fixtures` | 17 |
+| `review_contract: f18_request_expires` | 18 |
+| `review_contract: f22_vault_id_cannot_be_squatted` | 22 |
+
+## Added by the third review
+
+| Finding | Test |
+|---|---|
+| A pre-signed chain gave N CSV restarts | `review2: chain_on_*`, `a_chain_built_backwards_*`, `reclaim_of_a_young_coin_*`, `change_is_born_*`, and in `crates/undo-core/props`: `chain_bound`, `a_signed_chain_grows_*`, `a_chain_built_backwards_*` |
+| `raise_fee_cap` leaned on the contract's balance at zero credit | `review2: raise_fee_cap_at_zero_credit_leaks_nothing` |
+| Reservation rules untested | `review2: a_request_lives_on_its_reservation_*`, `panic_button_and_cold_key_*`, `reclaim_is_refused_when_*`, with a mutant for each constant both ways in `scripts/shell-mutants.py` |
+| Mutants that survived the suite | `review2: creation_proofs_bind_*`, `a_refused_vault_*`, `an_inactive_vault_*`, `only_the_account_*`, `too_little_gas_*`, `the_sign_deposit_*`, `malformed_*`, `on_signed_drops_*`, `the_free_views_*`, and `scenarios: reclaim_is_refused_while_the_slot_is_held` |
+
+## All findings
+
+| # | Severity | Finding, short | Where it is covered | Not yet covered |
+|---:|---|---|---|---|
+| 0 | critical | Fee swap across signing sessions | `review_script`, `review_contract`, proptests in `crates/undo-core/props` | - |
+| 1 | high | `K_m` never verified | `review_script`, `review_contract` | Real signer callback gas. |
+| 2 | high | Passkey thief locks the owner out | `crates/undo-core/props`, `review1: recovery_cap_*`, `freeze_and_unfreeze_on_the_wasm`, `veto_grant_on_the_wasm` | - |
+| 3 | high | Self-spends reset CSV | Slot rule and chain wait in `crates/undo-core/props`, `review1: slot_covers_spends_with_change_on_the_wasm`, `review2: chain_on_*` | A chain of restarts on regtest. |
+| 4 | high | Young-coin claims | `review_script`, `crates/undo-btc/tests`, `review1: recovery_cap_*` | - |
+| 5 | high | Pending requests survive rotation, unlimited decoys | `review_contract` | Phone-page sorting. |
+| 6 | high | Passkey is blind signing | Grant delay in `crates/undo-core/props`, BE and BS flags in `f17`, `review1: veto_grant_on_the_wasm` | Page hash. |
+| 7 | high | Printed mainnet plan | Plan change, no test | - |
+| 8 | high | `bump` and `reclaim` could not complete | `review_contract`, `crates/undo-core/props` | `bump` is not in the shell. |
+| 9 | high | Bare `K_e` cannot escape | `crates/undo-btc/tests/recovery.rs` | Browser and Node tools. |
+| 10 | high | Public relay key griefable | `review_relay` | The relay itself. |
+| 11 | high | Sponsored storage, callback lost at floor | `review_contract` | Live relay ceiling. |
+| 12 | high | Upgrade window and expiry | Nothing yet | The upgrade queue is not built. |
+| 13 | medium | Signer outage while the owner is away | `review_contract` | Canary, `status` text. |
+| 14 | medium | Fee cap strands exits | `review_contract`, `crates/undo-core/props` | Mainnet cap sizing. |
+| 15 | medium | Consensus-lib overclaim, CSV operand | `review_script`, `review_contract`, `crates/undo-btc/tests/regtest.rs` | - |
+| 16 | medium | `K_e` intents undefined | Intent format in `contracts/undo/src/auth.rs`, tested through `cold_key_cancel`, `review1`, and `tools/freeze.mjs` in `tools/test/sandbox-intents.mjs` | - |
+| 17 | medium | WebAuthn checks incomplete | `review_contract` | A real phone assertion. Software authenticator only here. |
+| 18 | medium | Request expiry undefined | `review_contract`, `crates/undo-core/props` | - |
+| 19 | medium | Agent mode against protocol limits | `review_fckey` | Live allowance. |
+| 20 | medium | Committed sentence as key material | No such key exists. Secret scan in `scripts/secret-scan.sh`. | - |
+| 21 | medium | Guard claims overstate | Hold rule in `crates/undo-core/props` | `assess` is not in the shell. |
+| 22 | medium | Vault id squat | `review_contract` | - |
+| 23 | low | EVM path compiled by default | No EVM code in the contract, `scripts/check-wasm.sh` | - |
+
+## Second review
+
+A second review ran these as working attacks against the earlier shell, on the real wasm. Each is now
+covered here, on protocols 86 and 88.
+
+| Finding | Test | Result expected now |
+|---|---|---|
+| `on_signed` lost at spend 141, row grew 432 bytes a spend | `review1_growth: history_does_not_weigh_on_the_callback` | 150 completed spends, every signature kept, callback flat. Requests and ledger entries have their own storage keys. |
+| Signed requests never left | `review1: prune_returns_the_bytes_and_keeps_the_transaction`, `pins_survive_in_their_own_storage_entries`, `crates/undo-core/props: signed_requests_prune_after_the_window_and_pins_stay` | The bytes come back, the log carries the transaction, the pin and `reclaim` still work. |
+| A dead request's coin needs its ledger entry loaded | `review1: dead_requests_free_coins_the_sweeping_call_does_not_name` | The coin is free again even when the call names another coin. |
+| Foreign or off-curve escape key activated | `review1: escape_key_needs_proof_of_possession` | Refused for a foreign key, a key above the field prime, an x with no point, and an untagged proof. |
+| Rotate, fee override and reclaim had no negative tests | `review1: rotate_needs_*`, `raise_fee_cap_needs_*`, `reclaim_needs_*` | Wrong key, wrong args, stale nonce and past expiry are each refused, and replay after success. |
+| A second `on_derived` could delete a live vault | `review1: second_on_derived_leaves_an_active_vault_alone`, `racing_activate_delivers_two_callbacks_and_keeps_the_vault` | The second callback does nothing. |
+| Slot bypassed by a dust spend with change | `crates/undo-core/props: a_spend_with_change_needs_the_slot_like_a_self_spend`, `a_day_of_change_spends_is_bounded_by_the_slot`, `review1: slot_covers_spends_with_change_on_the_wasm` | Refused while the slot is taken, and one per `T_new` over a day when the budget does not bind first. |
+| `freeze`, `unfreeze`, `veto_grant`, `recover_*` not in the wasm | `review1: freeze_and_unfreeze_on_the_wasm`, `veto_grant_on_the_wasm`, `recovery_needs_*`, `recovery_cap_on_the_test_coin_constants`, `recovery_cap_on_the_mainnet_proof_constants`, `cold_methods_need_no_credit`, `tools/test/sandbox-intents.mjs` | Exported and tested. Third cancel refused, and the owner is back within 3 x `T_recover` at each instance's constants. |
+| Secret scan missed this project's key formats | `scripts/test-secret-scan.sh` | `cold_key`, `secret` and a bare seed line are hits. `proofs/vault-recovery.json` is ignored by git. |
+
+`scripts/shell-mutants.py` carries the four mutants that survived, plus one for each new rule.

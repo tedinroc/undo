@@ -1,0 +1,20 @@
+[package]
+name = "mock-signer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+near-sdk = "5.30"
+k256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa"] }
+sha3 = { version = "0.10", default-features = false }
+hex = "0.4"
+bs58 = "0.5"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(near)'] }
