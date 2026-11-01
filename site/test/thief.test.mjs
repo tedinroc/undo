@@ -627,7 +627,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await js(DRIFT_PROBE);
     const callsBefore = relay.calls.length;
     await waitState('firing', 40_000);
-    assert.equal(await clockText(), '0:00.0');
+    await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
     await assertFrame('firing');
     await waitFor('execute', async () => relay.calls.slice(callsBefore).includes('execute'), 10_000);
     await shot('15-firing');
@@ -817,7 +817,8 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await fastForwardToLeft(req.unlock, 4_000);
     await waitState('firing', 30_000);
     await waitFor('the firing words', async () => /relay is down/.test(await textOf('note')), 15_000);
-    assert.equal(await clockText(), '0:00.0');
+    // The read that accepts a fast-forward can be the one that reaches zero, and the digits draw on the next frame.
+    await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
     await assertFrame('firing, relay down');
     await shot('26-relay-down-firing');
     relay.dead = false;
