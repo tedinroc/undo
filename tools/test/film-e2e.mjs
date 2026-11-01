@@ -39,6 +39,7 @@ const REAL_WAIT = argv.includes('--real-wait');
 const SHOTS = flag('--shots');
 const REPORT = flag('--report');
 const ONLY = (flag('--only') ?? '1,2,3').split(',').map(Number);
+const BEAT = 'undo-test-only:film-e2e-beat';
 const FIVE_MINUTES = 300_000;
 // As on the deployed relay: real proof of work and real ceilings on the main worker.
 const POW_BITS = '18';
@@ -209,7 +210,7 @@ async function toWorkerd(req, res, url) {
   const chunks = [];
   for await (const c of req) chunks.push(c);
   const headers = { 'cf-connecting-ip': req.socket.remoteAddress ?? '127.0.0.1' };
-  for (const name of ['content-type', 'origin']) if (req.headers[name]) headers[name] = req.headers[name];
+  for (const name of ['content-type', 'origin', 'x-undo-beat']) if (req.headers[name]) headers[name] = req.headers[name];
   const worker = await mf.getWorker(apiWorker);
   const answer = await worker.fetch(`${stage.origin}${url.pathname}${url.search}`, { method: req.method, headers, body: chunks.length ? Buffer.concat(chunks) : undefined });
   res.writeHead(answer.status, Object.fromEntries(answer.headers));
@@ -247,8 +248,8 @@ async function startEverything() {
     DISPENSER_NETWORK: 'regtest',
     IP_SALT: 'undo-test-only:film-e2e',
     POW_BITS,
+    BEAT_TOKEN: BEAT,
   };
-  const create = RELAY_METHODS.create_vault.costMicro;
   const propose = RELAY_METHODS.propose_btc.costMicro;
   const execute = RELAY_METHODS.execute.costMicro;
   const { Miniflare } = loadMiniflare();
@@ -258,8 +259,10 @@ async function startEverything() {
     pages: {
       // No state name: the deployed default. Default ceilings.
       main: { bindings: common },
-      // Just room for one vault, one proposal and one execute.
-      low: { bindings: { ...common, UNDO_STATE_NAME: 'low', CEILING_GENERAL_MICRO: String(create + propose + execute) } },
+      // Run 3 makes and funds its vault here, so its address has fresh limits.
+      film3: { bindings: { ...common, UNDO_STATE_NAME: 'film3' } },
+      // No new vault fits. One proposal and one execute do.
+      low: { bindings: { ...common, UNDO_STATE_NAME: 'low', CEILING_GENERAL_MICRO: String(propose + execute) } },
     },
   });
   await mf.ready;
@@ -516,10 +519,11 @@ async function tapCancel(v, { lastRequest }) {
   check('CANCELLED on the thief tab', (await thief.text('.stamp-text')) === 'CANCELLED' && await thief.visible('.stamp-text'));
   check('That key can\'t ask again, on the phone', (await phone.text('#key-line')) === 'That key can\'t ask again.');
   check('That key can\'t ask again, on the thief tab', await thief.visible('#stamp-line') && (await thief.text('#stamp-line')) === 'That key can\'t ask again.');
-  const fragment = new URLSearchParams((await phone.js('location.hash')).slice(1));
-  const hash = fragment.get('tx');
+  const hash = await phone.waitFor('the hash, once the chain says the cancel ran', () => phone.js('document.querySelector("#near-tx .hash")?.innerText ?? null'), 15_000);
+  note('tap to the hash on the phone, ms', Date.now() - tapAt);
   const shown = await phone.js('document.body.innerText');
   check('the phone shows the hash and names its chain', Boolean(hash) && shown.includes('local NEAR sandbox tx') && shown.includes(hash), hash);
+  check('no hash in the link: nothing a screen claims can be written into a link', !(await phone.js('location.hash')).includes('tx='));
   await thief.shot('frozen');
   await phone.shot('cancelled');
 
@@ -659,8 +663,9 @@ async function runExecute() {
 
 async function runCeiling() {
   currentRun = 'run3';
-  apiWorker = 'low';
+  apiWorker = 'film3';
   const v = await makeVaultFromPhone({ reopen: true });
+  apiWorker = 'low';
   await sleep(10_500); // The relay's status cache.
   const near = await (await fetch(`${stage.origin}/api/relay`)).json();
   check('near the ceiling: no new vault fits, one more film does', near.general.up === false && near.general.calls_fit === true, JSON.stringify(near.general));
@@ -668,16 +673,21 @@ async function runCeiling() {
   const { requestId } = await pressSend(v);
   check('the armed line stays on while this film still fits', (await thief.js('document.getElementById("root").dataset.auto')) === 'armed', await thief.text('#auto'));
 
-  // Whatever room is left goes, on an execute the contract refuses as early, and then the general key is refused.
-  const general = (method, args) => fetch(`${stage.origin}/api/relay`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ method, args }) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  // An early execute is refused before the key signs, and charges nothing.
+  const general = (method, args) => fetch(`${stage.origin}/api/relay`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-undo-beat': BEAT }, body: JSON.stringify({ method, args }) }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const generalAtStart = await keyNonce(stage.relay.publicKey);
+  const early = [];
+  for (let i = 0; i < 6; i += 1) early.push(await general('execute', { vault: v.vaultHex, request: requestId }));
+  check('an execute before the unlock is refused by the relay, with nothing sent', early.every((o) => o.body.code === 'would_refuse') && (await keyNonce(stage.relay.publicKey)) === generalAtStart, early.map((o) => o.body.code).join(' '));
+
+  // What is left goes as a day's traffic would have used it, and then the general key is refused.
+  const ns = await mf.getDurableObjectNamespace('UNDO_STATE', 'undo-cron');
+  const filled = await (await ns.get(ns.idFromName('low')).fetch('https://do/addCost', { method: 'POST', body: JSON.stringify({ key: 'general', cost: RELAY_METHODS.execute.costMicro, now: Date.now(), ceiling: 1e12 }) })).json();
+  must('the rest of the general ceiling is spent', filled.ok === true, JSON.stringify(filled));
   const burst = await Promise.all(Array.from({ length: 6 }, () => general('execute', { vault: v.vaultHex, request: requestId })));
   const codes = burst.map((o) => o.body.code ?? 'sent');
-  note('the first burst', codes.join(' '));
-  check('the general key reaches its ceiling', codes.includes('daily_ceiling'), codes.join(' '));
-  for (const landed of burst.filter((o) => o.body.ok)) {
-    const seen = await settled(landed.body.hash);
-    check('the contract refused the early execute in its own words', /NotUnlocked/.test(failureOf(seen) ?? ''), failureOf(seen));
-  }
+  note('the burst at the ceiling', codes.join(' '));
+  check('the general key is at its ceiling', codes.includes('daily_ceiling') && !codes.includes('sent'), codes.join(' '));
   await sleep(10_500); // The relay's status cache.
   const status = await (await fetch(`${stage.origin}/api/relay`)).json();
   check('status: general at its ceiling, owner up', status.general.up === false && status.general.why === 'daily_ceiling' && status.owner.up === true, JSON.stringify({ general: status.general, owner: status.owner }));

@@ -97,6 +97,10 @@ html, body { min-height: 100%; }
 .rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(28 * var(--u)); line-height: calc(36 * var(--u)); color: #CFCFCF; }
 .row { margin: 0 0 calc(10 * var(--u)); }
 .row:empty { display: none; }
+/* The node's words stay on after the refused screen, cut to fit. The whole answer is on its title. */
+.node-row { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; color: var(--dim); }
+/* A sentence about what is wrong now takes its place, so the frame still fits. */
+.rows:has(#note:not(:empty)) .node-row { display: none; }
 .rows .note { font-family: var(--sans); font-size: calc(32 * var(--u)); line-height: calc(40 * var(--u)); }
 .hold { display: none; color: var(--white); }
 .hold.on { display: block; }
@@ -128,11 +132,11 @@ html, body { min-height: 100%; }
 #root[data-dim="1"] #clock { opacity: 0.35; }
 
 /* signed: plain, no stamp */
-#root[data-state="signed"] .under-clock, #root[data-state="signed"] .fuse, #root[data-state="signed"] #near-row { display: none; }
+#root[data-state="signed"] .under-clock, #root[data-state="signed"] .fuse, #root[data-state="signed"] #near-row, #root[data-state="signed"] #node-row { display: none; }
 
 /* frozen: digits white and still, stamp once */
 #root[data-state="frozen"] #clock { color: var(--white); }
-#root[data-state="frozen"] .under-clock, #root[data-state="frozen"] .fuse, #root[data-state="frozen"] .wait-label, #root[data-state="frozen"] #near-row { display: none; }
+#root[data-state="frozen"] .under-clock, #root[data-state="frozen"] .fuse, #root[data-state="frozen"] .wait-label, #root[data-state="frozen"] #near-row, #root[data-state="frozen"] #node-row { display: none; }
 #root[data-state="frozen"] .stamp { display: block; animation: stamp 133ms steps(1) both; }
 #root[data-state="frozen"] .flash-white { animation: flash-white 66ms steps(1) both; }
 #root[data-no-reading="1"] #clock { visibility: hidden; }
@@ -148,7 +152,7 @@ html, body { min-height: 100%; }
 
 /* A laptop on a tripod: the digits take the screen. */
 @media (min-aspect-ratio: 1/1) {
-  :root { --u: min(calc(100vw / 1500), calc(100vh / 950)); --top: 130; --clock-top: 96; --digit: min(38vw, 66vh); }
+  :root { --u: min(calc(100vw / 1500), calc(100vh / 950)); --top: 130; --clock-top: 96; --digit: min(38vw, 60vh); }
   .chip { top: calc(28 * var(--u)); }
   .wordmark { top: calc(28 * var(--u)); }
   .glow { background: radial-gradient(70vw 70vh at 50% 45%, rgba(255,59,48,1) 0%, rgba(255,59,48,0.62) 30%, rgba(255,59,48,0.22) 62%, rgba(255,59,48,0) 100%); }
@@ -160,6 +164,9 @@ html, body { min-height: 100%; }
   .rows { position: absolute; left: 0; right: 0; bottom: calc(16 * var(--u)); margin: 0 calc(64 * var(--u)); }
   /* The stamp's line takes that room on a landscape screen, and the digits above it may not move to make any. */
   #root[data-state="frozen"] .rows { display: none; }
+  /* No scrollbar can appear at the stamp: it would move the digits sideways in the shot. */
+  #root[data-state="frozen"] #wait { height: 100vh; overflow: hidden; }
+  .node-row { -webkit-line-clamp: 1; }
   .under-clock { margin-top: calc(-30 * var(--u)); }
 }
 

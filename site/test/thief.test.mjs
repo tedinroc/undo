@@ -947,7 +947,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     }
   });
 
-  test('a vault whose beat has gone quiet: the page beats first, so the wait reads 5:00 and not the longer one', { timeout: 120_000 }, async () => {
+  test('a vault whose beat has gone quiet: the thief can\'t beat for the guard, so the wait is the contract\'s longer one, and the page says so', { timeout: 120_000 }, async () => {
     const v = await makeVault();
     const start = (await reader.blockTime()).blockMs;
     await fastForwardToLeft(start + 21 * 60_000 + 15_000, 10_000);
@@ -955,11 +955,160 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await views.delayNow(v.vaultHex), 600_000, 'unbeaten, it reads longer');
     await toArmed(v, {});
     assert.equal(await js('document.getElementById("root").dataset.delayMs'), '600000', 'and the page reports that before the press');
+    assert.match(await textOf('armed-note'), /guard has gone quiet.*10:00/);
     relay.calls.length = 0;
     const r = await pressToWaiting();
-    assert.deepEqual(relay.calls.slice(0, 2), ['heartbeat', 'propose_btc']);
+    assert.deepEqual(relay.calls.slice(0, 1), ['propose_btc'], 'no heartbeat');
+    assert.equal(relay.calls.includes('heartbeat'), false);
     const req = await views.request(v.vaultHex, r);
-    assert.equal(req.unlock - req.proposed_at, 300_000);
+    assert.equal(req.unlock - req.proposed_at, 600_000);
+  });
+
+  /** Runs in every new document until `undo`. `window.__patch(method, data)` may rewrite an RPC answer. */
+  async function patchRpc(source) {
+    const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      const real = window.fetch;
+      const patch = ${source};
+      window.fetch = async (url, init) => {
+        const res = await real(url, init);
+        const body = String(init?.body ?? '');
+        if (!body.includes('"jsonrpc"')) return res;
+        const data = await res.clone().json();
+        const next = patch(JSON.parse(body), data);
+        return next ? new Response(JSON.stringify(next), { status: res.status, headers: res.headers }) : res;
+      };
+    })()` });
+    return () => cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+  }
+
+  test('attack 3: null reads from a node a block behind stamp nothing. The contract still reads Pending, and so does the screen', { timeout: 120_000 }, async () => {
+    const v = await makeVault();
+    await toArmed(v, {});
+    const r = await pressToWaiting();
+    for (const count of [1, 2]) {
+      const undo = await patchRpc(`((left) => (sent, data) => {
+        if (left === 0 || sent.params?.method_name !== 'request') return null;
+        left -= 1;
+        window.__nulls = (window.__nulls ?? 0) + 1;
+        return { ...data, result: { ...data.result, result: [...new TextEncoder().encode('null')] } };
+      })(${count})`);
+      await openThief(v, { r });
+      await waitState('waiting', 15_000);
+      await waitFor('the null reads', async () => (await js('window.__nulls ?? 0')) >= count, 15_000);
+      await sleep(600);
+      await undo();
+      assert.equal(await stateNow(), 'waiting', `${count} null reads`);
+      assert.equal(await js('getComputedStyle(document.getElementById("stamp")).display'), 'none');
+    }
+    const after = await views.request(v.vaultHex, r);
+    assert.equal(after.status, 'Pending');
+  });
+
+  test('attack 4: one block read with a clock far ahead: no expired, no firing, and no execute sent', { timeout: 180_000 }, async () => {
+    for (const aheadMs of [7_200_000, 360_000]) {
+      const v = await makeVault();
+      await toArmed(v, {});
+      const r = await pressToWaiting();
+      relay.calls.length = 0;
+      const undo = await patchRpc(`((left) => (sent, data) => {
+        if (left === 0 || sent.method !== 'block') return null;
+        left -= 1;
+        if (window.__reads === undefined) { window.__reads = 0; return null; }
+        window.__reads += 1;
+        return { ...data, result: { ...data.result, header: { ...data.result.header, timestamp_nanosec: String(BigInt(data.result.header.timestamp_nanosec) + ${aheadMs}000000n) } } };
+      })(2)`);
+      await openThief(v, { r });
+      await waitState('waiting', 15_000);
+      await waitFor('the bad read', async () => (await js('window.__reads ?? 0')) >= 1, 15_000);
+      const seen = [];
+      for (let i = 0; i < 10; i += 1) {
+        seen.push(await stateNow());
+        await sleep(200);
+      }
+      await undo();
+      assert.ok(seen.every((state) => state === 'waiting'), seen.join());
+      assert.equal(relay.calls.includes('execute'), false, 'nothing fired');
+      assert.ok(!(await clockText()).startsWith('0:0'), `the digits did not jump: ${await clockText()}`);
+    }
+  });
+
+  test('attack 10: on a short laptop window the stamp fits, and nothing scrolls or moves when it lands', { timeout: 180_000 }, async () => {
+    for (const [width, height] of [[1512, 830], [1280, 720], [1440, 900]]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+      try {
+        const v = await makeVault();
+        await toArmed(v, {});
+        const r = await pressToWaiting();
+        await waitFor('the fling', async () => (await js('document.getElementById("root").dataset.fling')) === 'done', 5000);
+        await sleep(300);
+        const box = () => js('(() => { const c = document.getElementById("clock").getBoundingClientRect(); return { left: Math.round(c.left), top: Math.round(c.top), scroll: document.scrollingElement.scrollHeight <= innerHeight && document.scrollingElement.scrollWidth <= innerWidth }; })()');
+        const before = await box();
+        await rotate(v);
+        await waitState('frozen', 15_000);
+        await sleep(300);
+        const after = await box();
+        assert.deepEqual(after, before, `${width}x${height}: the digits hold still`);
+        assert.equal(after.scroll, true, `${width}x${height}: no scrollbar`);
+        const line = await js('document.getElementById("stamp-line").getBoundingClientRect().bottom');
+        assert.ok(line <= height, `${width}x${height}: the key line ends at ${line}`);
+        assert.ok(r >= 0);
+      } finally {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
+      }
+    }
+  });
+
+  test('attack 14: when the contract answers, the page does not say it was not asked', { timeout: 120_000 }, async () => {
+    const words = 'Smart contract panicked: OutpointBusy';
+    for (const [refusal, sentence] of [
+      [{ code: 'would_refuse', message: 'the contract refused that read', verbatim: words }, 'The NEAR contract refused this.'],
+      [{ code: 'would_refuse', message: 'that proposal is not signed by this vault\'s spend key', verbatim: null }, 'The NEAR contract was not asked.'],
+      [{ code: 'rate_limited', message: 'too many calls', verbatim: null }, 'The NEAR contract was not asked.'],
+    ]) {
+      const v = await makeVault();
+      await toArmed(v, {});
+      relay.refuseAll = { status: 422, body: { ok: false, retry_after_s: null, bucket: null, resets_at: null, ...refusal } };
+      try {
+        await click('send');
+        await waitFor('the sentence', async () => (await textOf('term-1')) === sentence, 20_000);
+        assert.match(await textOf('ask-why'), new RegExp(refusal.code));
+        if (refusal.verbatim) assert.ok((await textOf('ask-why')).includes(words));
+      } finally {
+        relay.refuseAll = null;
+      }
+    }
+  });
+
+  test('attack 17: the node\'s words stay on the wait screen, exactly as sent, and are off the stamp', { timeout: 120_000 }, async () => {
+    const v = await makeVault();
+    await toArmed(v, {});
+    await click('send');
+    await waitState('refused', 15_000);
+    const said = await textOf('node-text');
+    await waitState('waiting', 60_000);
+    await waitFor('the fling', async () => (await js('document.getElementById("root").dataset.fling')) === 'done', 5000);
+    assert.equal(await textOf('node-row'), `local regtest node: ${said}`);
+    assert.equal(await js('document.getElementById("node-row").title'), `local regtest node: ${said}`, 'and all of it, however it is cut');
+    assert.equal(await js('document.getElementById("node-row").checkVisibility()'), true);
+    await assertFrame('waiting, with the node row');
+    await rotate(v);
+    await waitState('frozen', 15_000);
+    assert.equal(await js('document.getElementById("node-row").checkVisibility()'), false);
+    await assertFrame('frozen');
+  });
+
+  test('attack 18: the key leaves the address bar even when the page has no config', { timeout: 60_000 }, async () => {
+    const seed = 'ab'.repeat(32);
+    await cdp.send('Network.setBlockedURLs', { urls: ['*/undo-config.json*'] });
+    try {
+      await cdp.send('Page.navigate', { url: 'about:blank' });
+      await sleep(50);
+      await cdp.send('Page.navigate', { url: `${origin}/t/#v=${'cd'.repeat(32)}&k=${seed}` });
+      await waitFor('the sentence', async () => /no config/.test(await js('document.getElementById("plain-text")?.textContent ?? ""').catch(() => '')), 15_000);
+      assert.equal((await js('location.href')).includes(seed), false);
+    } finally {
+      await cdp.send('Network.setBlockedURLs', { urls: [] });
+    }
   });
 
   test('/thief is the same page', { timeout: 30_000 }, async () => {

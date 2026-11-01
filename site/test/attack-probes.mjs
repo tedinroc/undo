@@ -10,7 +10,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fromHex, toHex } from '../../tools/lib/bytes.mjs';
 import { sha256 } from '../../tools/lib/crypto.mjs';
+import { addressToSpk } from '../../tools/lib/btc.mjs';
 import { signColdIntent } from '../../tools/lib/cold-intent.mjs';
+import { buildFunding, loadDispenser } from '../../tools/lib/dispenser.mjs';
 import { action, failureOf, returnValue, TGAS } from '../../tools/lib/near.mjs';
 import { sendEverything } from '../lib/bitcoin.mjs';
 import { buildCreateArgs, buildPropose, newVaultKeys, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
@@ -166,6 +168,16 @@ async function makeVault(name) {
   return { vaultHex, keys, cred: passkey.cred };
 }
 
+/** The relay only funds vaults it guards, and these are the payer's, so a coin comes straight from the dispenser. */
+async function fundDirect(v) {
+  const vault = await views.vault(v.vaultHex);
+  const dispenser = loadDispenser(stage.rig.info.dispenser, 'regtest');
+  const utxos = await (await fetch(`${stage.config.esplora}/address/${dispenser.address}/utxo`)).json();
+  const made = buildFunding({ dispenser, utxos, payTo: addressToSpk('regtest', vault.address), value: 2000, feeRate: 2 });
+  await stage.rig.rpc('sendrawtransaction', [made.raw]);
+  await stage.rig.mine(1);
+}
+
 const fakeCoin = (value = 2000) => ({ txid: toHex(label(`coin-${counter += 1}`)), vout: 0, value });
 const THIEF_SPK = () => fromHex(`0014${toHex(label('thief')).slice(0, 40)}`);
 
@@ -222,7 +234,7 @@ const probes = {
 
     const vault = await views.vault(v.vaultHex);
     const decoy = await mustPropose(v, { to: fromHex(vault.script_pubkey), coin: fakeCoin(1000) });
-    await waitFor('the page to move to the decoy', async () => (await textOf('#to')) === 'this vault\'s own address');
+    await sleep(2500);
     const dr = await views.request(v.vaultHex, decoy.id);
     const shown = { to: await textOf('#to'), amount: await textOf('#amount'), clock: await clockText(), cancel: await exists('#cancel') };
     await shot('decoy-1-phone-shows-decoy');
@@ -232,14 +244,13 @@ const probes = {
     await fastForwardTo(dr.unlock);
     const exec = await execute(v, decoy.id);
     say('info', 'decoy', 'execute on the decoy', { failure: failureOf(exec.result) });
-    await waitState('too_late', 30_000);
-    await sleep(1500);
+    await sleep(3000);
     const now = (await reader.blockTime()).blockMs;
     const live = await views.request(v.vaultHex, drain.id);
     const after = await views.vault(v.vaultHex);
     await shot('decoy-2-phone-too-late');
     const words = await screenText();
-    say('FINDING', 'decoy', 'phone says too late and has no Cancel, while the drain is still pending and cancellable', {
+    say(await exists('#cancel') ? 'info' : 'FINDING', 'decoy', 'after the decoy is signed, with the drain still pending and cancellable: does the phone keep Cancel?', {
       screen: words.replace(/\s+/g, ' ').slice(0, 200), cancelOnScreen: await exists('#cancel'),
       drain: { status: live.status, epochCurrent: live.epoch === after.spend_epoch, msLeft: live.unlock - now },
     });
@@ -249,7 +260,7 @@ const probes = {
     await fastForwardTo(live.unlock);
     const late = await execute(v, drain.id);
     const signed = await views.request(v.vaultHex, drain.id);
-    say('FINDING', 'decoy', 'the hidden drain then goes through', { failure: failureOf(late.result), status: signed.status });
+    say('info', 'decoy', 'nobody tapped, so the drain goes through', { failure: failureOf(late.result), status: signed.status });
   },
 
   /** A typed or sent link with a request number past the newest. */
@@ -257,7 +268,7 @@ const probes = {
     const v = await makeVault('high-r');
     await mustPropose(v);
     await go(phoneUrl(v, '&r=99999'));
-    await waitState('idle');
+    await waitFor('a screen', async () => ['idle', 'request'].includes(await stateOf()));
     await sleep(1500);
     await shot('highr-nothing-waiting');
     const vault = await views.vault(v.vaultHex);
@@ -269,10 +280,11 @@ const probes = {
     const v = await makeVault('forged');
     const fake = '4'.repeat(44);
     await go(`${phoneUrl(v, `&r=777&tx=${fake}&f=0:07.9`)}`);
-    await waitState('cancelled', 15_000);
+    await waitFor('a screen', async () => ['idle', 'cancelled'].includes(await stateOf()));
+    await sleep(1500);
     await shot('forged-cancelled');
     const vault = await views.vault(v.vaultHex);
-    say('FINDING', 'forgedStamp', 'link stamps CANCELLED with a hash and a key line on a vault where nothing happened', {
+    say(await exists('#stamp') ? 'FINDING' : 'info', 'forgedStamp', 'link stamps CANCELLED with a hash and a key line on a vault where nothing happened', {
       stamp: await textOf('#stamp'), digits: await clockText(), hash: await page('return document.querySelector(".hash")?.innerText;'), keyLine: await textOf('#key-line'),
       contract: { spend_epoch: vault.spend_epoch, k_s_suspended: vault.k_s_suspended, pending: vault.pending },
     });
@@ -296,7 +308,7 @@ const probes = {
       await cold('freeze', { until: (await reader.blockTime()).blockMs + 120_000 });
       await cold('unfreeze', {});
     });
-    await waitState('cancelled', 15_000);
+    await waitState('cancelled', 20_000);
     await shot('freezethaw-phone');
     const vault = await views.vault(v.vaultHex);
     const screenKeyLine = await textOf('#key-line');
@@ -399,7 +411,8 @@ const probes = {
     const r = await views.request(v.vaultHex, id);
     const esplora = await fetch(`${stage.config.esplora}/tx/${r.inputs[0].txid}`).then((x) => x.status);
     const text = (await screenText()).replace(/\s+/g, ' ');
-    say('FINDING', 'declaredLie', 'a made-up coin of 5,000,000 sats reads as the amount, with nothing flagged', { amountOnScreen: await textOf('#amount'), esploraStatusForThatCoin: esplora, anyFlag: /not.*(known|found)|unknown|declared|mismatch/i.test(text) });
+    const flagged = /doesn't know|only what the request claims/.test(text);
+    say(flagged ? 'info' : 'FINDING', 'declaredLie', 'a made-up coin of 5,000,000 sats: is it flagged?', { amountOnScreen: await textOf('#amount'), esploraStatusForThatCoin: esplora, flagged });
   },
 
   /** A link with a junk credential id, then the owner's own link with no `c`. */
@@ -447,7 +460,8 @@ const probes = {
       await waitState('too_late', 10_000);
       await sleep(300);
       await shot('signing-phone');
-      say('FINDING', 'signingWords', 'status Signing, signature not back', { screen: (await screenText()).replace(/\s+/g, ' ') });
+      const screen = (await screenText()).replace(/\s+/g, ' ');
+      say(/The contract signed/.test(screen) ? 'FINDING' : 'info', 'signingWords', 'status Signing, signature not back', { screen });
     });
   },
 
@@ -465,7 +479,7 @@ const probes = {
     });
     await intercept(rpcPattern(), patchView('vault', (r) => (r ? { ...r, address: `"><img src=x onerror="window.__x=3">${pay}` } : undefined)), async () => {
       await go(`${stage.origin}/p/#v=${v.vaultHex}&r=88888`);
-      await waitState('idle');
+      await waitFor('a screen', async () => ['idle', 'request'].includes(await stateOf()));
       await sleep(400);
       results.phoneAddress = await page('return { imgs: document.images.length, x: window.__x ?? null };');
     });
@@ -505,8 +519,7 @@ const probes = {
 
   async nodeWords() {
     const v = await makeVault('words');
-    const paid = await (await fetch(`${stage.origin}/api/funds`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: v.vaultHex }) })).json();
-    if (!paid.ok) throw new Error(`funds: ${JSON.stringify(paid)}`);
+    await fundDirect(v);
     await setViewport(1080, 1350, false, 1);
     const long = `mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), ${'detail <b>x</b> '.repeat(450)}END`;
     await intercept([{ urlPattern: `${stage.config.esplora}/tx` }], async (req) => (req.method === 'POST' ? { status: 400, type: 'text/plain', body: long } : null), async () => {
@@ -655,7 +668,7 @@ const probes = {
         await shot(`futurethief-${name}`);
         const r = await views.request(v.vaultHex, id);
         const now = (await reader.blockTime()).blockMs;
-        say('FINDING', 'futureThief', `one block read ${name} ahead`, { ...seen, chain: { status: r.status, msLeft: r.unlock - now } });
+        say(state === 'waiting' ? 'info' : 'FINDING', 'futureThief', `one block read ${name} ahead`, { ...seen, chain: { status: r.status, msLeft: r.unlock - now } });
       });
       await setViewport(390, 844);
     }
@@ -694,13 +707,13 @@ const probes = {
     const v = await makeVault('forged-live');
     const { id } = await mustPropose(v);
     await go(phoneUrl(v, `&r=777&tx=${'4'.repeat(44)}&f=0:07.9`));
-    await waitState('cancelled', 15_000);
+    await waitFor('a screen', async () => ['request', 'cancelled'].includes(await stateOf()));
     await sleep(1500);
     await shot('forged-over-live-drain');
     const r = await views.request(v.vaultHex, id);
     const vault = await views.vault(v.vaultHex);
     const now = (await reader.blockTime()).blockMs;
-    say('FINDING', 'forgedOverLive', 'CANCELLED on screen while a real drain is pending', { state: await stateOf(), stamp: await textOf('#stamp'), cancel: await exists('#cancel'), drain: { status: r.status, epochCurrent: r.epoch === vault.spend_epoch, msLeft: r.unlock - now } });
+    say(await exists('#stamp') ? 'FINDING' : 'info', 'forgedOverLive', 'is CANCELLED on screen while a real drain is pending?', { state: await stateOf(), stamp: await textOf('#stamp'), cancel: await exists('#cancel'), drain: { status: r.status, epochCurrent: r.epoch === vault.spend_epoch, msLeft: r.unlock - now } });
   },
 
   /** A phone holding no passkey for this vault, on a clean link. */

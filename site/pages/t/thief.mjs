@@ -16,6 +16,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const POLL_MS = 1000;
 const BLOCK_TIME_MS = 5000;
 const STATUS_MS = 30_000;
+const EXPIRED_POLL_MS = 5000;
 const ARMED_MS = 5000;
 const REFUSED_HOLD_MS = 2400;
 const FLING_ROW_MS = 400;
@@ -24,6 +25,9 @@ const EXECUTE_RETRY_MS = 2000;
 const EXECUTE_RESEND_MS = 20_000;
 const SIGNING_RESEND_MS = 30_000;
 const BAD_READS_TO_SAY = 3;
+// A node a few blocks behind answers null for a request it has not reached, in the first seconds after the proposal
+// and after any failover. A stamp cannot be taken back, so a seen request reads as gone only when it stays gone.
+const NULL_READS_TO_BELIEVE = 3;
 const MAX_INPUTS = 16;
 const KEY_PHRASE = 'finished with a false/empty top stack element';
 
@@ -31,7 +35,7 @@ const S = {
   config: null, reader: null, views: null, btc: null, relay: null, instance: null,
   relayStatus: null,
   vaultHex: null, vault: null, requestId: null, request: null, lastKnown: null, read: null,
-  tracker: new SkewTracker(), lastBlockRead: 0, badReads: 0, badReadsShown: false, unseenReads: 0,
+  tracker: new SkewTracker(), lastBlockRead: 0, badReads: 0, badReadsShown: false, unseenReads: 0, nullReads: 0, nodeWords: null,
   seed: null, script: null, coins: [], spend: null, seedOk: false, toOk: false, viewProblem: null, nearDown: null, btcDown: null, feeRate: null,
   nearTx: null, cursor: false, live: false, flung: false, onScreen: null, terminalSince: null, finalTxid: null, broadcasting: false,
   state: 'boot', timings: {},
@@ -249,6 +253,8 @@ function drawArmed() {
   if (S.viewProblem) notes.push(`NEAR contract: ${S.viewProblem}`);
   const relay = relaySentence(S.relayStatus);
   if (relay) notes.push(relay);
+  // Nobody beats on a stranger's say-so, so a vault left alone reads the longer wait, and this page says which.
+  if (S.vault && !S.vault.guard_online && root.dataset.delayMs) notes.push(`This vault's guard has gone quiet, so the contract's wait reads ${digits(Number(root.dataset.delayMs)).short}.`);
   $('armed-note').textContent = notes.join(' ');
   drawSend();
 }
@@ -372,6 +378,7 @@ function retryFromTop() {
 /** Red bar, the one sentence, and the node's own bytes. The string comes from the POST, and only its colour is ours. */
 function showRefused(body) {
   setState('refused', 'refused');
+  S.nodeWords = body;
   $('node-label').textContent = `${S.config.labels.bitcoin} node:`;
   const box = $('node-text');
   box.textContent = '';
@@ -408,7 +415,10 @@ function showAskFailure(err) {
   const sentence = err.code === 'relay_down' ? relaySentence({ reachable: false })
     : err.code === 'daily_ceiling' ? relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } })
       : null;
-  $('term-1').textContent = sentence ?? 'The NEAR contract was not asked.';
+  // Only a call no transaction or view reached may say the contract was not asked.
+  const answered = err.code === 'contract_refused' || (err.code === 'would_refuse' && err.verbatim);
+  const fallback = answered ? 'The NEAR contract refused this.' : err.code === 'no_request' ? 'Sent to the NEAR contract, and no request appeared.' : 'The NEAR contract was not asked.';
+  $('term-1').textContent = sentence ?? fallback;
   root.dataset.why = err.code ?? 'error';
   $('ask-retry').classList.add('on');
   $('ask-retry').onclick = () => {
@@ -419,21 +429,12 @@ function showAskFailure(err) {
   };
 }
 
-/** Beats if the contract reads the guard offline, because a vault with no beat reads a longer wait. Then proposes. */
+/** Proposes. A thief has no business beating for the guard: if it has gone quiet, the wait is the contract's longer one. */
 async function ask() {
   setState('asking', 'wait');
   $('term-1').textContent = 'Asking the NEAR contract';
   $('glow').style.opacity = '0';
-  const vault = await S.views.vault(S.vaultHex);
-  S.vault = vault;
-  if (!vault.guard_online) {
-    await S.relay.call('heartbeat', { vault: S.vaultHex });
-    for (let i = 0; i < 20; i += 1) {
-      await sleep(500);
-      if ((await S.views.vault(S.vaultHex)).guard_online) break;
-    }
-    S.vault = await S.views.vault(S.vaultHex);
-  }
+  S.vault = await S.views.vault(S.vaultHex);
   // A request may already be there from a press whose answer got lost.
   const seenBefore = new Set(S.vault.pending);
   const block = await S.reader.blockTime();
@@ -483,7 +484,7 @@ const memoryKey = () => `undo-thief:${S.vaultHex}:${S.requestId}`;
 
 function remember() {
   try {
-    sessionStorage.setItem(memoryKey(), JSON.stringify({ lastKnown: S.lastKnown, nearTx: S.nearTx }));
+    sessionStorage.setItem(memoryKey(), JSON.stringify({ lastKnown: S.lastKnown, nearTx: S.nearTx, nodeWords: S.nodeWords }));
   } catch {
     // A private window. A reload just reads less.
   }
@@ -495,6 +496,7 @@ function recall() {
     if (saved) {
       S.lastKnown = saved.lastKnown ?? null;
       S.nearTx = saved.nearTx ?? null;
+      S.nodeWords = saved.nodeWords ?? null;
     }
   } catch {
     // Nothing saved.
@@ -508,7 +510,7 @@ function startPolling() {
   const loop = async () => {
     const started = Date.now();
     await poll();
-    const wait = S.read?.terminal ? terminalPollMs() : POLL_MS;
+    const wait = S.read?.terminal ? terminalPollMs() : S.read?.kind === 'expired' ? EXPIRED_POLL_MS : POLL_MS;
     if (wait !== null) setTimeout(loop, Math.max(0, wait - (Date.now() - started)));
   };
   loop();
@@ -568,7 +570,11 @@ function onRead(vault, request) {
   if (request) {
     S.request = request;
     S.lastKnown = request;
+    S.nullReads = 0;
     remember();
+  } else if (S.lastKnown) {
+    S.nullReads += 1;
+    if (S.nullReads < NULL_READS_TO_BELIEVE) return;
   }
   const sample = S.tracker.sample();
   const chainNow = sample.blockMs + (Date.now() - sample.localMs);
@@ -601,6 +607,11 @@ function drawRows() {
     $('dest-row').textContent = `to ${address ?? r.to}  ${satsText(sumOfInputs(r.inputs))}`;
   }
   if (S.nearTx) setHash($('near-row'), nearTxLabel(S.config, S.nearTx), nearTxLink(S.config, S.nearTx));
+  if (S.nodeWords && S.config) {
+    const line = `${S.config.labels.bitcoin} node: ${S.nodeWords}`;
+    $('node-row').textContent = line;
+    $('node-row').title = line;
+  }
 }
 
 function drawHold() {
@@ -830,14 +841,7 @@ function enterExpired() {
 // ---------------------------------------------------------------- boot
 
 async function boot() {
-  try {
-    S.config = await loadConfig();
-  } catch (err) {
-    return plain('no_config', 'This page has no config, so it reads nothing.', { verbatim: err.message });
-  }
-  $('chip').textContent = S.config.labels.chip;
-
-  // The key, if the link had one, comes out of the address bar before anything else happens.
+  // The key, if the link had one, comes out of the address bar before anything else happens, a failed config included.
   S.cursor = /(?:^#|&)cursor=1(?:&|$)/.test(location.hash);
   if (S.cursor) root.dataset.cursor = '1';
   const fields = parseFragment(location.hash);
@@ -847,6 +851,13 @@ async function boot() {
   S.requestId = fields.r ?? null;
   if (S.vaultHex) rewriteFragment();
   else history.replaceState(null, '', location.pathname);
+
+  try {
+    S.config = await loadConfig();
+  } catch (err) {
+    return plain('no_config', 'This page has no config, so it reads nothing.', { verbatim: err.message });
+  }
+  $('chip').textContent = S.config.labels.chip;
 
   S.reader = new NearReader({ urls: [...S.config.rpc] });
   S.views = contractViews(S.reader, S.config.contract);
