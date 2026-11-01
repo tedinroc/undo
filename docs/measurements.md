@@ -9,6 +9,19 @@ scripts/protocol-check.sh --measure    # <target>/measure-<version>.txt
 
 The two protocols agreed to within 0.04 Tgas per method and 0.16 Tgas per transaction, both at `execute` with 16 inputs.
 
+## Last full run
+
+11/1, on the wasm below, sandbox with the mock signer, regtest and the consensus library. Nothing here touched a live network.
+
+| Check | Result |
+|---|---|
+| `scripts/protocol-check.sh` | 125 passed, 0 failed, on each of protocols 86 and 88 |
+| `crates/undo-core/props` | 113 passed, including 105 scenarios |
+| `crates/undo-core/props/mutation-check.py` | 139 of 139 killed, control green |
+| `scripts/shell-mutants.py` | 164 of 164 killed, control green. One lived on the first pass, the view's request epoch, because a fresh vault's epoch is 0: `film_the_phones_cancel_*` now reads the next request's too, and that mutant was re-run alone, not the other 163 |
+| `tools/test/run-all.sh` | Passed: 86 tool mutants killed, G1 driver on both protocols, G2 rehearsal 40 scenarios |
+| `crates/undo-btc` regtest | 2 passed on real bitcoind, including the escape's fee race |
+
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |
