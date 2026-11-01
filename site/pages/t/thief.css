@@ -61,9 +61,10 @@ html, body { min-height: 100%; }
 .caption { position: relative; margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font: 800 calc(72 * var(--u))/calc(80 * var(--u)) var(--sans); letter-spacing: -0.028em; visibility: hidden; }
 .node { position: relative; margin: calc(30 * var(--u)) calc(64 * var(--u)) 0; padding-left: calc(20 * var(--u)); border-left: calc(6 * var(--u)) solid var(--red); overflow-wrap: anywhere; visibility: hidden; }
 .node-label { color: var(--dim); }
-.node.fit-40 { font-size: calc(40 * var(--u)); line-height: calc(52 * var(--u)); }
-.node.fit-32 { font-size: calc(32 * var(--u)); line-height: calc(40 * var(--u)); }
-.node.fit-24 { font-size: calc(24 * var(--u)); line-height: calc(30 * var(--u)); }
+.node.fit-36 { font-size: calc(36 * var(--u)); line-height: calc(43 * var(--u)); }
+.node.fit-30 { font-size: calc(30 * var(--u)); line-height: calc(36 * var(--u)); }
+.node.fit-24 { font-size: calc(24 * var(--u)); line-height: calc(29 * var(--u)); }
+.node.fit-18 { font-size: calc(18 * var(--u)); line-height: calc(22 * var(--u)); }
 .node-text { color: #CFCFCF; white-space: pre-wrap; }
 .node-text .key-phrase { color: var(--white); font-weight: 700; }
 #refused.go .bar-red { animation: slam 133ms cubic-bezier(.55,0,1,.45) both; }
@@ -93,7 +94,7 @@ html, body { min-height: 100%; }
 .fuse-burn { position: absolute; left: 0; right: 0; top: calc(6 * var(--u)); height: calc(14 * var(--u)); background: var(--red); transform-origin: 100% 50%; }
 .fuse-tip { position: absolute; top: 0; height: calc(26 * var(--u)); width: calc(8 * var(--u)); margin-left: calc(-4 * var(--u)); background: var(--white); left: 0; }
 .fuse-mark { position: absolute; right: 0; top: calc(-8 * var(--u)); width: calc(6 * var(--u)); height: calc(42 * var(--u)); background: var(--white); }
-.rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(30 * var(--u)); line-height: calc(38 * var(--u)); color: #CFCFCF; }
+.rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(28 * var(--u)); line-height: calc(36 * var(--u)); color: #CFCFCF; }
 .row { margin: 0 0 calc(10 * var(--u)); }
 .row:empty { display: none; }
 .rows .note { font-family: var(--sans); font-size: calc(32 * var(--u)); line-height: calc(40 * var(--u)); }
@@ -132,10 +133,11 @@ html, body { min-height: 100%; }
 /* frozen: digits white and still, stamp once */
 #root[data-state="frozen"] #clock { color: var(--white); }
 #root[data-state="frozen"] .under-clock, #root[data-state="frozen"] .fuse, #root[data-state="frozen"] .wait-label, #root[data-state="frozen"] #near-row { display: none; }
-#root[data-state="frozen"] .stamp { display: block; animation: stamp 133ms cubic-bezier(.22,1,.36,1) both; }
+#root[data-state="frozen"] .stamp { display: block; animation: stamp 133ms steps(1) both; }
 #root[data-state="frozen"] .flash-white { animation: flash-white 66ms steps(1) both; }
 #root[data-no-reading="1"] #clock { visibility: hidden; }
-@keyframes stamp { from { transform: scale(1.42); } to { transform: none; } }
+/* The animatic's four frames at 30 fps, as jumps, so the last one is still a jump and never a sub-pixel creep. */
+@keyframes stamp { 0% { transform: scale(1.177); } 25% { transform: scale(1.0525); } 50% { transform: scale(1.0066); } 75%, 100% { transform: none; } }
 @keyframes flash-white { 0% { opacity: 0.7; } 50% { opacity: 0.25; } 100% { opacity: 0; } }
 
 /* The recorder's mouse: a screen capture leaves out the real one. Only with cursor=1 in the fragment. */

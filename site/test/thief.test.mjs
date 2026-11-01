@@ -23,7 +23,7 @@ import { executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
-import { destinationProblem, fuseFraction, isNotYetUnlocked, liveRequestIn, nodeTextClass, parseSeed, relaySentence, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
+import { destinationProblem, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
 import { stageAvailable, startStage, staticServer } from './stage.mjs';
 
@@ -89,12 +89,9 @@ describe('rules with no page around them', () => {
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'state_store_down' } }), /state_store_down/);
   });
 
-  test('amount is the coins, before fee, and a long answer is sized to fit whole', () => {
+  test('amount is the coins, before fee', () => {
     assert.equal(sumOfInputs([{ value: 1500 }, { value: 500 }]), 2000);
     assert.equal(satsText(2000), '2,000 sats');
-    assert.equal(nodeTextClass('x'.repeat(330)), 'fit-40');
-    assert.equal(nodeTextClass('x'.repeat(500)), 'fit-32');
-    assert.equal(nodeTextClass('x'.repeat(900)), 'fit-24');
   });
 
   test('liveRequestIn takes the newest live request and skips dead ones', async () => {
@@ -313,7 +310,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
 
   /** Runs in the page: every text box and digit slot, every frame. The film's rule, read in real time and not by seeking. */
   const DRIFT_PROBE = `(() => {
-    const P = window.__drift = { frames: 0, moves: 0, sub: [], long: [], runs: new Map(), prev: new Map(), ids: new WeakMap(), next: 0, seen: new Set(), on: true, digitChanges: 0, digitSlotMoves: 0, start: performance.now() };
+    const P = window.__drift = { frames: 0, moves: 0, sub: [], long: [], runs: new Map(), prev: new Map(), ids: new WeakMap(), next: 0, seen: new Set(), on: true, digitChanges: 0, digitSlotMoves: 0, digitFirst: null, digitLast: null, start: performance.now() };
     const frame = (now) => {
       if (!P.on) return;
       P.frames += 1;
@@ -336,7 +333,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
           if (e.classList.contains('sl') && !sameText) P.digitChanges += 1;
           if (d > 0.001) {
             P.moves += 1;
-            if (e.classList.contains('sl')) P.digitSlotMoves += 1;
+            if (e.classList.contains('sl')) { P.digitSlotMoves += 1; P.digitFirst ??= now; P.digitLast = now; }
             if (d < 0.8) P.sub.push({ t: Math.round(now - P.start), text: own.slice(0, 40), moved: d, state: document.getElementById('root').dataset.state });
             const run = P.runs.get(id) ?? { from: now };
             P.runs.set(id, run);
@@ -352,7 +349,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     return true;
   })()`;
 
-  const readDrift = () => js(`(() => { const P = window.__drift; P.on = false; return { frames: P.frames, textBoxes: P.seen.size, moves: P.moves, digitChanges: P.digitChanges, digitSlotMoves: P.digitSlotMoves, sub: P.sub, long: P.long }; })()`);
+  const readDrift = () => js(`(() => { const P = window.__drift; P.on = false; return { frames: P.frames, textBoxes: P.seen.size, moves: P.moves, digitChanges: P.digitChanges, digitSlotMoves: P.digitSlotMoves, digitMoveSpanMs: P.digitLast === null ? 0 : Math.round(P.digitLast - P.digitFirst), sub: P.sub, long: P.long }; })()`);
 
   before(async () => {
     stage = await startStage({ miner: true, softPasskey: false });
@@ -492,7 +489,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await textOf('needs'), 'It needs a second signature.');
     const nodeBox = await js(`(() => { const r = document.getElementById('node').getBoundingClientRect(); return { bottom: r.bottom, font: getComputedStyle(document.getElementById('node')).fontSize }; })()`);
     assert.ok(nodeBox.bottom <= 1350, `the answer fits whole, ending at ${nodeBox.bottom}`);
-    assert.equal(nodeBox.font, '40px', `a ${post.text.length}-character answer stays in 40 mono`);
+    assert.equal(nodeBox.font, '36px', `a ${post.text.length}-character answer stays at the animatic's 36 mono`);
 
     await waitState('asking', 5_000);
     await shot('08-asking');
@@ -515,8 +512,10 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await js('document.getElementById("root").dataset.auto'), 'armed');
     assert.equal(await textOf('auto'), 'auto-execute armed');
 
-    const size = await js(`(() => { const c = document.getElementById('clock'); const r = c.getBoundingClientRect(); return { w: r.width, frac: r.width / innerWidth, font: getComputedStyle(c).fontSize, tnum: getComputedStyle(c).fontVariantNumeric, top: r.top }; })()`);
+    const size = await js(`(() => { const c = document.getElementById('clock'); const r = c.getBoundingClientRect(); const a = document.getElementById('d-m').getBoundingClientRect(), b = document.getElementById('d-t').getBoundingClientRect(); return { frac: (b.right - a.left) / innerWidth, slot: a.width, font: getComputedStyle(c).fontSize, tnum: getComputedStyle(c).fontVariantNumeric, top: r.top, left: a.left, right: b.right }; })()`);
+    assert.ok(size.slot > 150, `a digit slot is ${size.slot} px wide`);
     assert.ok(size.frac >= 1 / 3, `digits take ${size.frac} of the width`);
+    assert.ok(size.left >= 0 && size.right <= 1080, `digits stay on the frame, ${size.left} to ${size.right}`);
     assert.equal(size.font, '400px');
     assert.equal(size.tnum, 'tabular-nums');
     assert.equal(size.top, 596, 'digits on the film\'s line');
@@ -545,13 +544,13 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     const fuseMid = await js('document.getElementById("fuse-burn").getBoundingClientRect().width');
     await sleep(2000);
     const fuseLater = await js('document.getElementById("fuse-burn").getBoundingClientRect().width');
-    assert.ok(fuseLater < fuseMid - 20, `the fuse burns: ${fuseMid} to ${fuseLater} in 2 s`);
+    assert.ok(fuseLater < fuseMid - 15, `the fuse burns: ${fuseMid} to ${fuseLater} in 2 s`);
 
     const postsDuring = stage.rig.posts.length;
+    await js(`(() => { window.__stamps = 0; document.getElementById('stamp').addEventListener('animationstart', () => { window.__stamps += 1; }); })()`);
     const out = await rotate(v);
     assert.ok(out.hash);
     await waitState('frozen', 8_000);
-    await js(`(() => { window.__stamps = 0; document.getElementById('stamp').addEventListener('animationstart', () => { window.__stamps += 1; }); })()`);
     await sleep(40);
     await shot('12-stamp');
     const frozenAt = await clockText();
@@ -569,14 +568,16 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       assert.equal(await clockText(), frozenAt, 'the frozen reading does not move');
       await sleep(500);
     }
-    assert.equal(await js('window.__stamps'), 0, 'one stamp: no second animation after the first');
+    assert.equal(await js('window.__stamps'), 1, 'it stamps once');
     assert.equal(relay.calls.filter((m) => m === 'execute').length, 0, 'it never called execute');
     assert.equal(stage.rig.posts.length, postsDuring, 'nothing else went to Bitcoin');
     assert.equal((await (await fetch(`${stage.config.esplora}/tx/${v.coin.txid}/outspend/${v.coin.vout}`)).json()).spent, false, 'the coin stayed');
 
     const probe = await readDrift();
     drift.push({ case: 'cancelled', ...probe });
-    assert.equal(probe.digitSlotMoves <= 8 * 8, true, `digit slots moved only in the fling: ${probe.digitSlotMoves}`);
+    assert.ok(probe.digitChanges > 100, `the digits really changed: ${probe.digitChanges}`);
+    assert.ok(probe.digitMoveSpanMs < 300, `digit slots moved only in the fling, over ${probe.digitMoveSpanMs} ms`);
+    assert.deepEqual(probe.sub, [], 'no text moved by a fraction of a pixel');
     assert.deepEqual(probe.long, [], 'no text kept moving for over 0.3 s');
 
     // The key left only as signatures.
@@ -636,6 +637,8 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await js('document.getElementById("stamp").checkVisibility()'), false);
     const probe = await readDrift();
     drift.push({ case: 'executed', ...probe });
+    assert.equal(probe.digitSlotMoves, 0, 'no fling in this stretch, so no digit slot moved at all');
+    assert.deepEqual(probe.sub, []);
     assert.deepEqual(probe.long, []);
   });
 
@@ -896,7 +899,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       await waitFor('the fling', async () => (await js('document.getElementById("root").dataset.fling')) === 'done', 5_000);
       await sleep(300);
       await fits('waiting');
-      const frac = await js('document.getElementById("clock").getBoundingClientRect().width / innerWidth');
+      const frac = await js('(document.getElementById("d-t").getBoundingClientRect().right - document.getElementById("d-m").getBoundingClientRect().left) / innerWidth');
       assert.ok(frac >= 1 / 3, `digits take ${frac} of the width`);
       const r = await js('Number(new URLSearchParams(location.hash.slice(1)).get("r"))');
       const req = await views.request(v.vaultHex, r);

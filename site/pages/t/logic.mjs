@@ -58,14 +58,6 @@ export function relaySentence(status) {
   return `The relay can't send for this tab right now: ${status.general?.why ?? 'no reason given'}`;
 }
 
-/** Sizes the node's answer down only as far as it takes to fit whole. */
-export function nodeTextClass(text) {
-  const length = String(text ?? '').length;
-  if (length <= 400) return 'fit-40';
-  if (length <= 700) return 'fit-32';
-  return 'fit-24';
-}
-
 /**
  * The request a link means when it names none. `pending` keeps dead requests until the next state change, so
  * each is judged by reading it. Newest first. `judge(id)` answers a state from requestState.

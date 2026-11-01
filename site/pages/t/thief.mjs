@@ -7,7 +7,7 @@ import {
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
-import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, nodeTextClass, parseSeed, relaySentence, satsText, sumOfInputs, tickPulse } from './logic.mjs';
+import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, satsText, sumOfInputs, tickPulse } from './logic.mjs';
 
 const $ = (id) => document.getElementById(id);
 const root = $('root');
@@ -77,21 +77,25 @@ const errorWords = (err) => err?.verbatim ?? err?.message ?? String(err);
 
 /** Reads the real advance of the digit and colon from the glyphs, so a slot fits the font this machine really has. */
 function measureClock() {
-  const c = $('clock');
-  const size = parseFloat(getComputedStyle(c).fontSize);
-  const probe = (text) => {
+  // In a probe of its own, because the clock's panel may not be on screen yet and a hidden box measures zero.
+  const probe = document.createElement('div');
+  probe.className = 'clock';
+  probe.style.position = 'absolute';
+  probe.style.visibility = 'hidden';
+  probe.style.fontSize = '100px';
+  probe.style.whiteSpace = 'pre';
+  document.body.append(probe);
+  const widthOf = (text) => {
     const span = document.createElement('span');
     span.textContent = text;
-    span.style.position = 'absolute';
-    span.style.visibility = 'hidden';
-    span.style.whiteSpace = 'pre';
-    c.append(span);
+    probe.append(span);
     const width = span.getBoundingClientRect().width;
     span.remove();
-    return width / size;
+    return width / 100;
   };
-  c.style.setProperty('--adv', String(probe('0')));
-  c.style.setProperty('--colon', String(probe(':')));
+  $('clock').style.setProperty('--adv', String(widthOf('0')));
+  $('clock').style.setProperty('--colon', String(widthOf(':')));
+  probe.remove();
 }
 
 const slot = (el, text) => {
@@ -100,10 +104,7 @@ const slot = (el, text) => {
 
 function showDigits(d) {
   const tensOfMinutes = Math.floor(d.minutes / 10);
-  if (tensOfMinutes > 0 && root.dataset.wide !== '1') {
-    root.dataset.wide = '1';
-    measureClock();
-  }
+  if (tensOfMinutes > 0) root.dataset.wide = '1';
   slot($('d-mt'), tensOfMinutes > 0 ? String(tensOfMinutes) : '');
   slot($('d-m'), String(d.minutes % 10));
   slot($('d-s1'), String(Math.floor(d.seconds / 10)));
@@ -382,11 +383,20 @@ function showRefused(body) {
   } else {
     box.textContent = body;
   }
-  $('node').className = `node mono ${nodeTextClass(body)}`;
+  fitNodeText();
   $('refused').classList.add('go');
   setTimeout(() => {
     ask().catch(showAskFailure);
   }, REFUSED_HOLD_MS);
+}
+
+/** The answer is shown whole, so it comes down in size only as far as it takes to stay on the screen. */
+function fitNodeText() {
+  const node = $('node');
+  for (const size of ['fit-36', 'fit-30', 'fit-24', 'fit-18']) {
+    node.className = `node mono ${size}`;
+    if (node.getBoundingClientRect().bottom <= window.innerHeight) return;
+  }
 }
 
 // ---------------------------------------------------------------- asking the NEAR contract
