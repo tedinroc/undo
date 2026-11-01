@@ -7,11 +7,15 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fromHex, toHex } from '../../tools/lib/bytes.mjs';
 import { sha256 } from '../../tools/lib/crypto.mjs';
-import { action, failureOf, returnValue, TGAS } from '../../tools/lib/near.mjs';
+import { addressToSpk } from '../../tools/lib/btc.mjs';
+import { signColdIntent } from '../../tools/lib/cold-intent.mjs';
+import { buildFunding, loadDispenser } from '../../tools/lib/dispenser.mjs';
+import { action, failureOf, Near, returnValue, TGAS } from '../../tools/lib/near.mjs';
 import { sendEverything } from '../lib/bitcoin.mjs';
 import { base64ToBytes } from './phone-helpers.mjs';
 import { buildCreateArgs, buildPropose, newVaultKeys, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
 import { NearReader } from '../lib/near-read.mjs';
+import { fundsPowTarget, solvePow } from '../lib/pow.mjs';
 import { CREATE_DEPOSIT_MILLI, executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
@@ -150,7 +154,8 @@ async function intercept(pattern, answer, body) {
 // ---------------------------------------------------------------- the chain's side, as the thief tab would do it
 
 /** A vault whose passkey lives in Chrome's virtual authenticator, and whose keys Node holds, so Node can be the thief. */
-async function makeVault(name, { keepKeys = false } = {}) {
+async function makeVault(name, { keepKeys = false, relayGuards = false } = {}) {
+  const guard = relayGuards ? stage.relay : stage.payer;
   if (!keepKeys) await emptyAuthenticator();
   await go('/p/', {});
   await waitFor('a page', async () => (await stateOf()) !== 'boot');
@@ -164,13 +169,15 @@ async function makeVault(name, { keepKeys = false } = {}) {
   const km = await derivedKey(reader, { signer: instance.signer, domainId: instance.domain_id, contract: stage.contract, vaultHex });
   const chainNow = (await reader.blockTime()).blockMs;
   const built = await buildCreateArgs({
-    contract: stage.contract, keys, passkeyPub, rpIdHash: rpIdHashOf(stage.rpId), km, guard: stage.payer.accountId, policy: instance.policy, csv: 6, expiresAt: chainNow + 30 * 60_000,
+    contract: stage.contract, keys, passkeyPub, rpIdHash: rpIdHashOf(stage.rpId), km, guard: guard.accountId, policy: instance.policy, csv: 6, expiresAt: chainNow + 30 * 60_000,
     assert: async (digest) => cdp.page(`const lib = await import('/site/lib/index.mjs');
       const a = await lib.getAssertion({ credentials: navigator.credentials, digest: lib.fromBase64('${Buffer.from(digest).toString('base64')}'), rpId: 'localhost', credentialId: lib.fromBase64Url('${passkey.cred}') });
       return a.args;`),
   });
   const spec = RELAY_METHODS.create_vault;
-  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [
+  // The relay's own sends move that key's nonce behind this client's back, so a fresh client reads it from the chain.
+  const near = relayGuards ? new Near(stage.config.rpc, { timeoutMs: 30_000 }) : stage.near;
+  const sent = await near.sendAndWait(guard, stage.contract, [
     action.call('create_vault', { args: built.args }, BigInt(spec.tgas) * TGAS, stage.milliNear(CREATE_DEPOSIT_MILLI)),
     action.call('heartbeat', { vault: vaultHex }, BigInt(spec.heartbeatTgas) * TGAS, 0n),
   ]);
@@ -189,6 +196,41 @@ async function thiefProposes(v, coin = { txid: toHex(label(`coin-${counter += 1}
   assert.equal(failureOf(sent.result), null);
   return { id: returnValue(sent.result), spend, coin };
 }
+
+/** A real coin from the relay's dispenser, as the phone page asks for one. The vault must be one the relay guards. */
+async function fundFromRelay(v) {
+  const powBits = (await (await fetch(`${stage.origin}/api/relay`)).json()).pow_bits;
+  const pow = await solvePow(fundsPowTarget(v.vaultHex), powBits);
+  return (await fetch(`${stage.origin}/api/funds`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: v.vaultHex, pow }) })).json();
+}
+
+/** A real coin straight from the dispenser, for a vault the relay does not guard. */
+async function fundDirect(v) {
+  const vault = await views.vault(v.vaultHex);
+  const dispenser = loadDispenser(stage.rig.info.dispenser, 'regtest');
+  await stage.rig.mine(1); // This file runs no miner, and a coin spent earlier left its change unconfirmed.
+  const utxos = await (await fetch(`${stage.config.esplora}/address/${dispenser.address}/utxo`)).json();
+  const made = buildFunding({ dispenser, utxos, payTo: addressToSpk('regtest', vault.address), value: 2000, feeRate: 2 });
+  await stage.rig.rpc('sendrawtransaction', [made.raw]);
+  await stage.rig.mine(1);
+  return { txid: made.txid, vout: made.vout, value: made.value };
+}
+
+const realRpc = async (req) => (await fetch(req.url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.postData })).json();
+const viewBody = (json) => Array.from(new TextEncoder().encode(JSON.stringify(json)));
+const viewJson = (result) => JSON.parse(new TextDecoder().decode(Uint8Array.from(result.result.result)));
+const hashOnScreen = () => cdp.page('return document.querySelector("#near-tx .hash")?.innerText ?? null;');
+
+/** Answers the view named `method` from `patch(realJson)`, everything else from the node. */
+const patchView = (method, patch) => async (req) => {
+  const body = JSON.parse(req.postData ?? '{}');
+  if (body.params?.method_name !== method) return null;
+  const real = await realRpc(req);
+  const next = patch(viewJson(real));
+  if (next === undefined) return null;
+  real.result.result = viewBody(next);
+  return { status: 200, body: real };
+};
 
 async function fastForwardTo(target) {
   for (let i = 0; i < 200; i += 1) {
@@ -211,9 +253,9 @@ const noScrollAtAll = () => cdp.page('return document.documentElement.scrollHeig
 // ---------------------------------------------------------------- the film's path
 
 test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap stamps it, the contract agrees, a reload stays stamped. [mock-signer] [virtual authenticator]', { skip, timeout: 120_000 }, async (t) => {
-  const v = await makeVault('hero');
+  const v = await makeVault('hero', { relayGuards: true });
   // A real coin, from the relay's dispenser on regtest, so `The coin never moved` has something to check.
-  const paid = await (await fetch(`${stage.origin}/api/funds`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: v.vaultHex }) })).json();
+  const paid = await fundFromRelay(v);
   t.diagnostic(`funds: ${JSON.stringify({ ok: paid.ok, value: paid.value, code: paid.code })}`);
   const coin = paid.ok ? { txid: paid.txid, vout: paid.vout, value: paid.value } : undefined;
   const { id } = await thiefProposes(v, coin);
@@ -253,8 +295,15 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
   assert.equal(await cdp.page('return document.querySelector("#digits .col").getBoundingClientRect().x;'), a);
 
   const running = await cdp.page('return document.getElementById("digits").dataset.clock;');
+  const digitsTop = () => cdp.page('return Math.round(document.getElementById("digits").getBoundingClientRect().top);');
+  const topBefore = await digitsTop();
   await clickOn('#cancel');
   await waitState('cancelled');
+  assert.ok(Math.abs((await digitsTop()) - topBefore) <= 1, `the digits stay where they were when the stamp lands: ${topBefore} then ${await digitsTop()}`);
+  assert.ok(await noScrollAtAll(), 'and the stamp fits under them');
+  const keyLineTop = await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;');
+  await waitFor('the hash, once the chain says the cancel ran', hashOnScreen);
+  assert.equal(await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;'), keyLineTop, 'its slot was kept, so the line under it does not jump');
   const timings = await cdp.page('return window.undoTimings;');
   assert.ok(timings.tap && timings.assertion && timings.sent && timings.included && timings.readCancelled, JSON.stringify(timings));
   assert.ok(['high', 'low'].includes(timings.sForm));
@@ -289,7 +338,10 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
   await sleep(1500);
   assert.equal(await cdp.page('return document.getElementById("digits").dataset.clock;'), shown.clock);
 
-  // Sticky: chain plus fragment.
+  assert.ok(Math.abs((await digitsTop()) - topBefore) <= 1, 'and they stay there when the coin line lands');
+  assert.ok(await noScrollAtAll(), 'all of it on one screen');
+
+  // Sticky: chain plus what this tab saw.
   await reload();
   await waitState('cancelled');
   const again = await cdp.page(`return { clock: document.getElementById('digits')?.dataset.clock ?? null, hash: document.querySelector('.hash')?.innerText ?? null, stamp: document.getElementById('stamp').innerText, slam: document.getElementById('stamp').classList.contains('slam') };`);
@@ -297,6 +349,7 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
   await shot('03-cancelled-after-reload');
 
   // Another device with only the vault id: still cancelled, read from the chain, with no number it did not see.
+  await cdp.page('sessionStorage.clear();');
   await go('/p/', { v: v.vaultHex });
   await waitState('cancelled');
   assert.equal(await exists('#digits'), false);
@@ -345,14 +398,17 @@ test('at zero Cancel still works; once the contract has signed there is no stamp
   const gas = executeTgas(r0.inputs.length, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
   await stage.near.send(stage.payer, stage.contract, [action.call('execute', { vault: v.vaultHex, request: id }, BigInt(gas) * TGAS, 0n)]);
   await waitState('too_late', 30_000);
-  assert.equal(await textOf('#too-late'), 'Too late. The contract signed.');
+  await waitFor('the signature', async () => (await textOf('#too-late')) === 'Too late. The contract signed.', 30_000);
   assert.equal(await exists('#stamp'), false);
   assert.equal(await exists('#cancel'), false);
-  await waitFor('the signed transaction', async () => (await cdp.page('return document.body.innerText;')).includes('local regtest txid'), 30_000);
+  // It spends a made-up coin, so no node will ever hold it, and the page must not print a txid as if one did.
+  await waitFor('the page to say so', () => exists('#too-late-unsent'), 30_000);
+  assert.equal(await textOf('#too-late-unsent'), 'No local regtest node has that transaction yet. Anyone can send it.');
+  assert.equal((await cdp.page('return document.body.innerText;')).includes('local regtest txid'), false);
   await shot('05-too-late');
   await reload();
   await waitState('too_late');
-  await waitFor('the txid after a reload', async () => (await cdp.page('return document.body.innerText;')).includes('local regtest txid'));
+  await waitFor('the same after a reload', () => exists('#too-late-unsent'));
 });
 
 test('a tap that lands after the signature: the contract takes the tap and the page still says too late', { skip, timeout: 120_000 }, async () => {
@@ -573,8 +629,14 @@ test('WebAuthn blocked: the sheet never appears, the page says so, and hides the
     await waitState('request');
     assert.ok(await exists('#cancel'), 'nothing says it is blocked until a tap shows it');
     await clickOn('#cancel');
+    // The link's id may be all that is wrong, so one try with any passkey comes first.
+    await waitFor('the first refusal', () => exists('#notice'));
+    assert.match(await textOf('#notice'), /Not cancelled\. No passkey sheet came up/);
+    assert.equal(await cdp.page('return location.hash.includes("c=");'), false, 'and the link\'s id is dropped');
+    await waitState('request');
+    await clickOn('#cancel');
     await waitState('no_button');
-    assert.match(await textOf('#why'), /sheet never appeared.*blocking passkeys.*Safari or Chrome/);
+    assert.match(await textOf('#why'), /No passkey sheet came up.*this vault's passkey.*blocking passkeys.*Safari or Chrome/);
     assert.equal(await exists('#cancel'), false);
     assert.equal(await exists('#retry-passkey'), true);
     assert.ok(await noHorizontalScroll());
@@ -687,6 +749,9 @@ test('the credential id goes to localStorage and nothing else does', { skip, tim
   await thiefProposes(v);
   await go('/p/', { v: v.vaultHex, c: v.cred });
   await waitState('request');
+  assert.equal(await cdp.page(`return localStorage.getItem('undo.passkey.${v.vaultHex}');`), null, 'a link\'s id is only a guess until it has made an assertion');
+  await clickOn('#cancel');
+  await waitState('cancelled');
   const store = await cdp.page('return JSON.stringify(Object.entries(localStorage));');
   const entries = JSON.parse(store);
   assert.ok(entries.length >= 1);
@@ -696,7 +761,7 @@ test('the credential id goes to localStorage and nothing else does', { skip, tim
   }
   assert.ok(entries.some(([key, value]) => key === `undo.passkey.${v.vaultHex}` && value === v.cred));
   await go('/p/', { v: v.vaultHex });
-  await waitState('request');
+  await waitState('cancelled');
   await waitFor('the fragment to regain it', async () => (await cdp.page('return location.hash;')).includes(`c=${v.cred}`));
 });
 
@@ -897,7 +962,7 @@ test('test mode: a reload in the middle carries on from the chain and the fragme
     await waitState('h7_check');
     await clickOn('#make');
     await waitState('h7_stopped');
-    assert.match(await textOf('#why'), /sheet never appeared/);
+    assert.match(await textOf('#why'), /No passkey sheet came up/);
     assert.ok(await exists('#retry'));
     await shot('35-h7-blocked');
   } finally {
@@ -909,21 +974,333 @@ test('the fragment and report functions, in the page that ships them', { skip, t
   await go('/p/', {});
   const out = await cdp.page(`const f = await import('/p/phone-fragment.mjs'); const r = await import('/p/h7-report.mjs');
     const parsed = f.parsePhoneFragment('#v=${'a'.repeat(64)}&tx=8gZ1dzfAhVn1jZ1dzfAhVn1jZ1dzfAhVn1jZ&f=0:07.9&h7=1&log=c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x&junk=1&q=blank.one');
-    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz');
+    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz&log=<');
     const tries = r.decodeTries(parsed.log);
     const again = tries.map(r.encodeTry).join('~');
-    return { parsed, bad, tries, again, built: f.buildPhoneFragment({ v: 'b', tx: null, f: '0:01.0' }), s0: r.sFormSentence([]), s8: r.sFormSentence(Array(8).fill({ s: 'l' })), s3: r.sFormSentence([{ s: 'l' }, { s: 'l' }, { s: 'h' }]) };`);
-  assert.equal(out.parsed.f, '0:07.9');
+    return { parsed, bad, tries, again, built: f.buildPhoneFragment({ v: 'b', tx: 'x', f: '0:01.0', r: 3 }), s0: r.sFormSentence([]), s8: r.sFormSentence(Array(8).fill({ s: 'l' })), s3: r.sFormSentence([{ s: 'l' }, { s: 'l' }, { s: 'h' }]) };`);
+  assert.equal(out.parsed.f, undefined, 'a link says nothing about what happened');
+  assert.equal(out.parsed.tx, undefined);
   assert.equal(out.parsed.junk, undefined);
-  assert.deepEqual(out.bad.refused.sort(), ['f', 'op', 'tx']);
-  assert.equal(out.bad.tx, undefined);
+  assert.deepEqual(out.bad.refused.sort(), ['log', 'op']);
   assert.equal(out.again, 'c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x');
   assert.equal(out.tries[0].blurred, true);
   assert.equal(out.tries[1].hash, null);
-  assert.equal(out.built, '#v=b&f=0:01.0');
+  assert.equal(out.built, '#v=b&r=3');
   assert.match(out.s0, /0 of 8/);
   assert.match(out.s8, /No high-S signature in 8 tries/);
   assert.match(out.s3, /try 3 of 3/);
+});
+
+// ---------------------------------------------------------------- what the attack on the pages found
+
+test('attack 1: a decoy self-spend cannot hide a drain. The page stays on the drain, says what else waits, and keeps Cancel when the decoy is signed', { skip, timeout: 180_000 }, async () => {
+  const v = await makeVault('decoy');
+  const drain = await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const drainTo = await textOf('#to');
+  const vault = await views.vault(v.vaultHex);
+  const coin = { txid: toHex(label(`decoy-coin-${counter += 1}`)), vout: 0, value: 1000 };
+  const script = fromHex(await views.script(v.vaultHex));
+  const spend = sendEverything({ coins: [coin], to: fromHex(vault.script_pubkey), script, feeRate: 2 });
+  const args = buildPropose({ contract: stage.contract, vault, script, seed: v.keys.seed, inputs: spend.inputs, to: fromHex(vault.script_pubkey), amount: spend.amount, nonce: vault.spend_nonce, expiresAt: (await reader.blockTime()).blockMs + 30 * 60_000 });
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('propose_btc', args, 40n * TGAS, 0n)]);
+  assert.equal(failureOf(sent.result), null);
+  const decoyId = returnValue(sent.result);
+
+  await waitFor('the second request to be read', () => exists('#more'));
+  assert.equal(await textOf('#more'), '1 more request waiting. Cancel stops them all.');
+  assert.equal(await textOf('#to'), drainTo, 'still the drain, not the newest');
+  const decoy = await views.request(v.vaultHex, decoyId);
+  await fastForwardTo(decoy.unlock);
+  const gas = executeTgas(1, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
+  await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('execute', { vault: v.vaultHex, request: decoyId }, BigInt(gas) * TGAS, 0n)]);
+  await waitFor('the page to read the decoy signed', () => exists('#also-signed'), 30_000);
+  assert.equal(await stateOf(), 'request', 'not too late: the drain is still cancellable');
+  assert.ok(await exists('#cancel'));
+  assert.equal(await textOf('#to'), drainTo);
+  await reload();
+  await waitState('request');
+  assert.equal(await textOf('#to'), drainTo, 'a reload stays on the drain');
+
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  const after = await views.vault(v.vaultHex);
+  const r = await views.request(v.vaultHex, drain.id);
+  assert.notEqual(r.epoch, after.spend_epoch, 'the contract agrees the drain is dead');
+  assert.equal(await textOf('#also-signed'), '1 other request has already been signed.');
+});
+
+test('attack 2 and relay 3: a link cannot stamp, cannot name a hash, and cannot hide a live request', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('forged');
+  const fake = '4'.repeat(44);
+  await go('/p/', {}, { raw: `${stage.origin}/p/#v=${v.vaultHex}&c=${v.cred}&r=777&tx=${fake}&f=0:07.9` });
+  await waitState('idle');
+  assert.equal(await exists('#stamp'), false, 'no request, no stamp');
+  assert.equal((await cdp.page('return document.body.innerText;')).includes(fake), false);
+  assert.ok(await exists('#nothing'));
+
+  await thiefProposes(v);
+  await go('/p/', {}, { raw: `${stage.origin}/p/#v=${v.vaultHex}&c=${v.cred}&r=99999&tx=${fake}&f=0:01.3` });
+  await waitState('request');
+  assert.ok(await exists('#cancel'), 'a request number past the newest hides nothing');
+  assert.equal((await cdp.page('return document.body.innerText;')).includes(fake), false);
+  assert.equal(await cdp.page('return location.hash.includes("tx=") || location.hash.includes("f=");'), false, 'the page does not write them back either');
+  await sleep(1500);
+  assert.equal(await stateOf(), 'request');
+  assert.notEqual(await cdp.page('return document.getElementById("digits").dataset.clock;'), '0:01.3');
+});
+
+test('attack 4: one block read with a clock far ahead moves nothing on the phone, and expired does not stick', { skip, timeout: 120_000 }, async () => {
+  for (const aheadMs of [7_200_000, 360_000]) {
+    const v = await makeVault(`future-${aheadMs}`);
+    await thiefProposes(v);
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('request');
+    let lies = 0;
+    const states = [];
+    await intercept(`${stage.config.rpc[0]}*`, async (req) => {
+      const body = JSON.parse(req.postData ?? '{}');
+      if (body.method !== 'block' || lies >= 1) return null;
+      lies += 1;
+      const real = await realRpc(req);
+      real.result.header.timestamp_nanosec = String(BigInt(real.result.header.timestamp_nanosec) + BigInt(aheadMs) * 1_000_000n);
+      return { status: 200, body: real };
+    }, async () => {
+      await waitFor('the lie to be read', async () => lies >= 1, 15_000);
+      for (let i = 0; i < 10; i += 1) {
+        states.push(await stateOf());
+        await sleep(200);
+      }
+    });
+    assert.ok(states.every((s) => s === 'request'), states.join());
+    assert.ok(await exists('#cancel'));
+    assert.ok(clockMs(await cdp.page('return document.getElementById("digits").dataset.clock;')) > 200_000, 'the digits did not jump');
+  }
+});
+
+test('attack 5: a contract refusal says so at once, in the contract\'s words, not 30 s later in the relay\'s', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('refusal');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await intercept(`${stage.config.rpc[0]}*`, patchView('vault', (r) => (r ? { ...r, passkey_nonce: r.passkey_nonce + 1 } : undefined)), async () => {
+    await sleep(1600);
+    const tapped = Date.now();
+    await clickOn('#cancel');
+    await waitFor('a notice', () => exists('#notice'), 20_000);
+    const ms = Date.now() - tapped;
+    assert.equal(await textOf('#notice'), 'Not cancelled. The contract refused it.');
+    assert.match(await textOf('#verbatim'), /BadNonce/);
+    assert.ok(ms < 10_000, `${ms} ms`);
+    assert.equal(await exists('#stamp'), false);
+  });
+  assert.equal((await views.vault(v.vaultHex)).k_s_suspended, false);
+});
+
+test('attack 6: a spend with change says what leaves and what comes back, from the contract\'s own numbers', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('change');
+  const coin = { txid: toHex(label(`change-coin-${counter += 1}`)), vout: 0, value: 10_000 };
+  const vault = await views.vault(v.vaultHex);
+  const script = fromHex(await views.script(v.vaultHex));
+  const to = fromHex(`0014${toHex(label('thief')).slice(0, 40)}`);
+  const args = buildPropose({ contract: stage.contract, vault, script, seed: v.keys.seed, inputs: [coin], to, amount: 1000, change: 8700, nonce: vault.spend_nonce, expiresAt: (await reader.blockTime()).blockMs + 30 * 60_000 });
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('propose_btc', args, 40n * TGAS, 0n)]);
+  assert.equal(failureOf(sent.result), null);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  assert.equal(await textOf('#amount'), '1,000 sats');
+  assert.equal(await textOf('#change'), '8,700 sats comes back to this vault. 300 sats goes to the Bitcoin fee.');
+  assert.equal((await cdp.page('return document.body.innerText;')).includes('9,000'), false);
+});
+
+test('attack 7: a coin no node knows is flagged, and a value a node disputes is too. A real coin says nothing', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('declared');
+  await thiefProposes(v, { txid: toHex(label(`lie-${counter += 1}`)), vout: 0, value: 5_000_000 });
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await waitFor('the coin check', () => exists('#coin-check'), 15_000);
+  assert.equal(await textOf('#coin-check'), 'local regtest doesn\'t know this coin. This amount is only what the request claims.');
+  assert.ok(await exists('#cancel'), 'it can still be cancelled');
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 320, height: 568, deviceScaleFactor: 2, mobile: true });
+  try {
+    await sleep(300);
+    const fit = await cdp.page('const r = document.getElementById("cancel").getBoundingClientRect(); return { bottom: r.bottom, h: innerHeight, scroll: document.documentElement.scrollHeight };');
+    assert.ok(fit.bottom <= fit.h && fit.scroll <= fit.h, `the flag does not push Cancel off a short phone: ${JSON.stringify(fit)}`);
+  } finally {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  }
+
+  const real = await makeVault('declared-real');
+  const paid = await fundDirect(real);
+  await thiefProposes(real, { txid: paid.txid, vout: paid.vout, value: 9000 });
+  await go('/p/', { v: real.vaultHex, c: real.cred });
+  await waitState('request');
+  await waitFor('the coin check', () => exists('#coin-check'), 15_000);
+  assert.equal(await textOf('#coin-check'), 'local regtest says this coin holds 2,000 sats, not what the request claims.');
+
+  const honest = await makeVault('declared-honest');
+  const paidAgain = await fundDirect(honest);
+  await thiefProposes(honest, { txid: paidAgain.txid, vout: paidAgain.vout, value: paidAgain.value });
+  await go('/p/', { v: honest.vaultHex, c: honest.cred });
+  await waitState('request');
+  await sleep(1500);
+  assert.equal(await exists('#coin-check'), false);
+});
+
+test('attack 8: a lifted freeze stamped the request, and stopped no key. The page does not say it did', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('thaw');
+  await thiefProposes(v);
+  const cold = async (method, fields) => {
+    const vault = await views.vault(v.vaultHex);
+    const expiresAt = (await reader.blockTime()).blockMs + 600_000;
+    const signed = signColdIntent({ cold: v.keys.cold, contract: stage.contract, vault: v.vaultHex, method, fields, expiresAt, nonce: vault.cold_nonce });
+    const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call(method, { vault: v.vaultHex, ...fields, expires_at: expiresAt, nonce: vault.cold_nonce, signature: signed.signature }, 60n * TGAS, 0n)]);
+    assert.equal(failureOf(sent.result), null);
+  };
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await intercept(`${stage.config.rpc[0]}*`, async () => 'fail', async () => {
+    await cold('freeze', { until: (await reader.blockTime()).blockMs + 120_000 });
+    await cold('unfreeze', {});
+  });
+  await waitState('cancelled', 20_000);
+  assert.equal(await textOf('#stamp'), 'CANCELLED');
+  assert.equal(await exists('#key-line'), false);
+  assert.equal((await views.vault(v.vaultHex)).k_s_suspended, false);
+});
+
+test('attack 9: a junk id in a link is not remembered, breaks nothing, and a phone with no id is told who the button is for', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('poison');
+  await thiefProposes(v);
+  await go('/p/', {}, { raw: `${stage.origin}/p/#v=${v.vaultHex}&c=AAAAAAAA` });
+  await waitState('request');
+  assert.equal(await cdp.page(`return localStorage.getItem('undo.passkey.${v.vaultHex}');`), null);
+  assert.equal(await exists('#that-phone'), false, 'a link named an id, so the page has one to try');
+  await go('/p/', { v: v.vaultHex });
+  await waitState('request');
+  assert.equal(await textOf('#that-phone'), 'Only the phone holding this vault\'s passkey can cancel.');
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  assert.equal((await views.vault(v.vaultHex)).k_s_suspended, true, 'the owner\'s own clean link still works');
+  assert.equal(await exists('#that-phone'), false);
+
+  const w = await makeVault('poison-tap');
+  await thiefProposes(w);
+  await go('/p/', {}, { raw: `${stage.origin}/p/#v=${w.vaultHex}&c=AAAAAAAA` });
+  await waitState('request');
+  await clickOn('#cancel');
+  await waitFor('the junk id to fail', () => exists('#notice'));
+  assert.match(await textOf('#notice'), /Not cancelled\. No passkey sheet came up/);
+  assert.equal(await stateOf(), 'request', 'the page does not blame the browser yet');
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  assert.equal((await views.vault(w.vaultHex)).k_s_suspended, true, 'the next tap offers any passkey here, and that one works');
+  assert.ok(await cdp.page(`return localStorage.getItem('undo.passkey.${w.vaultHex}') !== 'AAAAAAAA';`));
+
+  // A phone holding no passkey for this vault: a plain sentence that names both causes, and the button goes.
+  await emptyAuthenticator();
+  const x = await makeVault('stranger');
+  await thiefProposes(x);
+  await emptyAuthenticator();
+  await go('/p/', { v: x.vaultHex });
+  await waitState('request');
+  await clickOn('#cancel');
+  await waitState('no_button');
+  assert.match(await textOf('#why'), /doesn't hold this vault's passkey/);
+});
+
+test('attack 11: the relay\'s answer held back: the stamp lands first, and the hash lands in its slot when the chain has it', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('nohash');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const held = async (params) => {
+    if (params.request.method === 'POST') await sleep(4000);
+    await cdp.send('Fetch.continueResponse', { requestId: params.requestId }).catch(() => {});
+  };
+  pausedHandlers.add(held);
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/relay*', requestStage: 'Response' }] });
+  try {
+    await clickOn('#cancel');
+    await waitState('cancelled', 15_000);
+    assert.equal(await hashOnScreen(), null, 'nothing is shown before the chain says so');
+    assert.ok(await exists('#near-tx'), 'but its place is kept');
+    const keyLine = await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;');
+    await waitFor('the hash', hashOnScreen, 15_000);
+    assert.equal(await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;'), keyLine);
+  } finally {
+    pausedHandlers.delete(held);
+    await cdp.send('Fetch.disable');
+  }
+  const outcome = await reader.txOutcome(await hashOnScreen(), stage.relay.accountId);
+  assert.equal(outcome.failure, null);
+});
+
+test('attack 12: Signing is not signed. The page says the contract asked', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('signing');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await intercept(`${stage.config.rpc[0]}*`, patchView('request', (r) => (r ? { ...r, status: 'Signing', in_flight: 1, first_execute_at: r.proposed_at } : undefined)), async () => {
+    await waitState('too_late', 10_000);
+    assert.equal(await textOf('#too-late'), 'Too late. The contract asked for the signature.');
+    assert.match(await cdp.page('return document.body.innerText;'), /Waiting for the signature/);
+  });
+});
+
+test('attack 14: a relay that dies takes the button with it within seconds', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('relaydies');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await sleep(1200);
+  const died = Date.now();
+  await intercept('*/api/relay*', async () => 'fail', async () => {
+    await waitFor('the button to go', async () => !(await exists('#cancel')), 15_000);
+    assert.ok(Date.now() - died < 7000, `${Date.now() - died} ms`);
+    assert.match(await textOf('#why'), /relay is down/);
+  });
+});
+
+test('attack 15: a node stuck well behind this clock gets a warning. Cancel stays', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('stuck');
+  await thiefProposes(v);
+  await intercept(`${stage.config.rpc[0]}*`, async (req) => {
+    const body = JSON.parse(req.postData ?? '{}');
+    if (body.method !== 'block') return null;
+    const real = await realRpc(req);
+    // Against this machine's clock, because earlier tests have fast-forwarded the chain's ahead of it.
+    real.result.header.timestamp_nanosec = String(BigInt(Date.now() - 600_000) * 1_000_000n);
+    return { status: 200, body: real };
+  }, async () => {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('request');
+    await waitFor('the warning', () => exists('#stale-node'));
+    assert.match(await textOf('#stale-node'), /looks stuck/);
+    assert.ok(await exists('#cancel'));
+  });
+});
+
+test('attack 19: test mode only where the config has it', { skip, timeout: 60_000 }, async () => {
+  const config = await (await fetch(`${stage.origin}/undo-config.json`)).json();
+  await intercept('*/undo-config.json*', async () => ({ status: 200, body: { ...config, h7: false } }), async () => {
+    await go('/p/', {}, { raw: `${stage.origin}/p/#h7=1` });
+    await waitState('no_vault');
+    assert.equal((await cdp.page('return document.body.innerText;')).includes('Test mode'), false);
+  });
+});
+
+test('relay attack 6: an owner key that can\'t pay takes the button away, in plain words, without a tap', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('owner-low');
+  await thiefProposes(v);
+  const live = await (await fetch(`${stage.origin}/api/relay`)).json();
+  await intercept('*/api/relay*', async (req) => (req.method === 'GET' ? { status: 200, body: { ...live, owner: { up: false, why: 'owner_key_low', degraded: false, resets_at: null } } } : null), async () => {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('no_button');
+    assert.equal(await exists('#cancel'), false);
+    assert.equal(await textOf('#why'), 'The relay\'s key can\'t pay for a cancel right now, so this page can\'t send one.');
+  });
 });
 
 test('no CSP violation on any screen a phone reaches', { skip, timeout: 60_000 }, async () => {

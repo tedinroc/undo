@@ -3,18 +3,18 @@
 //
 // data-state on <html> and data-clock on the digits are what tests and the recorder wait on.
 import {
-  bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, clock, contractViews, credentialToFragment, advanceState,
-  credentialsFor, fromBase64Url, loadConfig, NearReader, nearTxLabel, nearTxLink, refusalOf, RelayClient, RelayRefused, requestState, rotateArgs,
-  rotateDigest, RpcDown, rpIdHashOf, SkewTracker, spendKeys, spkToAddress, StaleRead, ViewRefused,
+  bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, credentialToFragment, advanceState,
+  credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, NearReader, nearTxLabel, nearTxLink, refusalOf, RelayClient, RelayRefused, requestState, rotateArgs,
+  rotateDigest, RpcDown, rpIdHashOf, SkewTracker, solvePow, spendKeys, spkToAddress, StaleRead,
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
 import { randomBytes } from '/tools/lib/crypto.mjs';
 import { buildRecovery } from '/tools/lib/recovery.mjs';
 import { runH7 } from './h7.mjs';
-import { ClockFace, h, hashBlock, satsText, setState, show, sumInputs } from './kit.mjs';
+import { ClockFace, h, hashBlock, satsText, screen, setState, show, sumInputs } from './kit.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
-import { parsePhoneFragment, recallCredential, rememberCredential, writeFragment } from './phone-fragment.mjs';
+import { parsePhoneFragment, recallCredential, recallSeen, rememberCredential, rememberSeen, writeFragment } from './phone-fragment.mjs';
 import { openElsewhere, passkeyProblem, problemWords, screenAwake, sensePasskeys } from './sense.mjs';
 import { chainNowOf, confirmVault, prepareVault, sendVault } from './vault-make.mjs';
 
@@ -22,10 +22,14 @@ const POLL_MS = 1000;
 const FAST_POLL_MS = 400;
 const SKEW_MS = 5000;
 const STATUS_MS = 30_000;
+// While a clock runs, a Cancel that can no longer work must not stay up for long.
 const STATUS_DOWN_MS = 5000;
+// A block time this far behind this machine's clock is a stuck node, or a wrong clock. Either way, say so.
+const STALE_NODE_MS = 60_000;
 const OUTCOME_MS = 8000;
 const SEND_GIVE_UP_MS = 30_000;
 const COIN_MS = 15_000;
+const FINAL_MS = 3000;
 const INTENT_MS = 10 * 60_000;
 const READ_FAILS_TO_SAY = 3;
 // A node a few blocks behind answers null for a request it has not reached, and that is within what a reader lets
@@ -33,11 +37,11 @@ const READ_FAILS_TO_SAY = 3;
 const NULL_READS_TO_BELIEVE = 3;
 
 const P = {
-  screen: null, v: null, r: null, fragment: {}, vault: null, vaultRead: false, request: null, lastKnown: null, rs: null,
-  relay: null, readFails: 0, readWords: null, notice: null, tap: null, prep: null, credential: null, blocked: false,
-  rpBad: false, frozenText: null, stampLive: false, coinStill: false, coinCheckedAt: 0, tooLateTxid: null, face: null,
-  skewAt: 0, statusAt: 0, timer: null, touch: null, seed: null, cold: null, balance: null, fundedTxid: null, stopped: false,
-  sheetNote: null, hang: false,
+  screen: null, v: null, r: null, fragment: {}, vault: null, vaultRead: false, lastKnown: null, rs: null, items: new Map(), hintR: null,
+  moreWaiting: 0, alreadySigned: 0, relay: null, readFails: 0, readWords: null, notice: null, tap: null, prep: null,
+  credential: null, credentialTrusted: false, blocked: false, rpBad: false, frozenText: null, stampLive: false, coinStill: false, coinCheckedAt: 0,
+  coinFacts: new Map(), coinFactsAt: 0, coinsDown: false, tooLateTxid: null, tooLateUnsent: false, finalAt: 0, face: null, skewAt: 0, statusAt: 0, timer: null, touch: null, seed: null, cold: null,
+  balance: null, fundedTxid: null, stopped: false, sheetNote: null, hang: false, tx: null, txSent: null, ksSeen: null, frozenBy: {}, pin: null,
 };
 let ctx;
 
@@ -83,7 +87,8 @@ async function main() {
 
   P.fragment = parsePhoneFragment(location.hash);
   window.addEventListener('hashchange', () => location.reload());
-  if (P.fragment.h7) {
+  // Test mode is for one phone check, and a final build sets this off, so `#h7=1` is then only an ignored field.
+  if (P.fragment.h7 && config.h7) {
     runH7(ctx, P.fragment, P.relay);
     return;
   }
@@ -101,13 +106,22 @@ async function main() {
 
 function watchVault(v) {
   P.v = v;
-  P.r = P.fragment.r ?? null;
-  P.frozenText = P.fragment.f ?? null;
-  const known = P.fragment.c ?? recallCredential(v);
+  // Only a place to look. A number in a link says nothing about what is waiting.
+  P.hintR = P.fragment.r ?? null;
+  const saved = recallSeen(v);
+  if (saved) {
+    for (const [id, request] of Object.entries(saved.seen ?? {})) P.items.set(Number(id), { id: Number(id), request, current: request, nulls: 0, state: null });
+    P.tx = saved.tx ?? null;
+    P.frozenBy = saved.frozen ?? {};
+    P.ksSeen = saved.ks ?? null;
+  }
+  // A stored id has made an assertion on this phone. One a link names is only a guess until it does.
+  const stored = recallCredential(v);
+  const known = stored ?? P.fragment.c ?? null;
   if (known) {
     P.credential = fromBase64Url(known);
-    rememberCredential(v, known);
-    if (!P.fragment.c) saveFragment({ c: known });
+    P.credentialTrusted = Boolean(stored);
+    if (P.fragment.c !== known) saveFragment({ c: known });
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollSoon(0); });
   window.addEventListener('pageshow', (event) => { if (event.persisted) pollSoon(0); });
@@ -119,6 +133,13 @@ function watchVault(v) {
 function saveFragment(fields) {
   Object.assign(P.fragment, fields);
   writeFragment(P.fragment);
+}
+
+/** What this tab saw and sent, for a reload. A link cannot write this. */
+function saveSeen() {
+  const seen = {};
+  for (const item of P.items.values()) seen[item.id] = item.request;
+  rememberSeen(P.v, { seen, tx: P.tx, frozen: P.frozenBy, ks: P.ksSeen });
 }
 
 function credentialB64() {
@@ -133,18 +154,31 @@ function pollSoon(ms) {
   P.timer = setTimeout(tick, ms);
 }
 
-/** The highest request that is still alive, since `pending` keeps dead ones until the next state change. */
-async function pickRequest(vault) {
-  const ids = [...vault.pending].sort((a, b) => b - a);
-  let newest = null;
-  for (const id of ids) {
-    const request = await ctx.views.request(P.v, id);
-    if (!request) continue;
-    newest ??= request;
-    const s = requestState({ request, vault, chainNow: chainNowOf(ctx.skew) ?? 0 });
-    if (s.cancellable || s.kind === 'signing') return request;
+/** What to read this tick: everything the vault lists, whatever is still undecided, and the one on screen. */
+function idsToRead() {
+  const ids = new Set();
+  if (P.hintR !== null) ids.add(P.hintR);
+  for (const item of P.items.values()) if (!item.state?.terminal || item.id === P.r) ids.add(item.id);
+  return [...ids];
+}
+
+function noteRead(id, row) {
+  let item = P.items.get(id);
+  if (!item) {
+    if (!row) return;
+    item = { id, request: row, current: row, nulls: 0, state: null };
+    P.items.set(id, item);
+    saveSeen();
   }
-  return newest;
+  item.current = row;
+  if (row) {
+    const moved = item.request.status !== row.status;
+    item.request = row;
+    item.nulls = 0;
+    if (moved) saveSeen();
+  } else {
+    item.nulls += 1;
+  }
 }
 
 async function tick() {
@@ -156,29 +190,20 @@ async function tick() {
         P.skewAt = Date.now();
       })
       : null;
-    let vault;
-    let request = null;
-    if (P.r !== null) {
-      ({ vault, request } = await ctx.views.both(P.v, P.r));
-      // A newer request than the one on screen is what this phone is for.
-      const newest = vault ? Math.max(-1, ...vault.pending) : -1;
-      if (newest > P.r) {
-        const next = await ctx.views.request(P.v, newest);
-        if (next && requestState({ request: next, vault, chainNow: chainNowOf(ctx.skew) ?? 0 }).cancellable) startRequest(next);
-        request = next ?? request;
-      }
-    } else {
-      vault = await ctx.views.vault(P.v);
-      if (vault) {
-        request = await pickRequest(vault);
-        if (request) startRequest(request);
-      }
+    const known = idsToRead();
+    const [vault, ...rows] = await Promise.all([ctx.views.vault(P.v), ...known.map((id) => ctx.views.request(P.v, id))]);
+    // A lagging node also answers null for a vault it has not heard of. Null only means no vault until one is seen.
+    if (vault) {
+      known.forEach((id, i) => noteRead(id, rows[i]));
+      P.hintR = null;
+      const fresh = vault.pending.filter((id) => !known.includes(id) && !P.items.get(id)?.state?.terminal);
+      const freshRows = await Promise.all(fresh.map((id) => ctx.views.request(P.v, id)));
+      fresh.forEach((id, i) => noteRead(id, freshRows[i]));
+      P.vault = vault;
+      P.ksSeen ??= vault.k_s;
     }
     await skewing;
-    // A lagging node also answers null for a vault it has not heard of. Null only means no vault until one is seen.
-    if (vault) P.vault = vault;
     P.vaultRead = true;
-    P.request = request;
     P.readFails = 0;
     P.readWords = null;
   } catch (err) {
@@ -188,7 +213,8 @@ async function tick() {
       P.readWords = err.verbatim ?? err.message;
     }
   }
-  if (Date.now() - P.statusAt >= (P.relay.reachable && P.relay.owner.up ? STATUS_MS : STATUS_DOWN_MS)) {
+  const statusEvery = !P.relay.reachable || !P.relay.owner.up || P.rs?.cancellable ? STATUS_DOWN_MS : STATUS_MS;
+  if (Date.now() - P.statusAt >= statusEvery) {
     P.statusAt = Date.now();
     ctx.relay.status().then((status) => {
       P.relay = status;
@@ -196,29 +222,28 @@ async function tick() {
     });
   }
   judge();
+  checkCoins();
   if (P.rs?.kind === 'cancelled' && !P.coinStill) checkCoin();
   if (P.vault && !P.rs) readBalance();
   pollSoon(P.tap?.phase === 'sending' ? FAST_POLL_MS : POLL_MS);
 }
 
-function startRequest(request) {
-  if (P.r === request.id && P.lastKnown) return;
-  const fresh = P.r !== request.id;
-  P.r = request.id;
-  if (fresh) {
-    P.face?.dispose();
-    P.face = null;
-    P.lastKnown = null;
-    P.rs = null;
-    P.prep = null;
-    P.frozenText = null;
-    P.tooLateTxid = null;
-    P.coinStill = false;
-    P.stampLive = false;
-    P.notice = null;
-    saveFragment({ tx: null, f: null });
-  }
-  saveFragment({ r: request.id });
+function startRequest(id) {
+  if (P.r === id) return;
+  P.face?.dispose();
+  P.face = null;
+  P.lastKnown = null;
+  P.rs = null;
+  P.prep = null;
+  P.frozenText = P.frozenBy[id] ?? null;
+  P.tooLateTxid = null;
+  P.tooLateUnsent = false;
+  P.finalAt = 0;
+  P.coinStill = false;
+  P.stampLive = false;
+  P.pin = null;
+  P.r = id;
+  saveFragment({ r: id });
 }
 
 // ---------------------------------------------------------------- what the reads mean
@@ -240,6 +265,17 @@ function rpOk() {
   return hostFits && toHex(rpIdHashOf(rpId)) === P.vault.rp_id_hash;
 }
 
+/** Every request's state, from what was last read of it. A null counts only once it has stayed null. */
+function judgeItems(vault) {
+  const now = chainNow();
+  for (const item of P.items.values()) {
+    const raw = requestState({ request: item.current, vault, chainNow: now, lastKnown: item.request });
+    if (raw.kind === 'unseen' || raw.kind === 'no_vault') continue;
+    if (!item.current && item.nulls < NULL_READS_TO_BELIEVE) continue;
+    item.state = advanceState(item.state, raw);
+  }
+}
+
 function judge() {
   if (P.vaultRead && !P.vault) {
     render('wrong_vault');
@@ -254,29 +290,23 @@ function judge() {
     render('inactive');
     return;
   }
-  if (P.r !== null) {
-    let lastKnown = P.lastKnown;
-    P.nullReads = P.request ? 0 : (P.nullReads ?? 0) + 1;
-    if (P.request) {
-      P.lastKnown = P.request;
-      lastKnown = P.request;
-    } else if (!lastKnown && P.fragment.tx) {
-      // This page sent the cancel and kept its hash, then the row was swept: a sighting, carried across a reload.
-      lastKnown = { status: 'Pending', epoch: vault.spend_epoch - 1, expires_at: 0, inputs: [] };
-    }
-    const raw = requestState({ request: P.request, vault, chainNow: chainNow(), lastKnown });
-    const unsure = !P.request && P.nullReads < NULL_READS_TO_BELIEVE;
-    if (raw.kind !== 'unseen' && !unsure) {
-      const before = P.rs;
-      P.rs = advanceState(before, raw);
-      if (P.rs.kind === 'cancelled' && before?.kind !== 'cancelled') onCancelled(Boolean(before && before.kind !== 'cancelled'));
-    }
-  }
-  const s = P.rs;
-  if (P.r === null || !s) {
+  judgeItems(vault);
+  const { focus, moreWaiting, alreadySigned } = chooseOnScreen([...P.items.values()], {
+    selfSpk: vault.script_pubkey,
+    realValue: (request) => coinCheck(request, P.coinFacts).real,
+  });
+  P.moreWaiting = moreWaiting;
+  P.alreadySigned = alreadySigned;
+  if (!focus) {
     render('idle');
     return;
   }
+  startRequest(focus.id);
+  const before = P.rs;
+  P.lastKnown = focus.request;
+  P.rs = focus.state;
+  const s = P.rs;
+  if (s.kind === 'cancelled' && before?.kind !== 'cancelled') onCancelled(Boolean(before));
   switch (s.kind) {
     case 'waiting':
     case 'unlocked':
@@ -314,7 +344,12 @@ function onCancelled(live) {
   const reading = P.face?.text ?? null;
   if (reading && !P.frozenText) P.frozenText = reading;
   P.stampLive = live;
-  if (P.frozenText) saveFragment({ f: P.frozenText });
+  // The digits stay exactly where they were when the stamp lands, because this frame is on film.
+  if (live && P.face?.wrap.isConnected) P.pin = { top: P.face.wrap.getBoundingClientRect().top };
+  if (P.frozenText) {
+    P.frozenBy[P.r] = P.frozenText;
+    saveSeen();
+  }
 }
 
 /** The new K_s and the digest, ready before the tap, so a tap goes straight to the sheet. The seed is dropped here. */
@@ -328,13 +363,18 @@ function ensurePrep() {
   return P.prep;
 }
 
+/** A txid only once a node holds that transaction: until someone broadcasts it, it is only the contract's bytes. */
 async function readFinalTx() {
-  if (P.finalReading) return;
+  if (P.finalReading || Date.now() - P.finalAt < FINAL_MS) return;
   P.finalReading = true;
+  P.finalAt = Date.now();
   try {
     const hex = await ctx.views.finalTx(P.v, P.r);
     if (hex) {
-      P.tooLateTxid = txidOf(parseTx(fromHex(hex)));
+      const txid = txidOf(parseTx(fromHex(hex)));
+      const held = (await ctx.esplora.tx(txid).catch(() => null))?.txid === txid;
+      P.tooLateTxid = held ? txid : null;
+      P.tooLateUnsent = !held;
       render('too_late', true);
     }
   } catch {
@@ -359,6 +399,40 @@ async function checkCoin() {
   } catch {
     // Mutinynet did not answer. The line stays off until it does.
   }
+}
+
+/** A request's coins are only what its proposer declared. This asks a node about each, and the screen says what it hears. */
+async function checkCoins() {
+  if (P.coinsReading || Date.now() - P.coinFactsAt < 1000) return;
+  const coins = [];
+  for (const item of P.items.values()) {
+    if (!item.state?.cancellable) continue;
+    for (const coin of item.request.inputs) {
+      const fact = P.coinFacts.get(`${coin.txid}:${coin.vout}`);
+      if (!fact?.known && Date.now() - (fact?.at ?? 0) >= COIN_MS) coins.push(coin);
+    }
+  }
+  if (!coins.length) return;
+  P.coinsReading = true;
+  P.coinFactsAt = Date.now();
+  const wasDown = P.coinsDown;
+  let changed = false;
+  try {
+    await Promise.all(coins.map(async (coin) => {
+      const key = `${coin.txid}:${coin.vout}`;
+      const tx = await ctx.esplora.tx(coin.txid);
+      const value = tx?.vout?.[coin.vout]?.value;
+      const known = Number.isSafeInteger(value);
+      if (P.coinFacts.get(key)?.known !== known) changed = true;
+      P.coinFacts.set(key, known ? { known, value } : { known, at: Date.now() });
+    }));
+    P.coinsDown = false;
+  } catch {
+    P.coinsDown = true;
+  } finally {
+    P.coinsReading = false;
+  }
+  if (changed || wasDown !== P.coinsDown) judge();
 }
 
 async function readBalance() {
@@ -409,11 +483,6 @@ async function finishTap(asking, prep) {
     onTapFailed(err);
     return;
   }
-  if (assertion.credentialId?.length && !P.credential) {
-    P.credential = assertion.credentialId;
-    rememberCredential(P.v, credentialB64());
-    saveFragment({ c: credentialB64() });
-  }
   if (P.rs?.terminal) {
     P.tap = null;
     judge();
@@ -428,11 +497,19 @@ async function finishTap(asking, prep) {
     judge();
     return;
   }
+  // This id has now made an assertion this vault's passkey signed, so it is worth keeping. Nothing before this is.
+  if (assertion.credentialId?.length) {
+    P.credential = assertion.credentialId;
+    P.credentialTrusted = true;
+    rememberCredential(P.v, credentialB64());
+    saveFragment({ c: credentialB64() });
+  }
   P.tap.phase = 'sending';
   P.tap.sentAt = Date.now();
   render('sending');
   pollSoon(FAST_POLL_MS);
   timings.sent = performance.now();
+  P.txSent = true; // Holds the hash's slot on the stamp, if the stamp lands before the relay answers.
   let sent;
   try {
     sent = await ctx.relay.call('cancel_all_and_rotate', rotateArgs({ vaultHex: P.v, newKs: prep.newKs, nonce: prep.nonce, expiresAt: prep.expiresAt, assertion: assertion.args }));
@@ -441,16 +518,31 @@ async function finishTap(asking, prep) {
     return;
   }
   timings.included = performance.now();
-  saveFragment({ tx: sent.hash });
+  P.txSent = sent.hash;
   if (P.tap) P.tap.hash = sent.hash;
   watchOutcome(sent.hash);
+}
+
+/**
+ * A link can name any hash, so a screen never takes one from it, and a failed read of a credential means little: a
+ * link can name a junk id too, and a browser refuses that in the same words as a person closing the sheet. So an id
+ * that has never made an assertion is dropped after one failed tap, and the next tap offers any passkey here.
+ */
+function forgetUntrustedCredential(fast) {
+  if (!P.credential || (P.credentialTrusted && !fast)) return false;
+  P.credential = null;
+  P.credentialTrusted = false;
+  saveFragment({ c: null });
+  return true;
 }
 
 function onTapFailed(err) {
   P.tap = null;
   P.hang = false;
   if (err instanceof PasskeyFailed) {
-    if (err.kind === 'blocked') P.blocked = true;
+    const dropped = err.kind === 'blocked' || err.kind === 'dismissed' ? forgetUntrustedCredential(err.kind === 'blocked') : false;
+    if (dropped && err.kind === 'blocked') P.notice = { say: 'Not cancelled. No passkey sheet came up, so the passkey this link names may not be on this phone. Tap Cancel to try any passkey here.', words: null };
+    else if (err.kind === 'blocked') P.blocked = true;
     else if (err.kind === 'wrong_site') P.rpBad = true;
     else if (err.kind === 'dismissed') P.notice = { say: 'Not cancelled. The sheet closed.', words: null, line: P.credential ? null : 'If it offered no passkey, this phone doesn\'t hold this vault\'s.' };
     else P.notice = { warn: true, say: 'Not cancelled.', words: err.message };
@@ -464,6 +556,7 @@ function onTapFailed(err) {
 function onRelayRefused(err) {
   P.tap = null;
   P.prep = null;
+  P.txSent = null;
   if (err instanceof RelayRefused) {
     if (err.code === 'relay_down') P.relay = { ...P.relay, reachable: false, owner: { up: false, why: 'relay_down' } };
     else if (err.code === 'daily_ceiling') P.relay = { ...P.relay, owner: { up: false, why: 'daily_ceiling', resets_at: err.resetsAt } };
@@ -476,23 +569,35 @@ function onRelayRefused(err) {
   judge();
 }
 
-/** Inclusion says nothing about what the contract did: the contract is read, and a failure here shows why. */
+/**
+ * Inclusion says nothing about what the contract did: the contract is read, and a failure here shows why. A hash goes
+ * on the screen only once the chain says this call ran, whichever came first, the stamp or the answer. A node can answer
+ * before the receipt has run, so only a settled answer counts.
+ */
 async function watchOutcome(hash) {
   const deadline = Date.now() + OUTCOME_MS;
-  while (P.tap && Date.now() < deadline && P.relay.relayAccount) {
+  while (Date.now() < deadline && P.relay.relayAccount) {
+    let outcome = null;
     try {
-      const outcome = await ctx.reader.txOutcome(hash, P.relay.relayAccount);
-      if (outcome.known && outcome.failure) {
-        P.tap = null;
-        P.prep = null;
-        saveFragment({ tx: null });
-        P.notice = { warn: true, say: 'Not cancelled. The contract refused it.', words: outcome.failure };
-        judge();
-        return;
-      }
-      if (outcome.known) break;
+      outcome = await ctx.reader.txOutcome(hash, P.relay.relayAccount, { wait: 'EXECUTED_OPTIMISTIC' });
     } catch {
       // Not readable yet. Reads of the request go on regardless.
+    }
+    if (outcome?.settled && outcome.failure) {
+      P.txSent = null;
+      if (P.tap?.hash === hash) {
+        P.tap = null;
+        P.prep = null;
+        P.notice = { warn: true, say: 'Not cancelled. The contract refused it.', words: outcome.failure };
+      }
+      judge();
+      return;
+    }
+    if (outcome?.settled) {
+      P.tx = hash;
+      saveSeen();
+      if (P.screen === 'cancelled') render('cancelled', true);
+      break;
     }
     await new Promise((r) => { setTimeout(r, 500); });
   }
@@ -526,6 +631,8 @@ const NO_BUTTON_WORDS = {
   relay_down: 'The relay is down, so this page can\'t send a cancel.',
   relay_owner_down: 'The relay is down, so this page can\'t send a cancel.',
   rpc_down: 'The relay can\'t reach NEAR right now, so this page can\'t send a cancel.',
+  owner_key_low: 'The relay\'s key can\'t pay for a cancel right now, so this page can\'t send one.',
+  owner_key_missing: 'The relay\'s key can\'t pay for a cancel right now, so this page can\'t send one.',
   relay_not_configured: 'The relay is not set up, so this page can\'t send a cancel.',
   daily_ceiling: 'The relay hit today\'s limit.',
   no_passkey_here: 'This phone doesn\'t hold this vault\'s passkey.',
@@ -551,6 +658,10 @@ function destination(request, vault) {
   return spkToAddress(ctx.instance.network, request.to) ?? `script ${request.to}`;
 }
 
+function keyIsStopped() {
+  return P.vault.k_s_suspended || (P.ksSeen !== null && P.vault.k_s !== P.ksSeen);
+}
+
 function faceFor(text, { stopped = false } = {}) {
   if (!P.face) P.face = new ClockFace();
   if (text) P.face.set(text);
@@ -558,19 +669,47 @@ function faceFor(text, { stopped = false } = {}) {
   return P.face;
 }
 
+/** The contract's numbers. With change, what leaves is the amount, and what comes back is said as such. */
+function amountLines(request) {
+  if (request.change === null) {
+    return [
+      h('div', { class: 'sats', id: 'amount' }, satsText(sumInputs(request))),
+      request.fee > 0 ? h('p', { class: 'small fee' }, `${satsText(request.fee)} of it is the Bitcoin fee.`) : null,
+    ];
+  }
+  return [
+    h('div', { class: 'sats', id: 'amount' }, satsText(request.amount)),
+    h('p', { class: 'small', id: 'change' }, `${satsText(request.change)} comes back to this vault. ${satsText(request.fee)} goes to the Bitcoin fee.`),
+  ];
+}
+
+/** Null while a node agrees with what the request declares, or has not been asked. */
+function coinWords(request) {
+  const name = ctx.config.labels.bitcoin;
+  const check = coinCheck(request, P.coinFacts);
+  if (check.unknown) return `${name} doesn't know ${request.inputs.length > 1 ? 'these coins' : 'this coin'}. This amount is only what the request claims.`;
+  if (check.differs) return `${name} says ${request.inputs.length > 1 ? 'these coins hold' : 'this coin holds'} ${satsText(check.real)}, not what the request claims.`;
+  if (P.coinsDown) return `Can't check this amount with ${name} right now.`;
+  return null;
+}
+
 function askedBlock(request) {
-  const total = sumInputs(request);
+  const words = coinWords(request);
   return [
     h('div', { class: 'label' }, 'to'),
     h('div', { class: 'addr', id: 'to' }, destination(request, P.vault)),
-    h('div', { class: 'sats', id: 'amount' }, satsText(total)),
-    total - request.amount > 0 ? h('p', { class: 'small fee' }, `${satsText(total - request.amount)} of it is the Bitcoin fee.`) : null,
+    amountLines(request),
+    words ? h('p', { class: 'small warnline', id: 'coin-check' }, words) : null,
+    P.moreWaiting ? h('p', { class: 'small', id: 'more' }, `${P.moreWaiting} more ${P.moreWaiting === 1 ? 'request' : 'requests'} waiting. Cancel stops them all.`) : null,
   ];
 }
 
 /** Notices sit under the clock, and only ever hold a true thing the screen would otherwise hide. */
 function noticeNodes() {
   const out = [];
+  if (nodeLooksStuck()) out.push(h('p', { class: 'notice warn', id: 'stale-node' }, 'The node this page reads looks stuck, so this may be out of date.'));
+  if (P.alreadySigned) out.push(h('p', { class: 'small', id: 'also-signed' }, `${P.alreadySigned} other ${P.alreadySigned === 1 ? 'request has' : 'requests have'} already been signed.`));
+  if (needsThatPhone()) out.push(h('p', { class: 'small', id: 'that-phone' }, 'Only the phone holding this vault\'s passkey can cancel.'));
   if (P.readFails >= READ_FAILS_TO_SAY) {
     out.push(h('p', { class: 'notice warn', id: 'read-down' }, 'Can\'t read the NEAR contract right now.'));
     if (P.readWords) out.push(h('p', { class: 'words' }, P.readWords));
@@ -590,6 +729,17 @@ function noticeNodes() {
   return out;
 }
 
+/** The chain's clock against this machine's. Only behind: a test chain's clock runs ahead, and that hides no cancel. */
+function nodeLooksStuck() {
+  const sample = ctx.skew.sample();
+  return Boolean(sample) && sample.blockMs - sample.localMs < -STALE_NODE_MS;
+}
+
+/** A page can't ask a browser which passkeys it holds, so with no id to go on it says who this button is for. */
+function needsThatPhone() {
+  return !P.credential && !P.seed && P.rs?.cancellable;
+}
+
 function clockBlock(s) {
   const face = faceFor(null);
   if (s?.kind === 'unlocked') {
@@ -602,6 +752,22 @@ function clockBlock(s) {
 
 function afterAttach() {
   P.face?.fit();
+  if (P.screen === 'cancelled') pinDigits();
+}
+
+/** Room for what can still land under the stamp: the hash, and the coin line with its address. */
+const ROOM_FOR_LATER = 130;
+
+function pinDigits() {
+  if (!P.pin || !P.face?.wrap.isConnected) return;
+  const { wrap } = P.face;
+  if (P.pin.margin === undefined) {
+    const last = screen().lastElementChild?.getBoundingClientRect().bottom ?? 0;
+    const room = window.innerHeight - last - (P.coinStill ? 0 : ROOM_FOR_LATER);
+    const base = Number.parseFloat(getComputedStyle(wrap).marginTop) || 0;
+    P.pin.margin = base + Math.max(0, Math.min(P.pin.top - wrap.getBoundingClientRect().top, room));
+  }
+  wrap.style.marginTop = `${P.pin.margin}px`;
 }
 
 const drawers = {
@@ -640,19 +806,29 @@ const drawers = {
     }
     out.push(h('div', { class: `stamp${P.stampLive ? ' slam' : ''}`, id: 'stamp' }, 'CANCELLED'));
     P.stampLive = false;
-    if (P.fragment.tx) out.push(hashBlock(nearTxLabel(ctx.config, P.fragment.tx), P.fragment.tx, nearTxLink(ctx.config, P.fragment.tx)));
-    if (P.rs.reason === 'rotated') out.push(h('p', { class: 'say', id: 'key-line' }, 'That key can\'t ask again.'));
+    // Its slot is kept from the moment this page has sent one, so the line under it does not jump when it arrives.
+    if (P.tx) out.push(h('div', { class: 'hashslot', id: 'near-tx' }, hashBlock(nearTxLabel(ctx.config, P.tx), P.tx, nearTxLink(ctx.config, P.tx))));
+    else if (P.txSent) out.push(h('div', { class: 'hashslot', id: 'near-tx' }));
+    // Only what the contract says about the key now. A freeze that was lifted also moved the epoch, and stopped nothing.
+    if (keyIsStopped()) out.push(h('p', { class: 'say', id: 'key-line' }, 'That key can\'t ask again.'));
     else if (P.rs.reason === 'frozen') out.push(h('p', { class: 'say' }, 'The cold key froze this vault.'));
+    if (P.alreadySigned) out.push(h('p', { class: 'small', id: 'also-signed' }, `${P.alreadySigned} other ${P.alreadySigned === 1 ? 'request has' : 'requests have'} already been signed.`));
     if (P.coinStill) {
       out.push(h('p', { class: 'say', id: 'coin-line' }, 'The coin never moved.'));
-      out.push(hashBlock(btcAddressLabel(ctx.config, P.vault.address), P.vault.address, btcAddressLink(ctx.config, P.vault.address)));
+      const address = hashBlock(btcAddressLabel(ctx.config, P.vault.address), P.vault.address, btcAddressLink(ctx.config, P.vault.address));
+      address.classList.add('tight');
+      out.push(address);
     }
     return out;
   },
   too_late() {
-    const out = [h('p', { class: 'say big', id: 'too-late' }, 'Too late. The contract signed.')];
+    const signing = P.rs.kind === 'signing';
+    const out = [h('p', { class: 'say big', id: 'too-late' }, signing ? 'Too late. The contract asked for the signature.' : 'Too late. The contract signed.')];
+    if (P.lastKnown) out.push(h('p', { class: 'line', id: 'too-late-to' }, `to ${destination(P.lastKnown, P.vault)}`));
     if (P.tooLateTxid) out.push(hashBlock(btcTxLabel(ctx.config, P.tooLateTxid), P.tooLateTxid, btcTxLink(ctx.config, P.tooLateTxid)));
-    else if (P.lastKnown) out.push(h('p', { class: 'line dim' }, P.rs.kind === 'signing' ? 'Waiting for the signature.' : 'Reading the transaction.'));
+    else if (P.tooLateUnsent) out.push(h('p', { class: 'line dim', id: 'too-late-unsent' }, `No ${ctx.config.labels.bitcoin} node has that transaction yet. Anyone can send it.`));
+    else if (P.lastKnown) out.push(h('p', { class: 'line dim' }, signing ? 'Waiting for the signature.' : 'Reading the transaction.'));
+    if (P.alreadySigned) out.push(h('p', { class: 'small', id: 'also-signed' }, `${P.alreadySigned} other ${P.alreadySigned === 1 ? 'request has' : 'requests have'} already been signed.`));
     return out;
   },
   expired() {
@@ -685,7 +861,8 @@ const drawers = {
 };
 
 function render(id, force = false) {
-  const key = `${id}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.readWords}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}`;
+  const asked = P.lastKnown && P.vault ? `${P.r}|${coinWords(P.lastKnown)}|${P.moreWaiting}|${P.alreadySigned}|${keyIsStopped()}|${needsThatPhone()}|${nodeLooksStuck()}|${P.txSent}|${P.tooLateUnsent}` : '';
+  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.readWords}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}`;
   if (!force && key === P.renderKey) return;
   P.renderKey = key;
   P.screen = id;
@@ -789,6 +966,7 @@ async function finishMake(confirming, prepared, lines) {
     P.seed = prepared.keys.seed;
     P.cold = prepared.keys.cold;
     P.credential = prepared.passkey.credentialId;
+    P.credentialTrusted = true;
     rememberCredential(made.vault.id, credentialB64());
     P.fragment = { refused: [], v: made.vault.id, c: credentialB64() };
     writeFragment(P.fragment);
@@ -819,14 +997,22 @@ function makeFailed(err) {
 }
 
 async function onFund() {
+  if (P.funding) return;
+  P.funding = true;
+  P.notice = { say: 'Asking for a test coin.', words: null };
+  render('idle', true);
   try {
-    const paid = await ctx.relay.fund(P.v);
+    const pow = await solvePow(fundsPowTarget(P.v), P.relay.powBits);
+    const paid = await ctx.relay.fund(P.v, { pow });
+    P.notice = null;
     P.fundedTxid = paid.txid;
     P.balanceAt = 0;
     render('idle', true);
   } catch (err) {
     P.notice = { warn: true, say: 'No coins sent.', words: err.verbatim ?? `${err.code}: ${err.message}` };
     render('idle', true);
+  } finally {
+    P.funding = false;
   }
 }
 

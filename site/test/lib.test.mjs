@@ -12,6 +12,7 @@ import { NearReader, RpcDown, StaleRead, ViewRefused } from '../lib/near-read.mj
 import { checkPow, solvePow } from '../lib/pow.mjs';
 import { RelayClient, RelayRefused } from '../lib/relay-client.mjs';
 import { executeTgas, RELAY_ERRORS, RELAY_METHODS, relayBodyProblem } from '../lib/relay-table.mjs';
+import { chooseOnScreen, coinCheck } from '../lib/pending.mjs';
 import { advanceState, cancelButton, requestState } from '../lib/request-state.mjs';
 import { credentialsFor } from '../lib/passkey-source.mjs';
 import { parseRequest, parseVault, ShapeError } from '../lib/views.mjs';
@@ -70,11 +71,80 @@ test('SkewTracker: keeps the reading closest to the chain, and forgets old ones'
   assert.deepEqual(t.add({ blockMs: 12_000, localMs: 20_000 }), { blockMs: 12_000, localMs: 20_000 });
 });
 
+test('SkewTracker: one read ahead of the rest moves nothing, and a second that agrees moves it', () => {
+  const t = new SkewTracker();
+  t.add({ blockMs: 10_000, localMs: 10_000 });
+  t.add({ blockMs: 15_000, localMs: 15_000 });
+  const twoHoursOn = t.add({ blockMs: 20_000 + 7_200_000, localMs: 20_000 });
+  assert.equal(twoHoursOn.blockMs - twoHoursOn.localMs, 0, 'a block time two hours ahead, once');
+  const again = t.add({ blockMs: 25_000, localMs: 25_000 });
+  assert.equal(again.blockMs - again.localMs, 0, 'and the next good read does not bring it back');
+
+  const jump = new SkewTracker();
+  jump.add({ blockMs: 10_000, localMs: 10_000 });
+  jump.add({ blockMs: 15_000, localMs: 15_000 });
+  const unconfirmed = jump.add({ blockMs: 280_000, localMs: 20_000 });
+  assert.equal(unconfirmed.blockMs - unconfirmed.localMs, 0);
+  assert.equal(jump.add({ blockMs: 285_000, localMs: 25_000 }).blockMs, 280_000, 'a real jump, seen twice');
+  const first = new SkewTracker();
+  assert.equal(first.sample(), null);
+  assert.equal(first.add({ blockMs: 5, localMs: 1 }).blockMs, 5, 'one read is all there is at the start');
+});
+
 // ---------------------------------------------------------------- request state
 
 const VAULT = { spend_epoch: 4, frozen_until: null };
 const req = (over = {}) => ({ status: 'Pending', epoch: 4, unlock: 1000, expires_at: 5000, ...over });
 const read = (request, chainNow = 500, vault = VAULT, lastKnown = null) => requestState({ request, vault, chainNow, lastKnown });
+
+test('advanceState: expired does not stick, because it rests on a block time. Cancelled and signed do', () => {
+  const expired = read(req(), 6000);
+  assert.equal(expired.kind, 'expired');
+  assert.equal(expired.terminal, false);
+  assert.equal(advanceState(expired, read(req(), 500)).kind, 'waiting', 'a read with a sane clock brings the request back');
+  assert.equal(advanceState(read(req({ epoch: 3 })), read(req(), 6000)).kind, 'cancelled');
+});
+
+test('chooseOnScreen: a small self-spend cannot hide a drain, or end the screen while the drain can still be cancelled', () => {
+  const SELF = 'self';
+  const item = (id, state, over = {}) => ({ id, state: { kind: state, cancellable: state === 'waiting' || state === 'unlocked' }, request: { to: 'thief', unlock: 1000, inputs: [{ value: 2000 }], ...over } });
+  const decoy = { to: SELF, unlock: 100, inputs: [{ value: 1000 }] };
+  const on = (...items) => chooseOnScreen(items, { selfSpk: SELF });
+  const both = on(item(0, 'waiting'), item(1, 'waiting', decoy));
+  assert.deepEqual([both.focus.id, both.moreWaiting, both.alreadySigned], [0, 1, 0]);
+  const signedDecoy = on(item(0, 'waiting'), item(1, 'signed', decoy));
+  assert.deepEqual([signedDecoy.focus.id, signedDecoy.focus.state.kind, signedDecoy.moreWaiting, signedDecoy.alreadySigned], [0, 'waiting', 0, 1], 'Cancel stays');
+  const cancelled = on(item(0, 'cancelled'), item(1, 'signed', decoy));
+  assert.deepEqual([cancelled.focus.id, cancelled.focus.state.kind, cancelled.alreadySigned], [0, 'cancelled', 1]);
+  const realDrain = on(item(0, 'signed'), item(1, 'cancelled', decoy));
+  assert.deepEqual([realDrain.focus.id, realDrain.focus.state.kind], [0, 'signed'], 'a spend that paid out is what the screen is about');
+  assert.equal(on(item(0, 'cancelled'), item(1, 'signed')).focus.id, 1, 'among spends, the latest');
+  assert.equal(on(item(5, 'waiting', { inputs: [{ value: 5000 }] }), item(7, 'waiting')).focus.id, 5, 'the larger');
+  assert.equal(on().focus, null);
+  assert.equal(on({ id: 0, state: null, request: null }).focus, null, 'a request not yet read is not on the screen');
+  const valued = chooseOnScreen([item(5, 'waiting', { inputs: [{ value: 5_000_000 }] }), item(7, 'waiting')], { selfSpk: SELF, realValue: (r) => (r.inputs[0].value > 2000 ? 0 : 2000) });
+  assert.equal(valued.focus.id, 7, 'a coin a node doesn\'t know counts for nothing, whatever it declares');
+});
+
+test('coinCheck: what a node says about each coin, and declared only until it has said', () => {
+  const request = { inputs: [{ txid: 'a', vout: 0, value: 100 }, { txid: 'b', vout: 1, value: 200 }] };
+  assert.deepEqual(coinCheck(request, new Map()), { real: 300, unknown: 0, differs: false, complete: false });
+  assert.deepEqual(coinCheck(request, new Map([['a:0', { known: true, value: 100 }], ['b:1', { known: true, value: 200 }]])), { real: 300, unknown: 0, differs: false, complete: true });
+  assert.deepEqual(coinCheck(request, new Map([['a:0', { known: false }], ['b:1', { known: true, value: 150 }]])), { real: 150, unknown: 1, differs: true, complete: true });
+});
+
+test('txOutcome: an answer from before the contract ran is not settled, and a settled failure is the chain\'s words', async () => {
+  const answers = { INCLUDED: { final_execution_status: 'INCLUDED', status: { SuccessValue: '' }, receipts_outcome: [] }, EXECUTED_OPTIMISTIC: { final_execution_status: 'EXECUTED_OPTIMISTIC', status: { Failure: { ActionError: 'BadNonce' } }, receipts_outcome: [] } };
+  const reader = new NearReader({ urls: ['http://x'], fetchFn: async (url, init) => {
+    const { params } = JSON.parse(init.body);
+    return new Response(JSON.stringify({ result: answers[params.wait_until] }));
+  } });
+  const early = await reader.txOutcome('h', 's');
+  assert.deepEqual([early.known, early.settled, early.failure], [true, false, null]);
+  const ran = await reader.txOutcome('h', 's', { wait: 'EXECUTED_OPTIMISTIC' });
+  assert.deepEqual([ran.known, ran.settled], [true, true]);
+  assert.match(ran.failure, /BadNonce/);
+});
 
 test('requestState: waiting, then unlocked at exactly the unlock, still cancellable until execute', () => {
   assert.equal(read(req(), 999).kind, 'waiting');
@@ -421,8 +491,8 @@ test('RelayClient.fund: the page names a vault, never a payee', async () => {
     sent.push([path, JSON.parse(init.body)]);
     return { status: 200, json: async () => ({ ok: true, txid: 'abc', vout: 0, value: 2000 }) };
   } });
-  await client.fund('aa');
-  assert.deepEqual(sent, [['/f', { vault: 'aa' }]]);
+  await client.fund('aa', { pow: 7 });
+  assert.deepEqual(sent, [['/f', { vault: 'aa', pow: 7 }]]);
 });
 
 // ---------------------------------------------------------------- where a page's passkey comes from

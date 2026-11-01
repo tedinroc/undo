@@ -1,11 +1,12 @@
 // What the phone page keeps across a reload: the chain, plus these. The shared fields go through site/lib's strict
 // parser. These are the page's own, and they are just as strict. No field here is a key of anything that holds a coin:
 // `k` is only written in the test mode, whose vault holds made-up coins.
+//
+// Anyone can write a link, so nothing a screen claims about a request lives in the fragment. `r` is only a place to
+// look, and what this page saw and sent stays in sessionStorage, which a link cannot write.
 import { parseFragment } from '/site/lib/index.mjs';
 
 const EXTRA = {
-  tx: /^[1-9A-HJ-NP-Za-km-z]{32,64}$/,      // the cancelling NEAR hash. No view names it, so the page keeps it
-  f: /^\d{1,3}:\d\d\.\d$/,                  // the digits as they froze on this screen
   h7: /^1$/,                                // test mode
   op: /^(02|03)[0-9a-f]{64}$/,              // test mode: the operator passkey's public key. It cannot be asked for twice
   opc: /^[A-Za-z0-9_-]{1,512}$/,            // test mode: its credential id
@@ -15,7 +16,7 @@ const EXTRA = {
   pk: /^[a-z0-9.]{0,16}$/,                  // test mode: the first passkey's backup flags and the proof tap's S form
 };
 
-const ORDER = ['h7', 'v', 'r', 'c', 'k', 'to', 'tx', 'f', 'pk', 'aw', 'log', 'op', 'opc', 'q'];
+const ORDER = ['h7', 'v', 'r', 'c', 'k', 'to', 'pk', 'aw', 'log', 'op', 'opc', 'q'];
 
 export function parsePhoneFragment(hash) {
   const out = parseFragment(hash);
@@ -49,8 +50,30 @@ export function writeFragment(fields, win = globalThis) {
 }
 
 const STORE_PREFIX = 'undo.passkey.';
+const SEEN_PREFIX = 'undo-phone:';
 
-/** localStorage holds the passkey's credential id and nothing else. It can be absent or throw on any call. */
+/** What this tab saw of a vault's requests and sent itself: { seen, tx, frozen, ks }. Absent in a private window. */
+export function recallSeen(vaultHex, win = globalThis) {
+  try {
+    return JSON.parse(win.sessionStorage.getItem(SEEN_PREFIX + vaultHex) ?? 'null');
+  } catch {
+    return null;
+  }
+}
+
+export function rememberSeen(vaultHex, value, win = globalThis) {
+  try {
+    win.sessionStorage.setItem(SEEN_PREFIX + vaultHex, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * localStorage holds the passkey's credential id and nothing else. It can be absent or throw on any call. Only an id
+ * that has made an assertion goes in here, never one a link named, or one junk link would break Cancel for good.
+ */
 export function rememberCredential(vaultHex, credentialB64, win = globalThis) {
   try {
     win.localStorage.setItem(STORE_PREFIX + vaultHex, credentialB64);

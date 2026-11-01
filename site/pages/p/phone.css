@@ -18,6 +18,8 @@ a { color: inherit; }
 .wordmark { position: static; font: 800 24px/1 var(--sans); }
 
 #screen { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding-top: 14px; }
+/* The tx hash wraps to two lines at this size, in its slot, so nothing under it jumps when it arrives. */
+#near-tx .hash { font-size: 16px; }
 .grow { flex: 1 1 auto; min-height: 8px; }
 
 /* ---- what is asked */
@@ -25,6 +27,7 @@ a { color: inherit; }
 .addr { font: 600 17px/1.25 var(--mono); overflow-wrap: anywhere; margin: 3px 0 10px; }
 .sats { font: 800 44px/1.05 var(--sans); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-top: 2px; }
 .small { font: 500 14px/1.3 var(--sans); color: var(--dim); margin: 3px 0 0; }
+.small.warnline { color: #FFB4AE; font-weight: 700; }
 
 /* ---- the clock: every character sits in a fixed slot */
 .clockwrap { position: relative; margin: 10px calc(var(--gutter) * -1) 0; padding: 0 var(--gutter); text-align: center;
@@ -63,6 +66,10 @@ a { color: inherit; }
 .notice { font: 700 18px/1.25 var(--sans); margin: 8px 0 0; color: var(--white); }
 .notice.warn { color: #FFB4AE; }
 .words { font: 500 14px/1.35 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; margin: 6px 0; color: var(--white); }
+.hashslot { min-height: 70px; }
+#coin-line { margin: 6px 0 4px; }
+.hashblock.tight .hash { font-size: 15px; line-height: 1.2; }
+.hashblock.tight .hashline { margin-top: 0; }
 .hashline { font: 500 14px/1.2 var(--mono); color: var(--dim); margin: 12px 0 2px; }
 .hash { font: 700 22px/1.2 var(--mono); overflow-wrap: anywhere; display: block; text-decoration: none; }
 a.hash { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
@@ -82,6 +89,13 @@ a.hash { text-decoration: underline; text-decoration-thickness: 1px; text-underl
   #cancel, .slot { height: 104px; }
   #cancel { font-size: 56px; }
   .fee { display: none; }
+}
+
+/* ---- a short screen with a browser's bars: Cancel stays on it, whatever else has something to say */
+@media (max-height: 700px) {
+  #cancel, .slot { height: 104px; }
+  #cancel { font-size: 56px; }
+  #synced, .fee { display: none; }
 }
 
 /* ---- the test mode's lists */

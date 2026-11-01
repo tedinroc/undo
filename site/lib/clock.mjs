@@ -34,25 +34,32 @@ export function digits(remainingMs) {
 }
 
 /**
- * The best reading of the chain's clock from several polls. Network delay and block age only ever make a
- * reading late, so among recent samples the latest-looking one is closest. A reading can reach the
- * screen up to the block age behind the chain and never ahead of what some node reported.
+ * The best reading of the chain's clock from several polls. Network delay and block age only ever make a reading late,
+ * so among recent samples the latest-looking one is closest, with one exception: a node can be wrong the other way, and
+ * one such read must not move a clock. So a sample that stands ahead of all the others waits until a second read agrees.
+ * A reading can reach the screen up to the block age behind the chain, and never ahead of what two reads reported.
  */
+const AGREE_MS = 5000;
+
 export class SkewTracker {
   constructor({ windowMs = 30_000 } = {}) {
     this.windowMs = windowMs;
     this.samples = [];
+    this.best = null;
   }
 
   add({ blockMs, localMs }) {
     this.samples.push({ blockMs, localMs });
     this.samples = this.samples.filter((s) => localMs - s.localMs <= this.windowMs);
+    const offset = (s) => s.blockMs - s.localMs;
+    const ahead = [...this.samples].sort((a, b) => offset(b) - offset(a));
+    // The furthest ahead that a second sample stands close behind. With no two agreeing, the most cautious one.
+    this.best = ahead.find((s, i) => i + 1 < ahead.length && offset(s) - offset(ahead[i + 1]) <= AGREE_MS) ?? ahead.at(-1);
     return this.sample();
   }
 
   /** { blockMs, localMs } for clock(), or null before the first poll. */
   sample() {
-    if (this.samples.length === 0) return null;
-    return this.samples.reduce((best, s) => (s.blockMs - s.localMs > best.blockMs - best.localMs ? s : best));
+    return this.best;
   }
 }

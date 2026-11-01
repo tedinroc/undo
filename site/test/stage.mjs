@@ -136,6 +136,7 @@ async function stageOn(rig, { port, softPasskey, relayEnv, miner }) {
     nearTxUrl: null,
     rpId,
     softPasskey,
+    h7: true,
   };
   const out = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'undo-stage-dist-'));
   build({ configObject: config, out });

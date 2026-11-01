@@ -7,7 +7,9 @@
 // Signed request of an old epoch is a spend that got through, and calling it cancelled would be a lie.
 
 export const STATES = ['no_vault', 'unseen', 'waiting', 'unlocked', 'signing', 'signed', 'cancelled', 'expired'];
-const TERMINAL = new Set(['cancelled', 'expired', 'signed']);
+// Not `expired`: it comes from the block time, and one bad read of that must not stick. A request past its expiry
+// reads expired on every later read anyway. Cancelled and signed come from the contract's own state.
+const TERMINAL = new Set(['cancelled', 'signed']);
 
 const state = (kind, reason = null) => ({
   kind,

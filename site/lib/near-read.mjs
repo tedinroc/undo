@@ -20,6 +20,8 @@ export class ViewRefused extends Error {
 /** Every node answered from a block older than one this page already read. Skip the tick. */
 export class StaleRead extends Error {}
 
+const SETTLED = new Set(['EXECUTED_OPTIMISTIC', 'EXECUTED', 'FINAL']);
+
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -133,11 +135,15 @@ export class NearReader {
    * A transaction's outcome, read by the page itself. `failure` is the chain's own JSON text. Reads the
    * state of a request, not this, to learn what happened: a transaction can report success with a dead
    * callback. This is only for showing why a call was refused.
+   *
+   * At the default `wait`, an answer can come before the contract has run, and then `failure` is null because nothing
+   * has failed yet: `settled` says whether it has run. EXECUTED_OPTIMISTIC waits for that, up to the reader's timeout,
+   * so use it only for a call with no long receipts behind it. An `execute` waits on the signer.
    */
-  async txOutcome(hash, sender) {
-    const { result, error } = await this.rpc('tx', { tx_hash: hash, sender_account_id: sender, wait_until: 'INCLUDED' });
-    if (error) return { known: false, verbatim: JSON.stringify(error) };
-    return { known: true, failure: failureOf(result), value: returnValue(result) };
+  async txOutcome(hash, sender, { wait = 'INCLUDED' } = {}) {
+    const { result, error } = await this.rpc('tx', { tx_hash: hash, sender_account_id: sender, wait_until: wait });
+    if (error) return { known: false, settled: false, verbatim: JSON.stringify(error) };
+    return { known: true, settled: SETTLED.has(result?.final_execution_status), failure: failureOf(result), value: returnValue(result) };
   }
 }
 

@@ -149,7 +149,7 @@ export function screenAwake(win = globalThis) {
 const PROBLEM_WORDS = {
   not_secure: 'This page was not opened over a secure connection, so passkeys are off.',
   no_webauthn: 'This browser has no passkeys, so this page can\'t cancel here. Open it in Safari or Chrome.',
-  webauthn_blocked: 'The passkey sheet never appeared. This browser is blocking passkeys, so this page can\'t cancel here. Open it in Safari or Chrome.',
+  webauthn_blocked: 'No passkey sheet came up. Either this phone doesn\'t hold this vault\'s passkey, or this browser is blocking passkeys. If it does hold it, open this page in Safari or Chrome.',
   no_platform_authenticator: 'This phone has no Face ID, fingerprint or screen lock this browser can use, so it can\'t make or use a passkey here.',
 };
 

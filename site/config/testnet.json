@@ -9,5 +9,6 @@
   "btcAddressUrl": "https://mutinynet.com/address/{}",
   "nearTxUrl": "https://testnet.nearblocks.io/txns/{}",
   "rpId": "undo-btc.pages.dev",
-  "softPasskey": false
+  "softPasskey": false,
+  "h7": true
 }

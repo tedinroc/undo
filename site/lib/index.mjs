@@ -7,6 +7,7 @@ export * from './fragment.mjs';
 export * from './intents.mjs';
 export { failureOf, NearReader, returnValue, RpcDown, StaleRead, ViewRefused } from './near-read.mjs';
 export * from './passkey-source.mjs';
+export * from './pending.mjs';
 export * from './pow.mjs';
 export * from './relay-client.mjs';
 export * from './relay-table.mjs';
