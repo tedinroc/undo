@@ -1,0 +1,11 @@
+{
+  "name": "undo-site",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The Undo pages, relay and shared browser library. No install step: the only dependency is tools/vendor/noble.",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"test/*.test.mjs\"",
+    "build": "node build.mjs --config config/testnet.json"
+  }
+}
