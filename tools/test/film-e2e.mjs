@@ -327,7 +327,8 @@ async function letTheJumpLand() {
     const b = await reader.blockTime();
     return b.blockMs - a.blockMs < 2500;
   }, 20_000);
-  await sleep(6000);
+  // A page reads block time every 5 s, and a jump ahead of its other reads counts only when a second read agrees.
+  await sleep(11_000);
 }
 
 /** Both digit readings at one instant, many times. The film's two screens must show one contract's clock. */
