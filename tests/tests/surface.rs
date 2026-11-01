@@ -1302,9 +1302,13 @@ async fn film_the_phones_cancel_reads_as_cancelled_and_the_stolen_key_cannot_ask
 
     // Once something swept it the request is gone, and that reads the same way.
     v.k_s = new_k_s;
-    h.propose_simple(&mut v, &c[0]).await?;
+    let next = h.propose_simple(&mut v, &c[0]).await?;
     assert!(h.request(&v, id).await?.is_null());
     assert!(reads_cancelled(&h, &v, id).await?);
+
+    // And the owner's next request, in the new epoch, does not read as cancelled.
+    assert_eq!(h.request(&v, next).await?["epoch"].as_u64(), Some(before + 1));
+    assert!(!reads_cancelled(&h, &v, next).await?);
     Ok(())
 }
 
