@@ -17,6 +17,8 @@ function memoryNamespace() {
   let nonce = 1000;
   const answers = {
     charge: { ok: true },
+    addCost: { ok: true },
+    refund: { ok: true },
     lease: () => ({ nonce: (nonce += 1) }),
     status: { ok: true, spent: { general: 0, owner: 0, funds: 0 }, resets_at: 0, coins: { free_sats: 0, refreshed_at: null } },
     funded: { ok: true, already: false },
@@ -38,6 +40,7 @@ function memoryNamespace() {
 
 const fakeRpc = (vaultView) => async (url, init) => {
   if (url.endsWith('/tx')) return new Response(txid(parseTx(fromHex(init.body))));
+  if (url.endsWith('/utxo')) return new Response('[]');
   const body = JSON.parse(init.body);
   if (body.method === 'block') return respond({ header: { hash: HASH, height: 10, timestamp_nanosec: '1000000000000' } });
   if (body.method === 'send_tx') return respond({ final_execution_status: 'INCLUDED' });
@@ -48,7 +51,7 @@ const fakeRpc = (vaultView) => async (url, init) => {
 let relayEnv = null;
 let relay = null;
 function relayWith(vaultView) {
-  relayEnv = { CONTRACT_ID: 'c.test', RELAY_ACCOUNT: 'r.test', NEAR_RPC_URLS: 'http://rpc.fake', ESPLORA_URL: 'http://esplora.fake', DISPENSER_SECRET: DISPENSER, DISPENSER_NETWORK: 'mutinynet', RELAY_GENERAL_KEY: SEED, RELAY_OWNER_KEY: SEED, IP_SALT: 's', POW_BITS: '0', UNDO_STATE: memoryNamespace() };
+  relayEnv = { BEAT_TOKEN: 'bench', CONTRACT_ID: 'c.test', RELAY_ACCOUNT: 'r.test', NEAR_RPC_URLS: 'http://rpc.fake', ESPLORA_URL: 'http://esplora.fake', DISPENSER_SECRET: DISPENSER, DISPENSER_NETWORK: 'mutinynet', RELAY_GENERAL_KEY: SEED, RELAY_OWNER_KEY: SEED, IP_SALT: 's', POW_BITS: '0', UNDO_STATE: memoryNamespace() };
   relay = makeRelay(relayEnv, { fetchFn: fakeRpc(vaultView) });
   return relay;
 }
@@ -76,7 +79,7 @@ export default {
       const { body, view } = await request.json();
       const handler = relayWith(view);
       for (let i = 0; i < n; i += 1) {
-        const res = await handler(new Request(`http://x/api${url.pathname}`, { method: 'POST', body, headers: { 'cf-connecting-ip': '1.2.3.4' } }));
+        const res = await handler(new Request(`http://x/api${url.pathname}`, { method: 'POST', body, headers: { 'cf-connecting-ip': '1.2.3.4', 'x-undo-beat': 'bench' } }));
         const answer = await res.json();
         if (!answer.ok) return new Response(JSON.stringify(answer), { status: 500 });
       }

@@ -8,8 +8,10 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { toHex } from '../../tools/lib/bytes.mjs';
+import { fromHex, toHex } from '../../tools/lib/bytes.mjs';
 import { ed25519, sha256 } from '../../tools/lib/crypto.mjs';
+import { spendKeys } from '../../tools/lib/keys.mjs';
+import { signSpend } from '../../tools/lib/spend.mjs';
 import { rotateArgs, rotateDigest } from '../lib/intents.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
@@ -42,14 +44,20 @@ const newKs = ed25519.getPublicKey(label('new'));
 const digest = rotateDigest({ contract: 'c.test', vaultHex, newKs, nonce: 0, expiresAt: 9e12 });
 const { args: assertion } = await getAssertion({ credentials: soft, digest, rpId: 'x', credentialId: made.credentialId });
 const cancel = { body: JSON.stringify({ method: 'cancel_all_and_rotate', args: rotateArgs({ vaultHex, newKs, nonce: 0, expiresAt: 9e12, assertion }) }), view: { passkey: toHex(made.pubkey), passkey_nonce: 0 } };
+const spendSeed = label('spend');
+const spendKs = spendKeys(spendSeed).ks.pub;
+const spendSpk = fromHex(`0020${'07'.repeat(32)}`);
+const proposal = signSpend.propose({ seed: spendSeed, contract: 'c.test', vault: fromHex(vaultHex), script: Uint8Array.of(0x51), spk: spendSpk, inputs: [{ txid: 'cd'.repeat(32), vout: 0, value: 2000 }], to: fromHex(`0014${'11'.repeat(20)}`), amount: 1500, change: null, nonce: 0, expiresAt: 9e12 }).args;
+const propose = { body: JSON.stringify({ method: 'propose_btc', args: proposal }), view: { active: true, spend_nonce: 0, k_s: toHex(spendKs) } };
 const heartbeat = { body: JSON.stringify({ method: 'heartbeat', args: { vault: vaultHex } }), view: null };
 
 const CASES = {
   'build and sign a transaction (WebCrypto Ed25519)': { path: '/tx', n: 2000 },
   'whole relay POST, heartbeat, I/O answered from memory': { path: '/relay', n: 500, body: heartbeat },
+  'whole relay POST, propose with its K_s check, I/O from memory': { path: '/relay', n: 500, body: propose },
   'whole relay POST, cancel with its P-256 check, I/O from memory': { path: '/relay', n: 500, body: cancel },
   'funding transaction (noble secp256k1, 1 input)': { path: '/funding', n: 100 },
-  'whole funds POST, I/O answered from memory': { path: '/funds', n: 100, body: { body: JSON.stringify({ vault: vaultHex, pow: 0 }), view: { active: true, script_pubkey: `0020${'07'.repeat(32)}` } } },
+  'whole funds POST, I/O answered from memory': { path: '/funds', n: 100, body: { body: JSON.stringify({ vault: vaultHex, pow: 0 }), view: { active: true, guard: 'r.test', address: 'a', script_pubkey: `0020${'07'.repeat(32)}` } } },
 };
 
 const call = (mf, path, n, body) => mf.dispatchFetch(`http://x${path}?n=${n}`, body ? { method: 'POST', body: JSON.stringify(body) } : {});
