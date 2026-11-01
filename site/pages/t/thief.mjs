@@ -162,7 +162,8 @@ function drawAuto() {
   if (S.state === 'waiting') {
     const sentence = relaySentence(S.relayStatus);
     root.dataset.auto = sentence ? 'off' : 'armed';
-    $('auto').textContent = sentence ? 'relay down: execute can\'t fire' : 'auto-execute armed';
+    const atLimit = S.relayStatus?.reachable && S.relayStatus.general?.why === 'daily_ceiling';
+    $('auto').textContent = sentence ? (atLimit ? 'relay at limit: execute can\'t fire' : 'relay down: execute can\'t fire') : 'auto-execute armed';
     if (!S.badReadsShown) $('note').textContent = sentence ?? '';
   }
 }

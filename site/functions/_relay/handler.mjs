@@ -104,7 +104,11 @@ class Relay {
     } else {
       if (owner.up && read.spent.owner + RELAY_METHODS.cancel_all_and_rotate.costMicro > this.ceilings.owner) Object.assign(owner, { up: false, why: 'daily_ceiling', resets_at: read.resets_at });
       // Up means a new vault still fits: making one is what a page offers on this. `charge` decides each call.
-      if (general.up && read.spent.general + RELAY_METHODS.create_vault.costMicro > this.ceilings.general) Object.assign(general, { up: false, why: 'daily_ceiling', resets_at: read.resets_at });
+      if (general.up && read.spent.general + RELAY_METHODS.create_vault.costMicro > this.ceilings.general) {
+        // A vault no longer fits, but one proposal and its execute may. A page mid-film must not say it can't send.
+        const callsFit = read.spent.general + RELAY_METHODS.propose_btc.costMicro + RELAY_METHODS.execute.costMicro <= this.ceilings.general;
+        Object.assign(general, { up: false, why: 'daily_ceiling', resets_at: read.resets_at }, callsFit ? { calls_fit: true } : null);
+      }
     }
     return json(200, {
       ok: true,

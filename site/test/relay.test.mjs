@@ -603,6 +603,18 @@ test('owner: cancel with a passkey or the cold key, and neither for a request th
   assert.equal((await r.relay('cancel', { ...coldBody, request: 9, auth: { Cold: noRequest.signature } })).body.message, 'no such request');
 });
 
+test('status near the ceiling: no new vault fits, and it says whether one more proposal and execute still do', async () => {
+  const { propose_btc: propose, execute, create_vault: create, heartbeat } = RELAY_METHODS;
+  const fits = relayWith(fakeWorld({ vaults: { [VAULT]: vaultRow() } }), { CEILING_GENERAL_MICRO: propose.costMicro + execute.costMicro + heartbeat.costMicro });
+  assert.ok(create.costMicro > propose.costMicro + execute.costMicro + heartbeat.costMicro);
+  assert.deepEqual((await fits.status()).body.general, { up: false, why: 'daily_ceiling', resets_at: Date.UTC(2026, 10, 2), calls_fit: true });
+  assert.equal((await fits.relay('heartbeat', { vault: VAULT })).body.ok, true);
+  assert.equal((await fits.status()).body.general.calls_fit, true, 'exactly enough left');
+  assert.equal((await fits.relay('heartbeat', { vault: VAULT })).body.ok, true);
+  const s = (await fits.status()).body.general;
+  assert.deepEqual([s.up, s.why, s.calls_fit], [false, 'daily_ceiling', undefined]);
+});
+
 test('owner: general at its ceiling, owner still up, and two different answers', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
   const r = relayWith(world, { CEILING_GENERAL_MICRO: 800 });

@@ -86,6 +86,7 @@ describe('rules with no page around them', () => {
     assert.equal(relaySentence({ reachable: true, general: { up: true, why: null } }), null);
     assert.match(relaySentence({ reachable: false, general: { up: false, why: 'relay_down' } }), /relay is down/);
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } }), /today's limit/);
+    assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling', calls_fit: true } }), null, 'a vault no longer fits, but this tab can still send');
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'state_store_down' } }), /state_store_down/);
   });
 
@@ -930,7 +931,8 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       await waitFor('the hold row', async () => js('document.getElementById("hold-row").classList.contains("on")'), 6_000);
       assert.equal(await textOf('hold-plus'), '+5:00');
       assert.equal(await textOf('hold-reason'), 'test-only reason, no model was asked');
-      assert.ok(secs(await clockText()) > before + 280, 'the digits went up with the unlock');
+      // The row changes on the read and the digits on the next frame.
+      await waitFor('the digits to go up with the unlock', async () => secs(await clockText()) > before + 280, 2_000);
       await assertFrame('hold');
       await shot('29b-hold');
       await js('window.__holdMs = 600000');
