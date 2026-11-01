@@ -159,10 +159,12 @@ async function stageOn(rig, { port, softPasskey, relayEnv, miner }) {
       ...relayEnv,
     });
   }
+  // tools/test/film-e2e.mjs answers /api/* from workerd instead of this in-Node handler.
+  let apiOverride = null;
   const server = await staticServer({
     dir: out,
     port: pagePort,
-    onApi: (req, res, url) => (handler ? bridge(handler, req, res, url, origin) : notBuilt(res)).catch((err) => {
+    onApi: (req, res, url) => (apiOverride ? apiOverride(req, res, url) : handler ? bridge(handler, req, res, url, origin) : notBuilt(res)).catch((err) => {
       res.writeHead(500);
       res.end(err.message);
     }),
@@ -182,6 +184,9 @@ async function stageOn(rig, { port, softPasskey, relayEnv, miner }) {
     dir: out,
     milliNear,
     pageUrl: (path, fields = {}) => `${origin}${path}${buildFragment(fields)}`,
+    useApi(fn) {
+      apiOverride = fn;
+    },
     async stop() {
       server.close();
       server.closeAllConnections?.();

@@ -35,3 +35,31 @@ A finished proof says `pass` for the chain's part and `gate_complete: false` unt
 `test/g2-rehearsal.mjs` runs `g2.mjs` on real bitcoind with standard relay policy, the real wasm on a local NEAR node and a mock signer, and breaks one thing at a time. Rehearsal results are labelled and can never land in `proofs/`.
 
 `tools/test/run-all.sh` runs every check. `rust-check/` recomputes each result with other code, and `test/mutants.mjs` breaks the tools line by line to show the tests notice.
+
+## The film, on a local chain
+
+`tools/test/film-e2e.mjs` runs the film's sequence from the top with one command: one headless Chrome with two windows, the thief tab at 1080x1350 and the phone page at 390x844 with a CDP virtual authenticator, through the Pages Functions and `undo-cron` in real workerd, the real wasm on a local NEAR node, a mock signer, and bitcoind on regtest under standard relay policy. It reads every result from the screens and checks it against the contract and bitcoind. Everything is thrown away when it stops. It cannot reach a live host.
+
+```
+export NEAR_SANDBOX_BIN_PATH=<near-sandbox binary>
+export UNDO_WASM_DIR=<folder with undo_vault.wasm and mock_signer.wasm>
+export UNDO_BITCOIN_BIN=<folder with bitcoind>
+export UNDO_WRANGLER_MODULES=<node_modules holding wrangler 3>
+export UNDO_LIBLZMA_DIR=<liblzma folder, where the sandbox binary needs one>
+node tools/test/film-e2e.mjs [--real-wait] [--shots DIR] [--report FILE] [--only 1,2,3]
+```
+
+- **Run 1.** The phone makes a vault through the relay and gets a coin. Send: refused, word for word. Proposal, one clock on both pages, phone cancels, both freeze, `CANCELLED` on both, coin unspent. The thief's key can't propose again, on a page or without one.
+- **Run 2.** No cancel: the tab calls `execute` at zero, the contract signs, the spend is mined.
+- **Run 3.** The general key is at its ceiling and being refused in a burst: the cancel still goes out on the owner key.
+
+It prints one `PASS` or `FAIL` per check and exits 0 only if none failed. Allow about 2 minutes, or 7 with `--real-wait`. At most one at a time: it starts one Chrome, one NEAR node, one bitcoind and one workerd, and stops them on exit and on SIGINT or SIGTERM.
+
+`T_new` on the test instance is 5:00 and cannot be shorter: the `TestCoin` preset's floor and ceiling for it are the same number. So the script moves the contract's clock with the sandbox's fast-forward to 40 s left, waits for both pages to read the jump, and the rest runs in real seconds. `--real-wait` makes run 2 count the whole 5:00.
+
+What it says nothing about: MPC, a real phone or Face ID, public RPC, Mutinynet, Cloudflare's limits, a camera. Its labels are `[mock-signer]` and `[virtual authenticator]`.
+
+Two more, which stop short of a deploy:
+
+- `tools/test/pages-output-check.sh OUT_DIR` builds the Pages output and the Functions bundle the way `site/deploy.sh` does, then reads them for a local path, a key, a source map, an off-list handle and a host the config does not name.
+- `node tools/test/pages-dev-check.mjs` serves the testnet output under `wrangler pages dev` with no secrets and every public host blocked in Chrome, for the folder redirects, `_headers`, the live chip and CSP, and what the pages say with the relay off.

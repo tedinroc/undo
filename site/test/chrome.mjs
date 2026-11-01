@@ -50,9 +50,9 @@ export class Cdp {
   }
 }
 
-export async function startChrome({ width = null, height = null, scale = null, headless = true } = {}) {
+export async function startChrome({ width = null, height = null, scale = null, headless = true, extraFlags = [] } = {}) {
   const profile = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'undo-chrome-'));
-  const flags = [headless ? '--headless=new' : null, '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-gpu', 'about:blank'].filter(Boolean);
+  const flags = [headless ? '--headless=new' : null, '--remote-debugging-port=0', `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-gpu', ...extraFlags, 'about:blank'].filter(Boolean);
   const chrome = spawn(CHROME, flags, { stdio: ['ignore', 'ignore', 'pipe'] });
   const wsUrl = await new Promise((resolve, reject) => {
     let text = '';
@@ -78,14 +78,40 @@ export async function startChrome({ width = null, height = null, scale = null, h
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
   if (width) await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale ?? 1, mobile: false });
+  const extra = [];
+  const connect = async (url) => {
+    const socket = new WebSocket(url);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener('open', resolve);
+      socket.addEventListener('error', reject);
+    });
+    extra.push(socket);
+    return new Cdp(socket);
+  };
+  let browserCdp = null;
   return {
     cdp,
+    /** The browser's own session, for what no page can ask, such as permissions. */
+    async browser() {
+      browserCdp ??= await connect(wsUrl);
+      return browserCdp;
+    },
+    /** A second page in a window of its own, so neither page is a background tab. Still one Chrome. */
+    async newWindow({ width: w, height: h, scale: s = 1, mobile = false }) {
+      const { targetId } = await (await this.browser()).send('Target.createTarget', { url: 'about:blank', newWindow: true, width: w, height: h });
+      const page = await connect(`ws://127.0.0.1:${port}/devtools/page/${targetId}`);
+      await page.send('Page.enable');
+      await page.send('Runtime.enable');
+      await page.send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: s, mobile });
+      return page;
+    },
     /** navigator.credentials on this tab now answers from Chrome's virtual authenticator, with no sheet. */
     async addPasskeyDevice() {
       await cdp.send('WebAuthn.enable');
       await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
     },
     async stop() {
+      for (const socket of extra) socket.close();
       ws.close();
       chrome.kill('SIGKILL');
       await new Promise((r) => setTimeout(r, 300));
