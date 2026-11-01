@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Undo thief tab</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/_shell.css">
+<link rel="stylesheet" href="/t/thief.css">
+<script type="module" src="/t/thief.mjs"></script>
+</head>
+<body>
+<main id="root" data-state="boot" data-panel="none">
+  <div id="glow" class="glow"></div>
+  <div id="chip" class="chip">signet test coins</div>
+  <div class="wordmark">Undo</div>
+
+  <section id="plain" class="panel">
+    <p id="plain-text" class="sentence"></p>
+    <p id="plain-address" class="hash mono"></p>
+    <p id="plain-verbatim" class="verbatim mono"></p>
+    <button id="plain-retry" class="again" type="button">Try again</button>
+  </section>
+
+  <section id="armed" class="panel">
+    <label class="label" for="key">stolen key</label>
+    <textarea id="key" class="field key" rows="2" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="key-why"></textarea>
+    <p id="key-why" class="why"></p>
+    <label class="label" for="to">send to</label>
+    <input id="to" class="field" type="text" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="to-why">
+    <p id="to-why" class="why"></p>
+    <div class="label" id="amount-label">amount</div>
+    <div id="amount" class="field">everything</div>
+    <button id="send" class="send" type="button" disabled>Send everything</button>
+    <p id="armed-note" class="note"></p>
+    <p id="fee" class="small mono"></p>
+  </section>
+
+  <section id="refused" class="panel">
+    <div id="bar" class="bar-red"><div class="b1">REFUSED</div> <div class="b2">BY BITCOIN</div></div>
+    <p id="needs" class="caption">It needs a second signature.</p>
+    <div id="node" class="node mono"><div id="node-label" class="node-label"></div><div id="node-text" class="node-text"></div></div>
+    <div id="slam-flash" class="flash-red"></div>
+  </section>
+
+  <section id="wait" class="panel">
+    <div id="term" class="term mono"><div id="term-1"></div><div id="term-2">unlocks in <span id="term-wait"></span></div></div>
+    <p id="ask-why" class="verbatim mono"></p>
+    <button id="ask-retry" class="again" type="button">Try again</button>
+    <div id="clock-block" class="clock-block">
+      <div id="wait-label" class="label wait-label">unlocks in</div>
+      <div id="clock" class="clock" data-clock="" role="timer" aria-live="off"><span id="d-mt" class="sl d"></span><span id="d-m" class="sl d"></span><span class="sl c">:</span><span id="d-s1" class="sl d"></span><span id="d-s2" class="sl d"></span><span class="sl ten dot">.</span><span id="d-t" class="sl ten dg"></span></div>
+      <div id="under-clock" class="under-clock"><span id="auto" class="auto mono"></span><span id="zero-label" class="zero-label label">0:00</span></div>
+      <div id="fuse" class="fuse"><div id="fuse-burn" class="fuse-burn"></div><div id="fuse-tip" class="fuse-tip"></div><div class="fuse-mark"></div></div>
+    </div>
+    <div id="stamp" class="stamp"><div class="stamp-text">CANCELLED</div></div>
+    <p id="stamp-line" class="stamp-line">That key can't ask again.</p>
+    <p id="signed-line" class="stamp-line"></p>
+    <div id="rows" class="rows mono">
+      <p id="hold-row" class="row hold"><span id="hold-plus" class="hold-plus"></span> <span id="hold-reason"></span></p>
+      <p id="dest-row" class="row"></p>
+      <p id="txid-row" class="row hash"></p>
+      <p id="near-row" class="row hash"></p>
+      <p id="note" class="row note"></p>
+    </div>
+    <div id="stamp-flash" class="flash-white"></div>
+  </section>
+
+  <svg id="cursor" class="cursor" viewBox="0 0 50 76" aria-hidden="true"><path d="M2 2 L2 64 L17 50 L28 76 L40 71 L29 46 L49 46 Z" fill="#fff" stroke="#000" stroke-width="3"/></svg>
+</main>
+</body>
+</html>

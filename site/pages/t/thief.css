@@ -1,0 +1,163 @@
+/* The thief tab. Filmed: at 1080x1350 one --u is one film pixel, so the numbers here are the animatic's. */
+:root {
+  --u: min(calc(100vw / 1080), calc(100vh / 1350));
+  --top: 232;
+  --clock-top: 596;
+  --digit: calc(400 * var(--u));
+}
+html, body { min-height: 100%; }
+#root { position: relative; min-height: 100vh; overflow-x: hidden; }
+
+/* Nothing shows but the chip until the state says so. */
+.panel { display: none; position: relative; width: 100%; }
+#root[data-panel="plain"] #plain,
+#root[data-panel="armed"] #armed,
+#root[data-panel="refused"] #refused,
+#root[data-panel="wait"] #wait { display: block; }
+
+.glow { position: absolute; inset: 0; opacity: 0; pointer-events: none;
+  background: radial-gradient(calc(640 * var(--u)) calc(640 * var(--u)) at 50% calc(790 * var(--u)), rgba(255,59,48,1) 0%, rgba(255,59,48,0.62) 30%, rgba(255,59,48,0.22) 62%, rgba(255,59,48,0) 100%); }
+
+/* ---------------------------------------------- plain sentences */
+#plain { padding: calc(var(--top) * var(--u)) calc(64 * var(--u)) calc(64 * var(--u)); }
+.sentence { margin: 0; font: 800 calc(72 * var(--u))/calc(80 * var(--u)) var(--sans); letter-spacing: -0.018em; }
+.verbatim { margin: calc(32 * var(--u)) 0 0; font-size: calc(36 * var(--u)); line-height: calc(46 * var(--u)); color: #CFCFCF; overflow-wrap: anywhere; white-space: pre-wrap; }
+.verbatim:empty { display: none; }
+.hash { overflow-wrap: anywhere; }
+#plain-address { margin: calc(32 * var(--u)) 0 0; font-size: calc(40 * var(--u)); line-height: calc(52 * var(--u)); }
+#plain-address:empty { display: none; }
+.hash a { color: inherit; }
+.again { display: none; margin: calc(40 * var(--u)) calc(64 * var(--u)) 0 0; padding: calc(20 * var(--u)) calc(40 * var(--u)); background: var(--white); color: var(--ground); border: 0;
+  font: 800 calc(48 * var(--u))/1 var(--sans); letter-spacing: -0.015em; cursor: pointer; }
+.again.on { display: inline-block; }
+
+/* ---------------------------------------------- armed */
+#armed { padding: calc(var(--top) * var(--u)) calc(64 * var(--u)) 0; }
+#armed .label { display: block; margin-bottom: calc(12 * var(--u)); }
+.field { display: block; width: 100%; border: calc(2 * var(--u)) solid var(--field-line); border-radius: 0; background: var(--field); color: var(--white); outline: 0;
+  padding: calc(16 * var(--u)) calc(20 * var(--u)); font: 500 calc(38 * var(--u))/calc(44 * var(--u)) var(--mono); margin: 0; }
+.field:focus { border-color: #6A6A6A; }
+.field.key { height: calc(124 * var(--u)); resize: none; overflow: hidden; word-break: break-all; font-size: calc(36 * var(--u)); }
+#to { height: calc(84 * var(--u)); font-size: calc(34 * var(--u)); }
+#to.long { font-size: calc(24 * var(--u)); }
+#amount { height: calc(84 * var(--u)); white-space: nowrap; }
+.why { min-height: calc(40 * var(--u)); margin: calc(6 * var(--u)) 0 calc(4 * var(--u)); font: 600 calc(28 * var(--u))/calc(34 * var(--u)) var(--sans); color: var(--red); }
+#amount-label { margin-top: 0; }
+.send { display: block; width: 100%; height: calc(150 * var(--u)); margin-top: calc(30 * var(--u)); background: var(--red); color: var(--white); border: 0; border-radius: 0;
+  font: 800 calc(72 * var(--u))/1 var(--sans); letter-spacing: -0.015em; cursor: pointer; }
+.send:hover:not(:disabled) { background: #E8352B; }
+.send:active:not(:disabled) { background: #B3241C; }
+.send:disabled { background: #3A1512; color: #8C6D6A; cursor: default; }
+#root[data-state="direct"] .send { font-size: calc(52 * var(--u)); background: #B3241C; color: var(--white); }
+.note { margin: calc(24 * var(--u)) 0 0; font: 600 calc(36 * var(--u))/calc(44 * var(--u)) var(--sans); color: var(--white); overflow-wrap: anywhere; }
+.note:empty, .small:empty { display: none; }
+.small { margin: calc(16 * var(--u)) 0 0; font-size: calc(26 * var(--u)); line-height: calc(34 * var(--u)); color: var(--dim); }
+
+/* ---------------------------------------------- refused: the bar slams, then everything but the chip jolts */
+#refused { padding-top: calc(var(--top) * var(--u)); height: 100vh; overflow: hidden; }
+.bar-red { position: relative; background: var(--red); color: var(--ground); height: calc(384 * var(--u)); padding-left: calc(64 * var(--u)); font-weight: 900; letter-spacing: -0.03em; white-space: nowrap; }
+.bar-red .b1 { position: absolute; top: calc(14 * var(--u)); font-size: calc(196 * var(--u)); line-height: 1; }
+.bar-red .b2 { position: absolute; top: calc(198 * var(--u)); font-size: calc(164 * var(--u)); line-height: 1; }
+.caption { position: relative; margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font: 800 calc(72 * var(--u))/calc(80 * var(--u)) var(--sans); letter-spacing: -0.028em; visibility: hidden; }
+.node { position: relative; margin: calc(30 * var(--u)) calc(64 * var(--u)) 0; padding-left: calc(20 * var(--u)); border-left: calc(6 * var(--u)) solid var(--red); overflow-wrap: anywhere; visibility: hidden; }
+.node-label { color: var(--dim); }
+.node.fit-40 { font-size: calc(40 * var(--u)); line-height: calc(52 * var(--u)); }
+.node.fit-32 { font-size: calc(32 * var(--u)); line-height: calc(40 * var(--u)); }
+.node.fit-24 { font-size: calc(24 * var(--u)); line-height: calc(30 * var(--u)); }
+.node-text { color: #CFCFCF; white-space: pre-wrap; }
+.node-text .key-phrase { color: var(--white); font-weight: 700; }
+#refused.go .bar-red { animation: slam 133ms cubic-bezier(.55,0,1,.45) both; }
+#refused.go { animation: jolt 100ms 133ms steps(1) both; }
+#refused.go .caption { visibility: visible; animation: cut-on 1ms 400ms both; }
+#refused.go .node { visibility: visible; animation: cut-on 1ms 800ms both; }
+.flash-red { position: absolute; inset: 0; background: var(--red); opacity: 0; pointer-events: none; }
+#refused.go .flash-red { animation: flash-once 33ms 133ms steps(1) both; }
+@keyframes slam { from { transform: translateY(calc(-640 * var(--u))); } to { transform: none; } }
+@keyframes jolt { 0% { transform: translateY(calc(20 * var(--u))); } 33% { transform: translateY(calc(-9 * var(--u))); } 66% { transform: translateY(calc(4 * var(--u))); } 100% { transform: none; } }
+@keyframes cut-on { from { visibility: hidden; } to { visibility: visible; } }
+@keyframes flash-once { 0% { opacity: 0.55; } 100% { opacity: 0; } }
+
+/* ---------------------------------------------- wait: digits, fuse, stamp */
+#wait { padding-top: calc(var(--clock-top) * var(--u)); min-height: 100vh; }
+.clock-block { position: relative; width: fit-content; margin: 0 auto; }
+.wait-label { position: absolute; left: calc(4 * var(--u)); top: calc(-36 * var(--u)); }
+#clock { font-size: var(--digit); transform-origin: 0 0; }
+#clock .sl#d-mt { display: none; }
+#root[data-wide="1"] #clock { font-size: calc(var(--digit) * 0.8); }
+#root[data-wide="1"] #clock .sl#d-mt { display: inline-block; }
+.under-clock { display: flex; align-items: baseline; justify-content: space-between; margin-top: calc(-44 * var(--u)); min-height: calc(42 * var(--u)); }
+.auto { font-size: calc(34 * var(--u)); line-height: calc(42 * var(--u)); color: var(--red); white-space: nowrap; }
+.zero-label { color: var(--white); }
+.fuse { position: relative; height: calc(26 * var(--u)); margin-top: calc(8 * var(--u)); }
+.fuse::before { content: ""; position: absolute; left: 0; right: 0; top: calc(6 * var(--u)); height: calc(14 * var(--u)); background: #2A0D0B; }
+.fuse-burn { position: absolute; left: 0; right: 0; top: calc(6 * var(--u)); height: calc(14 * var(--u)); background: var(--red); transform-origin: 100% 50%; }
+.fuse-tip { position: absolute; top: 0; height: calc(26 * var(--u)); width: calc(8 * var(--u)); margin-left: calc(-4 * var(--u)); background: var(--white); left: 0; }
+.fuse-mark { position: absolute; right: 0; top: calc(-8 * var(--u)); width: calc(6 * var(--u)); height: calc(42 * var(--u)); background: var(--white); }
+.rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(30 * var(--u)); line-height: calc(38 * var(--u)); color: #CFCFCF; }
+.row { margin: 0 0 calc(10 * var(--u)); }
+.row:empty { display: none; }
+.rows .note { font-family: var(--sans); font-size: calc(32 * var(--u)); line-height: calc(40 * var(--u)); }
+.hold { display: none; color: var(--white); }
+.hold.on { display: block; }
+.hold-plus { font-family: var(--sans); font-weight: 800; color: var(--red); font-size: calc(56 * var(--u)); }
+.term { display: none; position: absolute; left: calc(64 * var(--u)); right: calc(64 * var(--u)); top: calc(1044 * var(--u)); min-height: calc(112 * var(--u)); background: #000; border: calc(2 * var(--u)) solid #333;
+  padding: calc(16 * var(--u)) calc(20 * var(--u)); font-size: calc(36 * var(--u)); line-height: calc(48 * var(--u)); color: #DADADA; }
+#ask-why { position: absolute; left: calc(64 * var(--u)); right: calc(64 * var(--u)); top: calc(var(--top) * var(--u)); margin: 0; }
+#ask-retry { position: absolute; left: calc(64 * var(--u)); top: calc(860 * var(--u)); margin: 0; }
+.stamp { display: none; position: relative; background: var(--white); color: var(--ground); height: calc(172 * var(--u)); padding-left: calc(64 * var(--u)); margin-top: calc(6 * var(--u)); overflow: visible; }
+.stamp-text { position: absolute; top: calc(16 * var(--u)); font-size: calc(142 * var(--u)); font-weight: 900; line-height: 1; letter-spacing: -0.03em; white-space: nowrap; }
+.stamp-line { display: none; margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font: 800 calc(64 * var(--u))/calc(72 * var(--u)) var(--sans); letter-spacing: -0.018em; }
+.stamp-line.on { display: block; }
+.flash-white { position: absolute; inset: 0; background: var(--white); opacity: 0; pointer-events: none; }
+
+/* asking: the row the digits are about to leave. No digits yet. */
+#root[data-state="asking"] .clock-block { display: none; }
+#root[data-state="asking"] #rows { display: none; }
+#root[data-state="asking"] .term { display: block; }
+#root[data-state="asking"] #term-2 { display: none; }
+
+/* waiting, in order: row, fling, landed. Rows cut on when the digits land. */
+#root[data-fling="row"] .term { display: block; }
+#root[data-fling="row"] .clock-block, #root[data-fling="row"] #rows { visibility: hidden; }
+#root[data-fling="go"] .term { display: block; }
+#root[data-fling="go"] #term-wait { visibility: hidden; }
+#root[data-fling="go"] .under-clock, #root[data-fling="go"] .fuse, #root[data-fling="go"] .wait-label, #root[data-fling="go"] #rows { visibility: hidden; }
+
+/* Can't read the chain: the clock stops and says so, it never runs on past what was read. */
+#root[data-dim="1"] #clock { opacity: 0.35; }
+
+/* signed: plain, no stamp */
+#root[data-state="signed"] .under-clock, #root[data-state="signed"] .fuse { display: none; }
+
+/* frozen: digits white and still, stamp once */
+#root[data-state="frozen"] #clock { color: var(--white); }
+#root[data-state="frozen"] .under-clock, #root[data-state="frozen"] .fuse, #root[data-state="frozen"] .wait-label, #root[data-state="frozen"] #near-row { display: none; }
+#root[data-state="frozen"] .stamp { display: block; animation: stamp 133ms cubic-bezier(.22,1,.36,1) both; }
+#root[data-state="frozen"] .flash-white { animation: flash-white 66ms steps(1) both; }
+#root[data-no-reading="1"] #clock { visibility: hidden; }
+@keyframes stamp { from { transform: scale(1.42); } to { transform: none; } }
+@keyframes flash-white { 0% { opacity: 0.7; } 50% { opacity: 0.25; } 100% { opacity: 0; } }
+
+/* The recorder's mouse: a screen capture leaves out the real one. Only with cursor=1 in the fragment. */
+.cursor { display: none; position: fixed; left: 0; top: 0; z-index: 100; width: calc(50 * var(--u)); height: calc(76 * var(--u)); pointer-events: none; }
+#root[data-cursor="1"], #root[data-cursor="1"] * { cursor: none !important; }
+#root[data-cursor="1"] .cursor { display: block; }
+
+/* A laptop on a tripod: the digits take the screen. */
+@media (min-aspect-ratio: 1/1) {
+  :root { --u: min(calc(100vw / 1500), calc(100vh / 950)); --top: 130; --clock-top: 96; --digit: min(38vw, 66vh); }
+  .chip { top: calc(28 * var(--u)); }
+  .wordmark { top: calc(28 * var(--u)); }
+  .glow { background: radial-gradient(70vw 70vh at 50% 45%, rgba(255,59,48,1) 0%, rgba(255,59,48,0.62) 30%, rgba(255,59,48,0.22) 62%, rgba(255,59,48,0) 100%); }
+  #armed, #plain { max-width: calc(1208 * var(--u)); margin: 0 auto; }
+  .bar-red { height: calc(240 * var(--u)); }
+  .bar-red .b1 { top: calc(40 * var(--u)); font-size: calc(160 * var(--u)); }
+  .bar-red .b2 { top: calc(40 * var(--u)); left: calc(760 * var(--u)); font-size: calc(160 * var(--u)); }
+  .term { top: auto; bottom: calc(40 * var(--u)); }
+  #ask-retry { top: auto; bottom: calc(40 * var(--u)); }
+  .rows { position: absolute; left: 0; right: 0; bottom: calc(16 * var(--u)); margin: 0 calc(64 * var(--u)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #refused.go .bar-red, #refused.go, #refused.go .flash-red, #root[data-state="frozen"] .stamp, #root[data-state="frozen"] .flash-white { animation: none; }
+}
