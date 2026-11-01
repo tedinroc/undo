@@ -13,8 +13,9 @@ import { fromHex, toHex, utf8 } from '../lib/bytes.mjs';
 import { secp256k1, sha256 } from '../lib/crypto.mjs';
 import { buildFunding, parseDispenser, selectCoins } from '../lib/dispenser.mjs';
 import { checkEndpoints, classifyBroadcast, EndpointRefused, Esplora, RelayError, refusalKind } from '../lib/esplora.mjs';
-import { assembleCosigned, checkCosigned, checkEscape, checkReadback, checkSig, cosignedVsize, escapeOneShort, escapeVsize, isHighS, matureTip, strictDerProblem, withoutKuSig, witnessHexOf } from '../lib/g2-check.mjs';
-import { publicSecp } from '../lib/keys.mjs';
+import { assembleCosigned, checkCosigned, checkEscape, checkReadback, checkSig, cosignedVsize, escapeOneShort, escapeVsize, isHighS, matureTip, strictDerProblem, withoutKmSig, withoutKuSig, witnessHexOf } from '../lib/g2-check.mjs';
+import { keyAloneHalfSig } from '../lib/spend.mjs';
+import { publicSecp, spendKeys } from '../lib/keys.mjs';
 import { loadKeyFile, Near } from '../lib/near.mjs';
 import { tamperFinalTx } from './g2-rig.mjs';
 
@@ -346,6 +347,36 @@ test('the controls: consensus refuses both, for the check each is there to test'
   assert.equal(checkSig(tx.inputs[0].witness[0], digest, publicSecp(ke), 'K_e'), null, 'an honest signature, so only OP_CSV can refuse it');
   assert.equal(verify(escape(), toHex(spk), coin.value), 0, 'control: the same escape at nSequence csv is fine');
   assert.notEqual(verify(short.raw, toHex(spk), coin.value), 0);
+});
+
+test('the key alone: K_u\'s real signature, nothing for K_m, and consensus refuses it', () => {
+  const { hex, digest, halfRs, mpcRs } = cosigned();
+  const thief = withoutKmSig({ coin, to, amount, halfRs, script });
+  const tx = parseTx(fromHex(thief.raw));
+  const real = parseTx(fromHex(hex));
+  assert.equal(thief.id, txid(real), 'same spend as the co-signed one: only the witness differs');
+  assert.equal(tx.inputs[0].sequence, SEQUENCE_COSIGNED);
+  const w = tx.inputs[0].witness;
+  assert.equal(w.length, 4);
+  assert.equal(w[0].length, 0, 'nothing where K_m\'s signature goes');
+  assert.equal(checkSig(w[1], digest, publicSecp(ku), 'K_u'), null, 'an honest K_u signature, so only K_m\'s check can refuse it');
+  assert.equal(w[2][0], 1, 'the co-signed branch');
+  assert.equal(toHex(w[3]), toHex(script));
+  assert.equal(verify(thief.raw, toHex(spk), coin.value), 1);
+  // Add K_m's signature to the same witness and it is the co-signed spend, so K_m's is all that was missing.
+  w[0] = derSig(mpcRs);
+  assert.equal(toHex(serialize(tx)), hex);
+  assert.equal(verify(hex, toHex(spk), coin.value), 0, 'control: with K_m\'s signature it is fine');
+});
+
+test('the key alone: keyAloneHalfSig signs with K_u, derived from the seed, and nothing else', () => {
+  const seed = secret('seed');
+  const { ku: derived } = spendKeys(seed);
+  const own = witnessScript(derived.pub, publicSecp(km), publicSecp(ke), CSV);
+  const halfRs = keyAloneHalfSig({ seed, script: own, coin, to, amount });
+  const digest = sighash(makeTx([coin], SEQUENCE_COSIGNED, [{ value: amount, spk: to }]), 0, own, coin.value);
+  assert.equal(checkSig(derSig(halfRs.slice(0, 64)), digest, derived.pub, 'K_u'), null);
+  assert.notEqual(checkSig(derSig(halfRs.slice(0, 64)), digest, publicSecp(km), 'K_m'), null);
 });
 
 test('sizes used for fees are not below the real transaction', () => {

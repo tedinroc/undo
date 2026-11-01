@@ -13,6 +13,16 @@ function utxoJson(c) {
   return { txid: c.txid, vout: c.vout, value: c.value };
 }
 
+/**
+ * K_u's signature over a spend the contract never saw: no K_s, no intent, no nonce. All the spend key can
+ * do without NEAR. Pass it to withoutKmSig. The r || s of the same digest a co-signed spend would use.
+ */
+export function keyAloneHalfSig({ seed, script, coin, to, amount }) {
+  const { ku } = spendKeys(seed);
+  const tx = makeTx([coin], SEQUENCE_COSIGNED, [{ value: amount, spk: to }]);
+  return signSecp(sighash(tx, 0, script, coin.value), ku.secret);
+}
+
 export const signSpend = {
   propose({ seed, contract, vault, script, spk, inputs, to, amount, change, nonce, expiresAt, memo = null }) {
     const { ks, ku } = spendKeys(seed);

@@ -90,6 +90,16 @@ export function withoutKuSig(rawHex) {
   return toHex(serialize(tx));
 }
 
+/**
+ * What a thief holding the spend key alone can send: K_u's real signature, and nothing where K_m's goes,
+ * because only the signer can make that one. K_u's check passes, so a sound script refuses it at K_m's.
+ */
+export function withoutKmSig({ coin, to, amount, halfRs, script }) {
+  const tx = makeTx([coin], SEQUENCE_COSIGNED, [{ value: amount, spk: to }]);
+  tx.inputs[0].witness = [new Uint8Array(0), derSig(halfRs.slice(0, 64)), Uint8Array.of(1), script];
+  return { raw: toHex(serialize(tx)), id: txid(tx) };
+}
+
 /** An honest escape signed for nSequence csv-1. BIP-68 lets it through on a mature coin, so only OP_CSV can refuse it. */
 export function escapeOneShort({ file, coin, to, amount }) {
   const tx = makeTx([coin], file.csv - 1, [{ value: amount, spk: to }]);
