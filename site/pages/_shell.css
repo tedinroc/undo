@@ -1,0 +1,38 @@
+/* What every page shares with the film: near-black ground, one red, white type, the chip, the wordmark, and the clock's
+   fixed slots. Sizes go through --u, which is one film pixel: at 1080 wide it is exactly 1px, so a capture lines up with
+   the film's own layout. A page sets --u to fit its screen. */
+:root {
+  --u: calc(100vw / 1080);
+  --ground: #0A0A0A;
+  --red: #FF3B30;
+  --white: #FFFFFF;
+  --dim: #8C8C8C;
+  --line: #2C2C2C;
+  --field: #111111;
+  --field-line: #3A3A3A;
+  --sans: -apple-system, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --mono: "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100%; background: var(--ground); color: var(--white);
+  font-family: var(--sans); -webkit-font-smoothing: antialiased; font-kerning: normal; }
+
+/* Same place on every screen, drawn by the HTML before any script runs. */
+.chip { position: absolute; z-index: 90; left: calc(64 * var(--u)); top: calc(150 * var(--u)); padding: calc(7 * var(--u)) calc(14 * var(--u)) calc(8 * var(--u));
+  border: calc(3 * var(--u)) solid var(--white); background: var(--ground); font: 500 calc(40 * var(--u))/1 var(--mono); color: var(--white); white-space: nowrap; }
+.wordmark { position: absolute; z-index: 90; right: calc(64 * var(--u)); top: calc(150 * var(--u)); font: 800 calc(52 * var(--u))/1 var(--sans); color: var(--white); letter-spacing: -0.01em; }
+
+/* The clock. Every character sits in a slot whose width is fixed, so a tick changes text and moves nothing.
+   --adv and --colon are in em, measured from the real glyphs by the page, and these defaults only hold until then. */
+.clock { --adv: 0.6; --colon: 0.33; display: block; font-family: var(--sans); font-weight: 800; font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  color: var(--red); line-height: 1; white-space: nowrap; text-align: center; }
+.clock .sl { display: inline-block; text-align: center; }
+.clock .sl.d { width: calc(var(--adv) * 1em); }
+.clock .sl.c { width: calc(var(--colon) * 1em); }
+.clock .sl.ten { font-size: 0.34em; font-weight: 800; }
+.clock .sl.ten.dot { width: calc(var(--adv) * 0.55em); }
+.clock .sl.ten.dg { width: calc(var(--adv) * 1.02em); }
+
+.mono { font-family: var(--mono); }
+.label { font: 500 calc(34 * var(--u))/1 var(--mono); color: var(--dim); }
