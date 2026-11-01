@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { after, before, describe, test } from 'node:test';
+import { after, before, beforeEach, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { segwitAddress, addressToSpk } from '../../tools/lib/btc.mjs';
 import { toHex } from '../../tools/lib/bytes.mjs';
@@ -359,12 +359,11 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     relay = standInRelay(stage);
     relay.views = views;
     relay.instance = instance;
-    const port = Number(new URL(stage.origin).port) + 1;
-    server = await staticServer({ dir: stage.dir, port, onApi: (req, res, url) => relay.onApi(req, res, url).catch((err) => {
+    server = await staticServer({ dir: stage.dir, port: 0, onApi: (req, res, url) => relay.onApi(req, res, url).catch((err) => {
       res.writeHead(500);
       res.end(err.message);
     }) });
-    origin = `http://localhost:${port}`;
+    origin = `http://localhost:${server.address().port}`;
     chrome = await startChrome({ width: 1080, height: 1350, scale: 2 });
     cdp = chrome.cdp;
     await cdp.send('Network.enable');
@@ -373,6 +372,17 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       if (data.method === 'Network.requestWillBeSent') netLog.push({ url: data.params.request.url, body: data.params.request.postData ?? '' });
     });
   }, { timeout: 180_000 });
+
+  // One test's fault never reaches the next.
+  beforeEach(async () => {
+    if (!stage) return;
+    stage.rig.setRule(null);
+    stage.rig.setFault(null);
+    relay.dead = false;
+    relay.general = { up: true, why: null, resets_at: null };
+    relay.holdExecute = null;
+    await cdp.send('Network.setBlockedURLs', { urls: [] });
+  });
 
   after(async () => {
     await chrome?.stop();
@@ -405,12 +415,14 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.ok(!(await js('location.hash')).includes('k='));
     await waitFor('Send enabled', async () => !(await js('document.getElementById("send").disabled')));
     assert.equal(await js('document.getElementById("key").value'), v.seedHex);
-    assert.equal(await textOf('amount'), 'everything  2,000 sats', 'the coins, before fee');
+    assert.equal(await textOf('amount-text'), 'everything  2,000 sats', 'the coins, before fee');
     assert.equal(await js('document.getElementById("root").dataset.delayMs'), '300000');
     await js('document.getElementById("send").scrollIntoView()');
     const box = await js(`(() => { const r = document.getElementById('send').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
     await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
     await assertFrame('armed');
+    const clear = await js(`document.getElementById('send').getBoundingClientRect().bottom`);
+    assert.ok(clear <= 915, `the film's caption lands at y=920, and the button ends at ${clear}`);
     await shot('01-armed');
 
     // Wrong key.
@@ -447,7 +459,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await shot('04-short');
     await fund(v.vault.address, 3000);
     await waitState('armed', 15_000);
-    assert.equal(await textOf('amount'), 'everything  3,000 sats');
+    assert.equal(await textOf('amount-text'), 'everything  3,000 sats');
   });
 
   test('no vault in the link, and an unknown vault: a plain sentence and no controls', { timeout: 30_000 }, async () => {
@@ -457,6 +469,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await js('[...document.querySelectorAll("button, input, textarea")].filter((e) => e.checkVisibility()).length'), 0);
     await assertFrame('no_vault');
     await shot('05-no-vault');
+    await open('/t/', { k: 'ab'.repeat(32) });
+    await waitState('no_vault');
+    assert.equal(await js('location.hash'), '', 'a key in a link with no vault comes out of the address bar too');
     await open('/t/', { v: 'ab'.repeat(32) });
     await waitState('no_vault');
     assert.match(await textOf('plain-text'), /not on this contract/);
@@ -694,20 +709,30 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await assertFrame('no_answer');
     await shot('19-node-502');
 
-    // A connection dropped halfway says so, with no invented words.
+    // A proxy's words and a limiter's words are shown too, and neither reads as a refusal.
     stage.rig.setRule(null);
     stage.rig.setFault('relay-flaky');
-    // relay-flaky answers 503, 429, drop, 502 on successive sends of the same bytes.
-    for (const expectWords of ['Service Unavailable', 'Too Many Requests', 'TypeError', 'Bad Gateway']) {
+    // relay-flaky answers 503, 429, a drop, then 502 on successive sends of the same bytes. Chrome retries a dropped
+    // connection by itself, so the page never sees that drop, and sees the 502.
+    for (const expectWords of ['Service Unavailable', 'Too Many Requests', 'Bad Gateway']) {
       await click('plain-retry');
       await waitFor(`no_answer: ${expectWords}`, async () => (await stateNow()) === 'no_answer' && (await textOf('plain-verbatim')).includes(expectWords), 20_000).catch(async (err) => {
         throw new Error(`${err.message}; screen says ${await textOf('plain-verbatim')}`);
       });
+      assert.equal(await js('document.getElementById("bar").checkVisibility()'), false);
       await sleep(100);
     }
+    stage.rig.setFault(null);
+
+    // No connection at all: the browser gives the page only an error name, and that is what it shows.
+    await cdp.send('Network.setBlockedURLs', { urls: [`${stage.config.esplora}/tx`] });
+    await click('plain-retry');
+    await waitFor('no_answer: the browser\'s error', async () => (await stateNow()) === 'no_answer' && (await textOf('plain-verbatim')) === 'TypeError', 20_000);
+    await shot('19b-node-no-connection');
+    await cdp.send('Network.setBlockedURLs', { urls: [] });
+
     await click('plain-retry');
     await waitState('refused', 20_000);
-    stage.rig.setFault(null);
     assert.match(await textOf('node-text'), /script-verify/);
     assert.equal(await js('document.getElementById("refused").checkVisibility()'), true);
     await waitState('waiting', 60_000);
@@ -876,7 +901,93 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await textOf('note'), '');
   });
 
-  test('a hold: the unlock jumps on the contract, the digits go with it, and the real reason shows', { skip: 'needs a real guard signature; the screen is read from assess_reason and hold_active, and no test makes one yet', timeout: 10_000 }, async () => {});
+  test('a hold, on screen only: this feeds the page a contract answer no model made, because no test can make a real one yet', { timeout: 120_000 }, async () => {
+    const v = await makeVault();
+    const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+      const real = window.fetch;
+      window.fetch = async (url, init) => {
+        const res = await real(url, init);
+        const body = String(init?.body ?? '');
+        if (!window.__holdMs || !body.includes('"method_name":"request"')) return res;
+        const data = await res.json();
+        const value = data.result?.result ? JSON.parse(String.fromCharCode(...data.result.result)) : null;
+        if (value) {
+          value.unlock += window.__holdMs;
+          value.hold_active = true;
+          value.assess_reason = 'test-only reason, no model was asked';
+          data.result.result = [...new TextEncoder().encode(JSON.stringify(value))];
+        }
+        return new Response(JSON.stringify(data), { status: res.status, headers: res.headers });
+      };
+    })()` });
+    try {
+      await toArmed(v, {});
+      await pressToWaiting();
+      await sleep(600);
+      const secs = (t) => Number(t.split(':')[0]) * 60 + Number(t.split(':')[1]);
+      const before = secs(await clockText());
+      await js('window.__holdMs = 300000');
+      await waitFor('the hold row', async () => js('document.getElementById("hold-row").classList.contains("on")'), 6_000);
+      assert.equal(await textOf('hold-plus'), '+5:00');
+      assert.equal(await textOf('hold-reason'), 'test-only reason, no model was asked');
+      assert.ok(secs(await clockText()) > before + 280, 'the digits went up with the unlock');
+      await assertFrame('hold');
+      await shot('29b-hold');
+      await js('window.__holdMs = 600000');
+      await waitFor('two minute digits', async () => (await js('document.getElementById("root").dataset.wide')) === '1', 6_000);
+      await sleep(300);
+      const box = await js(`(() => { const a = document.getElementById('d-mt').getBoundingClientRect(), b = document.getElementById('d-t').getBoundingClientRect(); return { left: a.left, right: b.right, slot: a.width }; })()`);
+      assert.ok(box.slot > 100 && box.left >= 0 && box.right <= 1080, JSON.stringify(box));
+      await assertFrame('ten minutes');
+      await shot('29c-ten-minutes');
+    } finally {
+      await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+    }
+  });
+
+  test('a vault whose beat has gone quiet: the page beats first, so the wait reads 5:00 and not the longer one', { timeout: 120_000 }, async () => {
+    const v = await makeVault();
+    const start = (await reader.blockTime()).blockMs;
+    await fastForwardToLeft(start + 21 * 60_000 + 15_000, 10_000);
+    assert.equal((await views.vault(v.vaultHex)).guard_online, false);
+    assert.equal(await views.delayNow(v.vaultHex), 600_000, 'unbeaten, it reads longer');
+    await toArmed(v, {});
+    assert.equal(await js('document.getElementById("root").dataset.delayMs'), '600000', 'and the page reports that before the press');
+    relay.calls.length = 0;
+    const r = await pressToWaiting();
+    assert.deepEqual(relay.calls.slice(0, 2), ['heartbeat', 'propose_btc']);
+    const req = await views.request(v.vaultHex, r);
+    assert.equal(req.unlock - req.proposed_at, 300_000);
+  });
+
+  test('/thief is the same page', { timeout: 30_000 }, async () => {
+    const v = await makeVault();
+    await open('/thief/', { v: v.vaultHex, to: THIEF_TO, k: v.seedHex });
+    await waitState('armed');
+    assert.equal(await js('location.hash').then((h) => h.includes('k=')), false);
+  });
+
+  test('a testnet build says signet test coins, reads nothing it cannot, and draws no controls', { timeout: 60_000 }, async () => {
+    const out = join(process.env.TMPDIR ?? '/tmp', `undo-thief-live-${process.pid}`);
+    build({ out, configObject: { mode: 'testnet', contract: 'c.testnet', rpc: ['https://rpc.invalid'], esplora: 'https://esplora.invalid/api', relay: '/api/relay', funds: '/api/funds', btcTxUrl: null, btcAddressUrl: null, nearTxUrl: null, rpId: 'example.test', softPasskey: false } });
+    const live = await staticServer({ dir: out, port: 0, onApi: (req, res) => {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end('{"ok":false,"code":"relay_not_configured"}');
+    } });
+    try {
+      await cdp.send('Network.setBlockedURLs', { urls: ['https://rpc.invalid*', 'https://esplora.invalid*'] });
+      await cdp.send('Page.navigate', { url: `http://localhost:${live.address().port}/t/#v=${'ab'.repeat(32)}` });
+      await waitFor('the sentence', async () => /Can't read the NEAR contract/.test(await js('document.getElementById("plain-text")?.textContent ?? ""').catch(() => '')), 20_000);
+      assert.equal((await chipBox()).text, 'signet test coins');
+      assert.equal(await js('[...document.querySelectorAll("button, input, textarea")].filter((e) => e.checkVisibility()).length'), 0);
+      await shot('35-testnet-chip');
+      // The chip is in the HTML itself, so it is there with no script at all.
+      assert.match(await (await fetch(`http://localhost:${live.address().port}/t/`)).text(), /<div id="chip" class="chip">signet test coins<\/div>/);
+    } finally {
+      live.close();
+      live.closeAllConnections?.();
+    }
+  });
 
   test('the laptop on the tripod: digits take over a third of a landscape screen, every state fits, and the chip stays', { timeout: 180_000 }, async () => {
     await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1512, height: 982, deviceScaleFactor: 2, mobile: false });
@@ -931,7 +1042,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
 
   test('through the relay owner\'s real handler, if it is there', { timeout: 180_000, skip: existsSync(join(SITE, 'functions/_relay/handler.mjs')) ? false : 'functions/_relay/handler.mjs is not there yet' }, async () => {
     const status = await (await fetch(`${stage.origin}/api/relay`)).json();
-    if (!status.ok || !status.general?.up) return;
+    assert.equal(status.general?.up, true, JSON.stringify(status));
     const v = await makeVault();
     const old = origin;
     origin = stage.origin;
@@ -942,6 +1053,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       await fastForwardToLeft(req.unlock, 5_000);
       await waitState('signed', 90_000);
       await waitFor('the txid', async () => (await js('document.getElementById("root").dataset.broadcast')) === 'done', 30_000);
+      assert.equal((await (await fetch(`${stage.config.esplora}/tx/${v.coin.txid}/outspend/${v.coin.vout}`)).json()).spent, true);
     } finally {
       origin = old;
     }

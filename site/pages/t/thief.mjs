@@ -240,8 +240,8 @@ async function checkPropose() {
 
 function drawArmed() {
   const total = S.spend ? S.spend.total : sumOfInputs(S.coins);
-  $('amount').textContent = S.coins.length ? `everything  ${satsText(total)}` : 'everything';
-  $('fee').textContent = S.spend && !S.spend.short ? `fee ${S.spend.fee} sats comes out of it` : '';
+  $('amount-text').textContent = S.coins.length ? `everything  ${satsText(total)}` : 'everything';
+  $('fee').textContent = S.spend && !S.spend.short ? `fee ${S.spend.fee} sats out of it` : '';
   const notes = [];
   if (S.nearDown) notes.push(S.nearDown);
   if (S.btcDown) notes.push(S.btcDown);
@@ -904,7 +904,9 @@ $('send').addEventListener('click', () => {
   pressSend().catch((err) => plain('no_answer', 'This tab hit an error and sent nothing further:', { verbatim: errorWords(err), retry: retryFromTop }));
 });
 document.addEventListener('mousemove', (event) => {
-  if (S.cursor) $('cursor').style.transform = `translate(${event.clientX}px, ${event.clientY}px)`;
+  if (!S.cursor) return;
+  root.dataset.cursorSeen = '1';
+  $('cursor').style.transform = `translate(${event.clientX}px, ${event.clientY}px)`;
 });
 
 boot().catch((err) => plain('no_config', 'This tab could not start.', { verbatim: errorWords(err) }));

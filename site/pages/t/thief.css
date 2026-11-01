@@ -40,18 +40,18 @@ html, body { min-height: 100%; }
 .field.key { height: calc(124 * var(--u)); resize: none; overflow: hidden; word-break: break-all; font-size: calc(36 * var(--u)); }
 #to { height: calc(84 * var(--u)); font-size: calc(34 * var(--u)); }
 #to.long { font-size: calc(24 * var(--u)); }
-#amount { height: calc(84 * var(--u)); white-space: nowrap; }
-.why { min-height: calc(40 * var(--u)); margin: calc(6 * var(--u)) 0 calc(4 * var(--u)); font: 600 calc(28 * var(--u))/calc(34 * var(--u)) var(--sans); color: var(--red); }
+#amount { display: flex; align-items: baseline; justify-content: space-between; height: calc(84 * var(--u)); white-space: nowrap; }
+.fee { font-size: calc(26 * var(--u)); color: var(--dim); }
+.why { min-height: calc(34 * var(--u)); margin: 0 0 calc(2 * var(--u)); font: 600 calc(28 * var(--u))/calc(34 * var(--u)) var(--sans); color: var(--red); }
 #amount-label { margin-top: 0; }
-.send { display: block; width: 100%; height: calc(150 * var(--u)); margin-top: calc(30 * var(--u)); background: var(--red); color: var(--white); border: 0; border-radius: 0;
+.send { display: block; width: 100%; height: calc(150 * var(--u)); margin-top: calc(26 * var(--u)); background: var(--red); color: var(--white); border: 0; border-radius: 0;
   font: 800 calc(72 * var(--u))/1 var(--sans); letter-spacing: -0.015em; cursor: pointer; }
 .send:hover:not(:disabled) { background: #E8352B; }
 .send:active:not(:disabled) { background: #B3241C; }
 .send:disabled { background: #3A1512; color: #8C6D6A; cursor: default; }
 #root[data-state="direct"] .send { font-size: calc(52 * var(--u)); background: #B3241C; color: var(--white); }
 .note { margin: calc(24 * var(--u)) 0 0; font: 600 calc(36 * var(--u))/calc(44 * var(--u)) var(--sans); color: var(--white); overflow-wrap: anywhere; }
-.note:empty, .small:empty { display: none; }
-.small { margin: calc(16 * var(--u)) 0 0; font-size: calc(26 * var(--u)); line-height: calc(34 * var(--u)); color: var(--dim); }
+.note:empty { display: none; }
 
 /* ---------------------------------------------- refused: the bar slams, then everything but the chip jolts */
 #refused { padding-top: calc(var(--top) * var(--u)); height: 100vh; overflow: hidden; }
@@ -128,7 +128,7 @@ html, body { min-height: 100%; }
 #root[data-dim="1"] #clock { opacity: 0.35; }
 
 /* signed: plain, no stamp */
-#root[data-state="signed"] .under-clock, #root[data-state="signed"] .fuse { display: none; }
+#root[data-state="signed"] .under-clock, #root[data-state="signed"] .fuse, #root[data-state="signed"] #near-row { display: none; }
 
 /* frozen: digits white and still, stamp once */
 #root[data-state="frozen"] #clock { color: var(--white); }
@@ -143,7 +143,8 @@ html, body { min-height: 100%; }
 /* The recorder's mouse: a screen capture leaves out the real one. Only with cursor=1 in the fragment. */
 .cursor { display: none; position: fixed; left: 0; top: 0; z-index: 100; width: calc(50 * var(--u)); height: calc(76 * var(--u)); pointer-events: none; }
 #root[data-cursor="1"], #root[data-cursor="1"] * { cursor: none !important; }
-#root[data-cursor="1"] .cursor { display: block; }
+#root[data-cursor="1"] .cursor { display: block; visibility: hidden; }
+#root[data-cursor="1"][data-cursor-seen="1"] .cursor { visibility: visible; }
 
 /* A laptop on a tripod: the digits take the screen. */
 @media (min-aspect-ratio: 1/1) {
@@ -152,12 +153,14 @@ html, body { min-height: 100%; }
   .wordmark { top: calc(28 * var(--u)); }
   .glow { background: radial-gradient(70vw 70vh at 50% 45%, rgba(255,59,48,1) 0%, rgba(255,59,48,0.62) 30%, rgba(255,59,48,0.22) 62%, rgba(255,59,48,0) 100%); }
   #armed, #plain { max-width: calc(1208 * var(--u)); margin: 0 auto; }
-  .bar-red { height: calc(240 * var(--u)); }
-  .bar-red .b1 { top: calc(40 * var(--u)); font-size: calc(160 * var(--u)); }
-  .bar-red .b2 { top: calc(40 * var(--u)); left: calc(760 * var(--u)); font-size: calc(160 * var(--u)); }
+  .bar-red { height: calc(170 * var(--u)); font-size: calc(112 * var(--u)); line-height: calc(170 * var(--u)); }
+  .bar-red .b1, .bar-red .b2 { position: static; display: inline; font-size: inherit; line-height: inherit; }
   .term { top: auto; bottom: calc(40 * var(--u)); }
   #ask-retry { top: auto; bottom: calc(40 * var(--u)); }
   .rows { position: absolute; left: 0; right: 0; bottom: calc(16 * var(--u)); margin: 0 calc(64 * var(--u)); }
+  /* The stamp's line takes that room on a landscape screen, and the digits above it may not move to make any. */
+  #root[data-state="frozen"] .rows { display: none; }
+  .under-clock { margin-top: calc(-30 * var(--u)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
