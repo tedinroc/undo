@@ -16,6 +16,9 @@ pub const HEARTBEAT_STALE_MS: Ms = 20 * MINUTE;
 pub const RETRY_AFTER_BLOCKS: u64 = 250;
 /// Bound on pending passkey grants, so `freeze` and the phone page stay bounded.
 pub const MAX_GRANTS: usize = 8;
+/// Bound on known destinations. They sit in the row, which `on_signed` reads with fixed gas, so a stolen
+/// passkey adding one per `T_new` must not be able to grow it without limit.
+pub const MAX_KNOWN: usize = 32;
 /// Lowest accepted fee rate in sat/vB, on the estimate from counts.
 pub const MIN_FEE_RATE: Sats = 1;
 /// A named self-spend override may go up to 1/20 of the value it moves.
@@ -81,7 +84,6 @@ impl Policy {
 pub struct Fixed {
     pub t_recover_ms: Ms,
     pub expiry_window_ms: Ms,
-    pub bump_wait_ms: Ms,
     /// Bitcoin block interval of the network, used to turn CSV blocks into the longest freeze.
     pub block_ms: Ms,
     /// CSV blocks a vault on this instance may choose.
@@ -95,7 +97,6 @@ impl Fixed {
         Fixed {
             t_recover_ms: 15 * MINUTE,
             expiry_window_ms: HOUR,
-            bump_wait_ms: 5 * MINUTE,
             block_ms: 30_000,
             // Six is the delay table's value. A day of Mutinynet blocks is far more than a test coin
             // needs, and keeps the longest freeze to a day.
@@ -109,7 +110,6 @@ impl Fixed {
         Fixed {
             t_recover_ms: HOUR,
             expiry_window_ms: DAY,
-            bump_wait_ms: 30 * MINUTE,
             block_ms: 10 * MINUTE,
             // From the proof vault's six to the documented default's six months.
             csv_min: 6,
@@ -154,6 +154,16 @@ impl Bounds {
                 ..deployed
             },
         }
+    }
+
+    /// The longest a withdrawal can take here: unguarded new-destination delay, one hold, a stuck wait
+    /// and a known-destination delay.
+    pub fn longest_withdrawal_ms(&self) -> Ms {
+        let m = &self.max;
+        m.t_new_unguarded_ms
+            .saturating_add(m.hold_ms)
+            .saturating_add(m.t_stuck_ms)
+            .saturating_add(m.t_known_ms)
     }
 
     pub fn allows(&self, p: &Policy) -> bool {

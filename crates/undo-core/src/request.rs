@@ -1,3 +1,4 @@
+use crate::guard::{Reason, Snapshot};
 use crate::types::{HalfSig, Input, MpcSig, Ms, Outputs, RequestId, Sats};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,8 +13,6 @@ pub enum Tier {
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 pub enum RequestKind {
     Normal,
-    /// Same inputs and declared values as `predecessor`, higher fee, no new delay.
-    Bump { predecessor: RequestId },
     /// One outpoint back to the vault's own script. May re-declare the value.
     Reclaim,
 }
@@ -40,9 +39,6 @@ pub struct Request {
     pub outputs: Outputs,
     pub tier: Tier,
     pub fee: Sats,
-    /// Part of `fee` already charged by the request this one replaced. Only one of them can
-    /// confirm, so a bump charges the difference.
-    pub fee_prepaid: Sats,
     /// Set by `K_p` for one named self-spend.
     pub fee_override: Option<Sats>,
     pub proposed_at: Ms,
@@ -51,7 +47,13 @@ pub struct Request {
     /// `base_unlock`, plus `hold_ms` while a hold stands.
     pub unlock: Ms,
     pub expires_at: Ms,
+    /// Set once a model's answer has been checked and recorded, whichever way it went. A false here
+    /// on a request past its unlock is a request the guard skipped.
     pub assessed: bool,
+    /// The last answer recorded. Fixed width, so an assessment grows nothing.
+    pub assess_hold: bool,
+    pub assess_reason: Reason,
+    pub snapshot: Snapshot,
     pub hold_used: bool,
     pub hold_active: bool,
     pub first_execute_at: Option<Ms>,

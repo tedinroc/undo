@@ -139,7 +139,9 @@ async fn f5_cancel_cycle_keeps_no_storage() -> Result<()> {
         last = h.propose(&mut v, &real, &to, 99_500, None).await?;
         assert!(h.credit(&v).await? < credit, "a pending request is paid for");
         h.cancel_passkey(&v, last).await?.into_result()?;
-        assert_eq!(h.undo.view_account().await?.storage_usage, usage, "bytes are gone");
+        // All but the public count's one entry, which the first cancel writes from what the row reserved
+        // for it at creation, so the credit does not move for it.
+        assert_eq!(h.undo.view_account().await?.storage_usage, usage + 40 + 33 + 1, "bytes are gone");
         assert_eq!(h.credit(&v).await?, credit, "and paid back");
     }
     assert_eq!(h.status(&v, last).await?, "deleted");

@@ -28,6 +28,7 @@ pub enum Error {
     DustOutput,
     OutputsExceedInputs,
     FeeRateTooLow { fee: Sats, floor: Sats },
+    BadMemo,
     // Ledger.
     OutpointBusy(Outpoint),
     PinnedInMultiInput(Outpoint),
@@ -47,12 +48,8 @@ pub enum Error {
     AlreadySigned,
     InFlight { retry_at_height: u64 },
     NothingToSign,
-    NotExecuted,
     NotReclaimable,
     NotStuck { ready_at: Ms },
-    BumpTooSoon { ready_at: Ms },
-    BumpNotHigher,
-    ChangeBelowDust,
     NotSigned,
     PruneTooSoon { ready_at: Ms },
     // Guard.
@@ -66,6 +63,7 @@ pub enum Error {
     GrantNotFound,
     GrantNotReady { ready_at: Ms },
     TooManyGrants,
+    TooManyDestinations,
     // Freeze.
     FreezeTooLong { max_until: Ms },
     NotFrozen,
@@ -74,4 +72,10 @@ pub enum Error {
     NoRecovery,
     RecoveryCancelCapReached,
     RecoveryNotReady { ready_at: Ms },
+    // Upgrades.
+    UpgradeInProgress,
+    NoUpgrade,
+    UpgradeHashMismatch,
+    UpgradeNotReady { ready_at: Ms },
+    UpgradeExpired,
 }

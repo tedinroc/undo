@@ -3,9 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::Error;
+use crate::guard::{hours, memo_ok, Reason, Snapshot};
 use crate::policy::{
     Bounds, Fixed, Policy, DAY, FEE_OVERRIDE_DIVISOR, HEARTBEAT_STALE_MS, MAX_GRANTS, MAX_INPUTS,
-    MAX_PENDING, MIN_FEE_RATE, RECOVERY_CANCEL_CAP, RETRY_AFTER_BLOCKS,
+    MAX_KNOWN, MAX_PENDING, MIN_FEE_RATE, RECOVERY_CANCEL_CAP, RETRY_AFTER_BLOCKS,
 };
 use crate::request::{Request, RequestKind, RequestStatus, Tier};
 use crate::types::{
@@ -72,6 +73,60 @@ struct SelfSpendSlot {
     prev_at: Option<Ms>,
 }
 
+/// The last eight times something happened. Fixed size, so it costs the same in the row whatever a
+/// vault does, needs no reservation, and a count over it saturates at eight. These only feed the
+/// guard's snapshot, so an old entry falling off cannot change any rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+struct TimeRing {
+    at: [Ms; 8],
+    next: u8,
+}
+
+impl TimeRing {
+    fn push(&mut self, at: Ms) {
+        self.at[usize::from(self.next) % 8] = at;
+        self.next = (self.next + 1) % 8;
+    }
+
+    fn count_within(&self, window: Ms, now: Ms) -> u8 {
+        self.at.iter().filter(|at| **at != 0 && now.saturating_sub(**at) < window).count() as u8
+    }
+}
+
+/// The last eight destinations first proposed to, by the tail of their output script, which is a hash
+/// for every template the contract accepts. Also only for the snapshot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
+struct SeenRing {
+    tails: [u64; 8],
+    at: [Ms; 8],
+    next: u8,
+}
+
+impl SeenRing {
+    fn tail(script: &[u8]) -> u64 {
+        let mut bytes = [0u8; 8];
+        let from = script.len().saturating_sub(8);
+        bytes[..script.len() - from].copy_from_slice(&script[from..]);
+        u64::from_le_bytes(bytes)
+    }
+
+    fn first_seen(&self, script: &[u8]) -> Option<Ms> {
+        let tail = Self::tail(script);
+        (0..8).find(|i| self.at[*i] != 0 && self.tails[*i] == tail).map(|i| self.at[i])
+    }
+
+    fn note(&mut self, script: &[u8], now: Ms) {
+        if self.first_seen(script).is_none() {
+            let i = usize::from(self.next) % 8;
+            self.tails[i] = Self::tail(script);
+            self.at[i] = now;
+            self.next = (self.next + 1) % 8;
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 struct OutflowEntry {
@@ -95,6 +150,7 @@ pub struct CreateArgs {
     pub policy: Policy,
     pub fixed: Fixed,
     pub bounds: Bounds,
+    pub now: Ms,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,6 +158,8 @@ pub struct ProposeArgs {
     pub inputs: Vec<Input>,
     pub outputs: Outputs,
     pub half_sigs: Vec<HalfSig>,
+    /// Text for the guard to read against the action. Anyone with the spend key may write one.
+    pub memo: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,6 +221,16 @@ pub struct Vault {
     pub policy: Policy,
     pub fixed: Fixed,
     pub bounds: Bounds,
+    pub created_at: Ms,
+    /// When the current `K_s` took effect.
+    pub k_s_since: Ms,
+    /// When the last request reached its first execute. Zero until one has.
+    pub last_spend_at: Ms,
+    /// When the signer's last answer failed. Zero once a later answer was good. Only a status line
+    /// reads this: a contract cannot tell a signer outage from a griefer's request.
+    pub sign_failed_at: Ms,
+    /// Whether this vault has completed a cancel or a spend, which is what the public count counts.
+    pub completed: bool,
     pub spend_epoch: u64,
     pub frozen_until: Option<Ms>,
     pub spend_nonce: u64,
@@ -186,6 +254,9 @@ pub struct Vault {
     slot: SelfSpendSlot,
     fee_window: Vec<(Ms, Sats)>,
     outflow_window: Vec<OutflowEntry>,
+    proposals: TimeRing,
+    cancels: TimeRing,
+    destinations: SeenRing,
 }
 
 impl Vault {
@@ -246,6 +317,11 @@ impl Vault {
             policy: args.policy,
             fixed: args.fixed,
             bounds: args.bounds,
+            created_at: args.now,
+            k_s_since: args.now,
+            last_spend_at: 0,
+            sign_failed_at: 0,
+            completed: false,
             spend_epoch: 0,
             frozen_until: None,
             spend_nonce: 0,
@@ -263,6 +339,9 @@ impl Vault {
             slot: SelfSpendSlot::default(),
             fee_window: Vec::new(),
             outflow_window: Vec::new(),
+            proposals: TimeRing::default(),
+            cancels: TimeRing::default(),
+            destinations: SeenRing::default(),
         })
     }
 
@@ -395,6 +474,14 @@ impl Vault {
         if args.half_sigs.len() != args.inputs.len() {
             return Err(Error::HalfSigCount);
         }
+        if args.memo.as_deref().is_some_and(|m| !memo_ok(m)) {
+            return Err(Error::BadMemo);
+        }
+        let snapshot = self.snapshot(&args.inputs, &args.outputs, args.memo, now);
+        self.proposals.push(now);
+        if plan.tier != Tier::SelfSpend {
+            self.destinations.note(&args.outputs.dest_script, now);
+        }
         let outflow = if plan.tier == Tier::SelfSpend { 0 } else { args.outputs.dest_value };
         let restarts_csv = self.restarts_csv(&args.outputs);
         let base_unlock = now.saturating_add(plan.delay_ms);
@@ -405,7 +492,7 @@ impl Vault {
             args.outputs,
             plan.tier,
             plan.fee,
-            0,
+            snapshot,
             now,
             base_unlock,
             base_unlock.saturating_add(self.fixed.expiry_window_ms),
@@ -416,76 +503,6 @@ impl Vault {
         if outflow > 0 {
             self.outflow_window.push(OutflowEntry { at: now, amount: outflow, request: id });
         }
-        Ok(self.proposed(id))
-    }
-
-    /// Same inputs, same declared values, same destination, higher fee. Creates a new request id and
-    /// deletes the old request; it never mutates one. The only way a pinned outpoint enters a
-    /// multi-input request, and safe because no declared value can differ.
-    pub fn bump(
-        &mut self,
-        caller: &Caller,
-        intent: Intent,
-        old_id: RequestId,
-        new_fee: Sats,
-        half_sigs: Vec<HalfSig>,
-        now: Ms,
-    ) -> Result<Proposed, Error> {
-        self.sweep(now);
-        self.require_active()?;
-        self.require_not_frozen(now)?;
-        self.auth_spend(caller, intent, now)?;
-        let old = self.requests.get(&old_id).ok_or(Error::RequestNotFound)?.clone();
-        let first_execute_at = old.first_execute_at.ok_or(Error::NotExecuted)?;
-        let ready_at = first_execute_at.saturating_add(self.fixed.bump_wait_ms);
-        if now < ready_at {
-            return Err(Error::BumpTooSoon { ready_at });
-        }
-        if new_fee <= old.fee {
-            return Err(Error::BumpNotHigher);
-        }
-        if half_sigs.len() != old.inputs.len() {
-            return Err(Error::HalfSigCount);
-        }
-        let delta = new_fee - old.fee;
-        let mut outputs = old.outputs.clone();
-        match outputs.change_value {
-            Some(change) => {
-                let reduced = change.checked_sub(delta).ok_or(Error::ChangeBelowDust)?;
-                if reduced < dust_limit(ScriptKind::P2wsh) {
-                    return Err(Error::ChangeBelowDust);
-                }
-                outputs.change_value = Some(reduced);
-            }
-            None => {
-                let reduced = outputs.dest_value.checked_sub(delta).ok_or(Error::DustOutput)?;
-                let kind = ScriptKind::of(&outputs.dest_script).ok_or(Error::BadDestination)?;
-                if reduced < dust_limit(kind) {
-                    return Err(Error::DustOutput);
-                }
-                outputs.dest_value = reduced;
-            }
-        }
-        self.check_fee_ceiling(old.tier, new_fee, &outputs)?;
-        if self.pending.len() >= MAX_PENDING {
-            return Err(Error::PendingCap);
-        }
-
-        self.requests.remove(&old_id);
-        // base_unlock is inherited, so a bump can never reach an earlier unlock. The old request's
-        // outflow stays counted: its signature may still confirm.
-        let id = self.insert_pending(
-            RequestKind::Bump { predecessor: old_id },
-            old.inputs,
-            half_sigs,
-            outputs,
-            old.tier,
-            new_fee,
-            old.fee,
-            now,
-            old.base_unlock,
-            now.saturating_add(self.fixed.expiry_window_ms),
-        );
         Ok(self.proposed(id))
     }
 
@@ -539,14 +556,17 @@ impl Vault {
         }
 
         self.supersede(owner);
+        let inputs = vec![Input { outpoint, value }];
+        let snapshot = self.snapshot(&inputs, &outputs, None, now);
+        self.proposals.push(now);
         let id = self.insert_pending(
             RequestKind::Reclaim,
-            vec![Input { outpoint, value }],
+            inputs,
             vec![half_sig],
             outputs,
             Tier::SelfSpend,
             fee,
-            0,
+            snapshot,
             now,
             base_unlock,
             base_unlock.saturating_add(self.fixed.expiry_window_ms),
@@ -622,9 +642,11 @@ impl Vault {
             return SignedOutcome::DroppedDigestMismatch;
         }
         let Some(signature) = signature else {
+            self.sign_failed_at = now;
             return SignedOutcome::Failed;
         };
         request.sigs[index] = Some(signature);
+        self.sign_failed_at = 0;
         let complete = request.sigs.iter().all(Option::is_some);
         if complete {
             request.status = RequestStatus::Signed;
@@ -671,6 +693,7 @@ impl Vault {
             GrantKind::RotateSpend { new_k_s } => {
                 self.k_s = new_k_s;
                 self.k_s_suspended = false;
+                self.k_s_since = now;
                 // A stolen K_s can burn the 24 h budget with coins that do not exist, and the exit to a
                 // new vault is not a self-spend, so no override reaches it. The thief's key is gone
                 // now, so its spending does not count against the owner. This lands after `T_known`
@@ -713,12 +736,14 @@ impl Vault {
     }
 
     /// Records the outcome in both directions. `hold=true` overrides an earlier `hold=false` until
-    /// unlock, and a request gets at most one hold in its life, even after a passkey clears it.
+    /// unlock, and a request gets at most one hold in its life, even after a passkey clears it. The
+    /// shell has already checked the model's signature over the exact bytes.
     pub fn assess(
         &mut self,
         caller: &Caller,
         id: RequestId,
         hold: bool,
+        reason: Reason,
         now: Ms,
     ) -> Result<(), Error> {
         self.sweep(now);
@@ -735,6 +760,8 @@ impl Vault {
             return Err(Error::PastUnlock);
         }
         request.assessed = true;
+        request.assess_hold = hold;
+        request.assess_reason = reason;
         if hold {
             request.hold_used = true;
             request.hold_active = true;
@@ -773,7 +800,13 @@ impl Vault {
         }
         self.refund_slot(id);
         self.kill_pending(id);
+        self.cancels.push(now);
         Ok(())
+    }
+
+    /// True the first time only: the shell then counts this vault's passkey in the public count.
+    pub fn mark_completed(&mut self) -> bool {
+        !core::mem::replace(&mut self.completed, true)
     }
 
     // ---------------------------------------------------------------- passkey methods
@@ -868,6 +901,10 @@ impl Vault {
         }
         if self.known.contains(&script) {
             return Err(Error::AlreadyKnown);
+        }
+        let waiting = self.grants.iter().filter(|g| matches!(g.kind, GrantKind::AddDestination { .. })).count();
+        if self.known.len() + waiting >= MAX_KNOWN {
+            return Err(Error::TooManyDestinations);
         }
         let delay = self.policy.t_new_ms;
         self.push_grant(GrantKind::AddDestination { script }, delay, now)
@@ -1315,7 +1352,7 @@ impl Vault {
         outputs: Outputs,
         tier: Tier,
         fee: Sats,
-        fee_prepaid: Sats,
+        snapshot: Snapshot,
         now: Ms,
         base_unlock: Ms,
         expires_at: Ms,
@@ -1345,13 +1382,15 @@ impl Vault {
                 outputs,
                 tier,
                 fee,
-                fee_prepaid,
                 fee_override: None,
                 proposed_at: now,
                 base_unlock,
                 unlock: base_unlock,
                 expires_at,
                 assessed: false,
+                assess_hold: false,
+                assess_reason: Reason::None,
+                snapshot,
                 hold_used: false,
                 hold_active: false,
                 first_execute_at: None,
@@ -1385,7 +1424,7 @@ impl Vault {
         if request.fee > cap {
             return Err(Error::FeeOverCap { fee: request.fee, cap });
         }
-        let charge = request.fee.saturating_sub(request.fee_prepaid);
+        let charge = request.fee;
         let used = self.fee_used_24h(now);
         if request.fee_override.is_none()
             && used.saturating_add(charge) > self.policy.fee_budget_24h
@@ -1425,6 +1464,7 @@ impl Vault {
             entry.state = OutpointState::Signing(request.id);
             entry.signing_since = Some(now);
         }
+        self.last_spend_at = now;
         // The slot use can no longer be refunded once a signature may exist.
         if self.slot.holder == Some(request.id) {
             self.slot.holder = None;
@@ -1436,8 +1476,31 @@ impl Vault {
         Ok(())
     }
 
+    /// The facts a guard reads about a request about to be stored. Only from this vault's state, so
+    /// the contract can stand behind every field of the bytes a model signs.
+    fn snapshot(&self, inputs: &[Input], outputs: &Outputs, memo: Option<String>, now: Ms) -> Snapshot {
+        let inputs_sats: Sats = inputs.iter().fold(0, |sum, i| sum.saturating_add(i.value));
+        let share = u128::from(outputs.dest_value) * 10_000 / u128::from(inputs_sats.max(1));
+        Snapshot {
+            destination_seen_hours_ago: self.destinations.first_seen(&outputs.dest_script).map(|at| hours(now.saturating_sub(at))),
+            amount_sats: outputs.dest_value,
+            inputs_sats,
+            share_bps: u16::try_from(share).unwrap_or(u16::MAX),
+            proposals_24h: self.proposals.count_within(DAY, now),
+            cancels_30d: self.cancels.count_within(30 * DAY, now),
+            hours_since_last_spend: (self.last_spend_at != 0).then(|| hours(now.saturating_sub(self.last_spend_at))),
+            vault_age_hours: hours(now.saturating_sub(self.created_at)),
+            spend_key_age_hours: hours(now.saturating_sub(self.k_s_since)),
+            utc_hour: ((now / crate::policy::HOUR) % 24) as u8,
+            memo,
+        }
+    }
+
+    /// The panic button must always fit, so a stolen passkey filling the list cannot hold it back. Its
+    /// own bytes are reserved, and there is only ever one.
     fn push_grant(&mut self, kind: GrantKind, delay: Ms, now: Ms) -> Result<GrantId, Error> {
-        if self.grants.len() >= MAX_GRANTS {
+        let rotation = matches!(kind, GrantKind::RotateSpend { .. });
+        if !rotation && self.grants.len() >= MAX_GRANTS {
             return Err(Error::TooManyGrants);
         }
         let id = self.next_grant;

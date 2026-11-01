@@ -13,7 +13,7 @@ import { randomBytes } from '../lib/crypto.mjs';
 import { signSecp } from '../lib/intent.mjs';
 import { action, failureOf, keyFromSecret, loadKeyFile, milliNear, NEAR, Near, returnValue, TGAS } from '../lib/near.mjs';
 import { buildRecovery } from '../lib/recovery.mjs';
-import { coldCancelDigest, fakeCoins, newOwnerKeys, VaultClient } from '../lib/vault-client.mjs';
+import { coldCancelDigest, fakeCoins, newOwnerKeys, OWNER_ATTACH_TGAS, throwawayOperatorPasskey, VaultClient } from '../lib/vault-client.mjs';
 import { argBytes } from '../lib/intent.mjs';
 import { startMockNode } from './mock-node.mjs';
 
@@ -53,6 +53,7 @@ async function main() {
     action.call('new', {
       preset: 'TestCoin', operator: relay.accountId, restrict_create: false, signer: mock.accountId, domain_id: 0, sign_tgas: 30, callback_tgas: 10,
       derive_tgas: 30, network: 'regtest', origins: [origin], outflow_cap_24h: 1_000_000,
+      operator_passkey: throwawayOperatorPasskey(rpId),
     }, 100n * TGAS, 0n),
   ]);
   const instance = await near.view(undo.accountId, 'instance');
@@ -184,6 +185,28 @@ async function main() {
     const unfrozen = await relayCold('unfreeze', unfreezeArgs);
     check('unfreeze signed by freeze.mjs accepted', !failureOf(unfrozen.result), failureOf(unfrozen.result));
     check('the vault reads unfrozen', (await near.view(undo.accountId, 'vault', { vault: vault.hex })).frozen_until === null);
+
+    // ---- the passkey methods the page will sign, through this package's own encoders
+    const dest = fromHex(`0014${'ab'.repeat(20)}`);
+    const FAR = (await near.nowMs()) + 30 * 60_000;
+    const passkeyCall = async (method, argsBytes, call) => {
+      const view = await near.view(undo.accountId, 'vault', { vault: vault.hex });
+      vault.passkeyNonce = view.passkey_nonce;
+      const assertion = client.passkeyAssertion(vault, method, argsBytes, FAR, view.passkey_nonce);
+      return near.sendAndWait(relay, undo.accountId, [action.call(method, { vault: vault.hex, ...call, nonce: view.passkey_nonce, expires_at: FAR, assertion }, OWNER_ATTACH_TGAS * TGAS, 0n)]);
+    };
+    const added = await passkeyCall('add_destination', argBytes.add_destination({ script: dest }), { script: toHex(dest) });
+    check('add_destination signed by this package accepted', !failureOf(added.result), failureOf(added.result));
+    const removed = await passkeyCall('remove_destination', argBytes.remove_destination({ script: dest }), { script: toHex(dest) });
+    check('remove_destination signed by this package accepted', !failureOf(removed.result), failureOf(removed.result));
+    const current = (await near.view(undo.accountId, 'vault', { vault: vault.hex })).policy;
+    const tighter = { ...current, fee_cap_tx: current.fee_cap_tx - 1 };
+    const tightened = await passkeyCall('set_policy', argBytes.set_policy({ policy: tighter }), { policy: tighter });
+    check('set_policy signed by this package accepted', !failureOf(tightened.result), failureOf(tightened.result));
+    const guarded = await passkeyCall('set_guard', argBytes.set_guard({ guard: 'guard.test.near' }), { guard: 'guard.test.near' });
+    check('set_guard signed by this package accepted', !failureOf(guarded.result), failureOf(guarded.result));
+    const noHold = await passkeyCall('clear_hold', argBytes.clear_hold({ request: 999 }), { request: 999 });
+    check('clear_hold signed by this package reaches the rules', refused(noHold.result, 'NotPending') || refused(noHold.result, 'RequestNotFound'), failureOf(noHold.result));
   } finally {
     await node.stop();
     rmSync(work, { recursive: true, force: true });

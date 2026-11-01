@@ -25,7 +25,7 @@ import { base58Encode, fromHex, toHex } from './lib/bytes.mjs';
 import { parseTx } from './lib/btc.mjs';
 import { randomBytes, sha256 } from './lib/crypto.mjs';
 import { action, credentialsPath, failureOf, keyFromSecret, loadCredentials, loadKeyFile, logsOf, milliNear, NEAR, Near, TGAS } from './lib/near.mjs';
-import { fakeCoins, feeFor, newOwnerKeys, PATH_PREFIX, VaultClient } from './lib/vault-client.mjs';
+import { fakeCoins, feeFor, newOwnerKeys, PATH_PREFIX, throwawayOperatorPasskey, VaultClient } from './lib/vault-client.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
@@ -332,6 +332,7 @@ async function deployIfNeeded({ near, cfg, payer, wasmBytes, codeHash }) {
   const init = {
     preset: 'TestCoin', operator: payer.accountId, restrict_create: false, signer: cfg.signer, domain_id: 0,
     sign_tgas: LADDER[0], callback_tgas: CALLBACK_TGAS, derive_tgas: 30, network: 'mutinynet', origins: [cfg.origin], outflow_cap_24h: 1_000_000,
+    operator_passkey: throwawayOperatorPasskey(new URL(cfg.origin).hostname),
   };
   const initCall = action.call('new', init, 100n * TGAS, 0n);
   if (existing && existing.code_hash !== '11111111111111111111111111111111') {

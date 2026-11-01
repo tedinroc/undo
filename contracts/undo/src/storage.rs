@@ -39,6 +39,9 @@ const ROTATE_GRANT_BYTES: u64 = 8 + 1 + 32 + 16;
 const FREEZE_BYTES: u64 = 8;
 /// A waiting recovery: key with its length, rp id hash, two flags, two times.
 const RECOVERY_BYTES: u64 = 4 + 33 + 32 + 2 + 16;
+/// The public count's entry for this vault's passkey: overhead, tag and hash, one value byte. The
+/// first completed cancel writes it, and a cancel must not need credit.
+const COUNT_ENTRY_BYTES: u64 = 40 + 33 + 1;
 
 #[derive(BorshSerialize, BorshDeserialize)]
 #[borsh(crate = "near_sdk::borsh")]
@@ -61,6 +64,9 @@ fn row_reserve(vault: &Vault) -> u64 {
     }
     if vault.recovery.is_none() {
         bytes += RECOVERY_BYTES;
+    }
+    if !vault.completed {
+        bytes += COUNT_ENTRY_BYTES;
     }
     bytes
 }
@@ -117,8 +123,20 @@ fn encoded<T: BorshSerialize>(value: &T) -> Vec<u8> {
     borsh::to_vec(value).unwrap_or_else(|_| env::panic_str("bad row"))
 }
 
+/// Whether a passkey is in the public count.
+pub fn passkey_counted(passkey: &[u8]) -> bool {
+    let mut key = vec![b'p'];
+    key.extend_from_slice(&env::sha256_array(passkey));
+    env::storage_has_key(&key)
+}
+
 pub fn exists(id: &[u8; 32]) -> bool {
     env::storage_has_key(&row_key(id))
+}
+
+/// Roughly what one more request costs, for a status line. Nothing refuses on this.
+pub fn request_floor() -> u128 {
+    cost(1_000)
 }
 
 /// A loaded vault, and what its pieces held when they were read.
@@ -130,6 +148,8 @@ pub struct Loaded {
     raw_ledger: BTreeMap<Outpoint, Option<Vec<u8>>>,
     /// The part of `row.reserved` that the pieces read so far account for.
     reserve_read: u64,
+    /// Bytes written outside the row and its entries since loading, which `commit` settles too.
+    written_early: u64,
 }
 
 /// The row alone. For views, and for callers that name exactly what they touch.
@@ -144,6 +164,7 @@ pub fn try_load_row(id: &[u8; 32]) -> Option<Loaded> {
         raw_requests: BTreeMap::new(),
         raw_ledger: BTreeMap::new(),
         reserve_read,
+        written_early: 0,
     })
 }
 
@@ -209,6 +230,20 @@ impl Loaded {
         txid
     }
 
+    /// Records this vault's passkey in the public count. True when the passkey is new to it. Its bytes
+    /// come from what the row reserved for this, and a passkey already counted gives them back.
+    pub fn count_passkey(&mut self) -> bool {
+        let mut key = vec![b'p'];
+        key.extend_from_slice(&env::sha256_array(&self.row.vault.passkey.pubkey));
+        if env::storage_has_key(&key) {
+            return false;
+        }
+        let before = env::storage_usage();
+        env::storage_write(&key, &[1]);
+        self.written_early += env::storage_usage() - before;
+        true
+    }
+
     /// `undo-core` reads an outpoint with no entry as free and unpinned, so every outpoint a call can
     /// touch must come through here first. Missing one would forget its pin.
     pub fn load_outpoints(&mut self, id: &[u8; 32], outpoints: &[Outpoint]) {
@@ -238,7 +273,7 @@ pub enum Short {
 impl Loaded {
     /// Writes what changed and settles the credit for the change in bytes plus reservation.
     pub fn commit(mut self, id: &[u8; 32], short: Short) {
-        let usage_before = env::storage_usage();
+        let usage_before = env::storage_usage() - self.written_early;
         let requests = core::mem::take(&mut self.row.vault.requests);
         let ledger = core::mem::take(&mut self.row.vault.ledger);
 

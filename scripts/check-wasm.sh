@@ -24,8 +24,14 @@ printf '%s\n' "$symbols" | grep -q '^export function propose_evm$' && fail "expo
 printf '%s\n' "$symbols" | grep -q '^import env\.promise_batch_action_universal_state_init$' \
   && fail "imports promise_batch_action_universal_state_init"
 
+# Cut by decision: `reclaim` after `T_stuck` covers a stuck coin.
+printf '%s\n' "$symbols" | grep -q '^export function bump$' && fail "exports bump"
+
 # The checks above pass on an empty file, so require the methods that must be there.
-for method in new propose_btc execute on_signed prune_signed freeze unfreeze veto_grant recover_begin recover_cancel recover_finish; do
+for method in new migrate create_vault deposit_storage propose_btc check_propose cancel cancel_all_and_rotate execute on_signed prune_signed reclaim \
+  assess heartbeat clear_hold add_destination remove_destination set_policy set_guard apply_grant raise_fee_cap \
+  freeze unfreeze veto_grant recover_begin recover_cancel recover_finish upgrade_propose upgrade_cancel upgrade_apply \
+  status vault request delay_now final_tx script guard_prompt stats; do
   printf '%s\n' "$symbols" | grep -q "^export function $method\$" || fail "does not export $method"
 done
 

@@ -13,6 +13,9 @@ V = "src/vault.rs"
 W = "props/tests/common/world.rs"
 P = "src/policy.rs"
 T = "src/types.rs"
+G = "src/guard.rs"
+S = "src/status.rs"
+U = "src/upgrade.rs"
 PIN_RULE = ("inputs.len() > 1 && self.pinned_value(&input.outpoint).is_some()", "false")
 
 MUTANTS = [
@@ -24,11 +27,9 @@ MUTANTS = [
     ("pin overwritten at each execute", [(V, "entry.pinned_value.get_or_insert(input.value);", "entry.pinned_value = Some(input.value);")]),
     ("pin dropped when an outpoint is freed", [(V, "if entry.pinned_value.is_some() || entry.born_at.is_some() {\n            entry.state = OutpointState::Free;", "if entry.born_at.is_some() {\n            entry.state = OutpointState::Free;")]),
     ("execute ignores unlock", [(V, "if now < request.unlock {", "if false {")]),
+    ("execute waits past the unlock", [(V, "if now < request.unlock {", "if now <= request.unlock {")]),
     ("clear_hold goes below base", [(V, "request.unlock = request.base_unlock;\n        request.expires_at", "request.unlock = request.base_unlock.saturating_sub(1_000);\n        request.expires_at")]),
     ("hold adds nothing", [(V, "request.unlock = request.base_unlock.saturating_add(hold_ms);", "")]),
-    ("bump takes a fresh base", [(V, "            now,\n            old.base_unlock,\n", "            now,\n            now,\n")]),
-    ("bump ignores its wait", [(V, "if now < ready_at {\n            return Err(Error::BumpTooSoon { ready_at });", "if false {\n            return Err(Error::BumpTooSoon { ready_at });")]),
-    ("bump charges the whole fee", [(V, "let charge = request.fee.saturating_sub(request.fee_prepaid);", "let charge = request.fee;")]),
     ("old epoch still executes", [
         (V, "(request.epoch != self.spend_epoch || now > request.expires_at)", "(now > request.expires_at)"),
         (V, "if request.epoch != self.spend_epoch {", "if false {"),
@@ -77,7 +78,6 @@ MUTANTS = [
     ("removal keeps the slot a killed spend held", [(V, "for id in doomed {\n            self.refund_slot(id);\n", "for id in doomed {\n")]),
     ("nonces not checked", [(V, "if intent.nonce != expected {", "if false {")]),
     ("pending cap off at propose", [(V, "if self.pending.len() >= MAX_PENDING {\n            return Err(Error::PendingCap);\n        }\n\n        let unguarded", "let unguarded")]),
-    ("bump keeps the old request", [(V, "self.requests.remove(&old_id);\n", "")]),
     ("an inactive vault works", [(V, "self.require_active()?;", "")]),
     ("chain: a repeat of the same transaction moves the birth time", [(V, "self.ledger.entry(child).or_insert(LedgerEntry {\n                state: OutpointState::Free,\n                pinned_value: None,\n                signing_since: None,\n                born_at: Some(now),\n            });", "self.ledger.insert(child, LedgerEntry {\n                state: OutpointState::Free,\n                pinned_value: None,\n                signing_since: None,\n                born_at: Some(now),\n            });")]),
     ("reclaim needs no slot", [(V, "self.require_slot_free(now)?;\n        let base_unlock = now.saturating_add(self.policy.t_known_ms);\n        self.require_chain_wait(&[Input { outpoint, value }], base_unlock)?;", "let base_unlock = now.saturating_add(self.policy.t_known_ms);\n        self.require_chain_wait(&[Input { outpoint, value }], base_unlock)?;")]),
@@ -121,6 +121,51 @@ MUTANTS = [
     ("csv ignores the instance's ceiling", [(V, " || args.csv_blocks > args.fixed.csv_max", "")]),
     ("test coin csv ceiling is the whole range", [(P, "csv_max: 2_880,", "csv_max: 65_535,")]),
     ("proof vault csv ceiling is the whole range", [(P, "csv_max: 26_280,", "csv_max: 65_535,")]),
+    # Section 11, the rules that came with the last methods.
+    ("a rotation can hit the grant cap", [(V, "if !rotation && self.grants.len() >= MAX_GRANTS {", "if self.grants.len() >= MAX_GRANTS {")]),
+    ("known destinations are unbounded", [(V, "if self.known.len() + waiting >= MAX_KNOWN {", "if false {")]),
+    ("a waiting add does not count", [(V, "self.known.len() + waiting >= MAX_KNOWN", "self.known.len() >= MAX_KNOWN")]),
+    ("max known is larger", [(P, "MAX_KNOWN: usize = 32;", "MAX_KNOWN: usize = 64;")]),
+    ("a memo is never checked", [(V, "if args.memo.as_deref().is_some_and(|m| !memo_ok(m)) {", "if false {")]),
+    ("a memo may be any length", [(G, "memo.len() <= MEMO_MAX && ", "")]),
+    ("a memo may hold anything", [(G, " && memo.bytes().all(|b| (0x20..=0x7e).contains(&b))", "")]),
+    ("quotes go into the prompt raw", [(G, r"""            '"' => out.push_str("\\\""),""" + "\n", "")]),
+    ("backslashes go into the prompt raw", [(G, """            '\\\\' => out.push_str("\\\\\\\\"),\n""", "")]),
+    ("the prompt streams", [(G, '\\"stream\\":false', '\\"stream\\":true')]),
+    ("the prompt has a temperature", [(G, '\\"temperature\\":0', '\\"temperature\\":1')]),
+    ("the prompt leaves out the request id", [(G, 'request.id,\n', '0,\n')]),
+    ("the prompt leaves out the vault", [(G, 'json_string(vault_hex),\n', 'json_string(""),\n')]),
+    ("the prompt leaves out the contract", [(G, 'json_string(contract),\n', 'json_string(""),\n')]),
+    ("snapshot: proposals not counted", [(V, "self.proposals.push(now);\n        if plan.tier != Tier::SelfSpend {", "if plan.tier != Tier::SelfSpend {")]),
+    ("snapshot: cancels not counted", [(V, "self.cancels.push(now);\n", "")]),
+    ("snapshot: destination not noted", [(V, "self.destinations.note(&args.outputs.dest_script, now);\n", "")]),
+    ("snapshot: a ring forgets its window", [(V, "now.saturating_sub(**at) < window", "true")]),
+    ("snapshot: last spend not recorded", [(V, "self.last_spend_at = now;\n", "")]),
+    ("snapshot: key age ignores a rotation", [(V, "self.k_s_since = now;\n", "")]),
+    ("snapshot: cancels window is a day", [(V, "self.cancels.count_within(30 * DAY, now)", "self.cancels.count_within(DAY, now)")]),
+    ("snapshot: proposals window is a month", [(V, "self.proposals.count_within(DAY, now)", "self.proposals.count_within(30 * DAY, now)")]),
+    ("snapshot: share is of the wrong thing", [(V, "u128::from(outputs.dest_value) * 10_000", "u128::from(outputs.total()) * 10_000")]),
+    ("snapshot: memo dropped", [(V, "            memo,\n        }\n    }\n\n    /// The panic button", "            memo: None,\n        }\n    }\n\n    /// The panic button")]),
+    ("assess records no hold", [(V, "request.assess_hold = hold;\n", "")]),
+    ("assess records no reason", [(V, "request.assess_reason = reason;\n", "")]),
+    ("assess sets no flag", [(V, "request.assessed = true;\n", "")]),
+    ("a reason outside the list passes", [(G, ".map(|(r, _)| *r)", ".map(|(r, _)| *r).or(Some(Reason::Other))")]),
+    ("status: a failed answer goes unrecorded", [(V, "self.sign_failed_at = now;\n", "")]),
+    ("status: a good answer does not clear it", [(V, "self.sign_failed_at = 0;\n", "")]),
+    ("status: stale guard reads online", [(S, "if now.saturating_sub(beat) <= HEARTBEAT_STALE_MS", "if true")]),
+    ("status: waiting grants are hidden", [(S, "for grant in &self.grants {", "for grant in self.grants.iter().take(0) {")]),
+    ("status: a used budget is hidden", [(S, "if budget_used >= self.policy.fee_budget_24h {", "if false {")]),
+    ("upgrade: two at once", [(U, "if self.pending.is_some_and(|p| now <= p.expires_at) {", "if false {")]),
+    ("upgrade: hash not compared", [(U, "if code_hash != pending.code_hash {", "if false {")]),
+    ("upgrade: lands early", [(U, "if now < pending.unlock_at {", "if false {")]),
+    ("upgrade: never runs out", [(U, "if now > pending.expires_at {", "if false {")]),
+    ("upgrade: runs out at its last moment", [(U, "if now > pending.expires_at {", "if now >= pending.expires_at {")]),
+    ("upgrade: the approval can be used twice", [(U, "self.pending = None;\n        Ok(pending)", "Ok(pending)")]),
+    ("upgrade: no expiry added", [(U, "unlock_at.saturating_add(rules.expiry_ms)", "unlock_at")]),
+    ("upgrade: test coin T_upgrade is short", [(U, "t_upgrade_ms: HOUR, expiry_ms: HOUR", "t_upgrade_ms: 10 * MINUTE, expiry_ms: HOUR")]),
+    ("upgrade: proof vault T_upgrade is short", [(U, "t_upgrade_ms: 14 * DAY", "t_upgrade_ms: 1 * DAY")]),
+    ("upgrade: holds always", [(U, "self.reaction_window_ms(bounds) >= self.min_reaction_ms", "true")]),
+    ("longest withdrawal leaves out the hold", [(P, ".saturating_add(m.hold_ms)\n", "\n")]),
 ]
 
 ROOT = """[workspace]

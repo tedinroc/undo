@@ -13,6 +13,16 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 
 `K_p` here is a software authenticator, and every result that rests on it says so. A real phone is gate G3.
 
+`new` now takes `operator_passkey`. `g1.mjs` and the rehearsal deploy with `throwawayOperatorPasskey`, whose secret is dropped at once, so nobody can cancel an upgrade on those instances, and no upgrade is ever proposed there. A real instance takes the operator's real passkey. `g1.mjs` refuses to overwrite other code, so a redeploy needs a fresh `--contract`.
+
+`propose_btc` now has a `memo`, which `K_s` signs. `signSpend.propose` takes it and sends null by default. `lib/intent.mjs` also has the encoders for `add_destination`, `remove_destination`, `set_policy`, `set_guard` and `clear_hold`, run against the real wasm in `test/sandbox-intents.mjs`. There is no command-line tool for those yet, because the phone page signs them.
+
+A relay names itself as `guard` in the creation intent and calls `heartbeat`, in the `create_vault` transaction or right after, or the vault reads the unguarded 10:00 and not 5:00. `create_vault` attaches a deposit, which a function-call key cannot, so that one call needs a full-access key on the relay account. `heartbeat` works from a function-call key. A relay attaches `OWNER_ATTACH_TGAS` from `lib/vault-client.mjs` to `K_p` and `K_e` methods, sized in `docs/measurements.md`.
+
+The contract's code changed, so `g1.mjs` refuses `g1.s.undo-btc.testnet` ("holds other code"). A redeploy takes a fresh `--contract`. `g2.mjs` then also takes `--new-run`, which moves the earlier run's state aside, or it refuses the state file as "for another contract". It writes `proofs/g2.json` again, so keep the earlier proof if the new run should not replace it.
+
+`escape.mjs` prints that an escape must out-pay every held link in absolute fee, summed over any stacked mempool chain, and asks for `--allow-high-fee` only above both 5% of the coins and 5,000 sats.
+
 All four intents from `freeze.mjs` run against the real wasm in `test/sandbox-intents.mjs`, and their digests also go through an independent encoder in `rust-check/`. The mock signer stands in for MPC there. `recover_begin` and `recover_cancel` have encoders in `lib/intent.mjs` and sandbox tests in `tests/tests/review1.rs`, but no command-line tool yet.
 
 `g2.mjs` keeps its recovery file, vault keys and state file under the gitignored `private/g2`. The state file holds no secret. It never writes over a cold key: with no state file naming it, it stops, and `--return-coins` then `--new-run` get past that. `--return-coins` works from the recovery files alone, needs no NEAR RPC, wasm or key file, and takes in every run `--new-run` moved aside.

@@ -19,7 +19,6 @@ fn add(total: &mut Coverage, c: Coverage) {
     total.executes += c.executes;
     total.executed_with_hold_cleared += c.executed_with_hold_cleared;
     total.reclaims += c.reclaims;
-    total.bumps += c.bumps;
     total.grants_applied += c.grants_applied;
     total.freezes += c.freezes;
     total.rotations += c.rotations;
@@ -46,7 +45,6 @@ fn no_unlock_before_base() {
     assert!(total.executes > 500, "{total:?}");
     assert!(total.early_execute_refused > 100, "{total:?}");
     assert!(total.reclaims > 50, "{total:?}");
-    assert!(total.bumps > 5, "{total:?}");
     assert!(total.grants_applied > 50, "{total:?}");
     assert!(total.freezes > 50, "{total:?}");
     assert!(total.rotations > 50, "{total:?}");

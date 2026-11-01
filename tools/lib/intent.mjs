@@ -71,7 +71,7 @@ function spendInputs(inputs) {
 
 // Arguments as each method commits to them. Keep these next to each other: they are the contract.
 export const argBytes = {
-  propose_btc: ({ inputs, to, amount, change }) => concat(spendInputs(inputs), b.bytes(to), b.u64(amount), b.option(change, b.u64)),
+  propose_btc: ({ inputs, to, amount, change, memo }) => concat(spendInputs(inputs), b.bytes(to), b.u64(amount), b.option(change, b.u64), b.option(memo ?? null, b.str)),
   reclaim: ({ inputs, fee }) => concat(spendInputs(inputs), b.u64(fee)),
   cancel: ({ request }) => b.u64(request),
   cancel_all_and_rotate: ({ newKs }) => b.raw(newKs),
@@ -81,6 +81,11 @@ export const argBytes = {
   veto_grant: ({ grant }) => b.u64(grant),
   recover_begin: ({ newPasskey, rpIdHash }) => concat(b.bytes(newPasskey), b.raw(rpIdHash)),
   recover_cancel: () => new Uint8Array(0),
+  add_destination: ({ script }) => b.bytes(script),
+  remove_destination: ({ script }) => b.bytes(script),
+  set_policy: ({ policy }) => concat(...POLICY_FIELDS.map((f) => b.u64(policy[f]))),
+  set_guard: ({ guard }) => b.option(guard ?? null, b.str),
+  clear_hold: ({ request }) => b.u64(request),
 };
 
 /** r || s || v, the form `env::ecrecover` takes. */

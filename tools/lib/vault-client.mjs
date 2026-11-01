@@ -3,7 +3,7 @@
 // made up, so a lost run costs a few transactions and nothing else.
 import { makeTx, p2wshSpk, SEQUENCE_COSIGNED, sighash, witnessScript } from './btc.mjs';
 import { base58Decode, concat, fromHex, toHex, utf8 } from './bytes.mjs';
-import { randomBytes, secp256k1, sha256 } from './crypto.mjs';
+import { p256, randomBytes, secp256k1, sha256 } from './crypto.mjs';
 import { argBytes, COLD_TAG, createDigest, intentDigest, leafPopDigest, PASSKEY_TAG, signEd25519, signSecp, softAssertion, vaultId } from './intent.mjs';
 import { coldKeys, softPasskeyKey, spendKeys } from './keys.mjs';
 import { signSpend } from './spend.mjs';
@@ -18,6 +18,22 @@ export function parseSignerKey(text) {
   const xy = base58Decode(text.slice('secp256k1:'.length));
   if (xy.length !== 64) throw new Error('signer key is not 64 bytes');
   return concat(Uint8Array.of(2 + (xy[63] & 1)), xy.slice(0, 32));
+}
+
+/**
+ * What a relay attaches to a `K_p` or `K_e` method. The heaviest measured is a rotation sweeping a griefed
+ * queue with a full grant list, in docs/measurements.md. Unused gas comes back.
+ */
+export const OWNER_ATTACH_TGAS = 30n;
+
+/**
+ * The operator passkey `new` asks for: a software key whose secret is dropped here, so nobody can cancel
+ * an upgrade on an instance deployed with it. Fit for a test or gate deployment that never upgrades. A
+ * real instance takes the operator's real passkey instead.
+ */
+export function throwawayOperatorPasskey(rpId) {
+  const secret = randomBytes(32);
+  return { pubkey: toHex(p256.getPublicKey(secret, true)), rp_id_hash: toHex(sha256(utf8(rpId))) };
 }
 
 export function newOwnerKeys({ seed = randomBytes(32), cold = randomBytes(32), passkey = randomBytes(32) } = {}) {

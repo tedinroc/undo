@@ -9,6 +9,7 @@ use crate::api::{HexBytes, WebAuthn};
 pub const SPEND_TAG: &str = "undo-spend-v1";
 pub const PASSKEY_TAG: &str = "undo-passkey-v1";
 pub const COLD_TAG: &str = "undo-cold-v1";
+pub const OPERATOR_TAG: &str = "undo-operator-v1";
 const CREATE_TAG: &str = "undo-create-v1";
 const VAULT_ID_TAG: &str = "undo-vault-id-v1";
 const LEAF_POP_TAG: &[u8] = b"undo-leaf-pop-v1";
@@ -116,6 +117,12 @@ pub fn require_secp(digest: &[u8; 32], rsv: &HexBytes, key: &[u8], what: &str) {
 pub fn require_ed25519(digest: &[u8; 32], signature: &HexBytes, key: &[u8; 32], what: &str) {
     let sig: [u8; 64] = signature.fixed("signature");
     require!(env::ed25519_verify(&sig, digest, key), format!("bad {what} signature"));
+}
+
+/// What a `provider_tee` signature covers, per the NEAR AI docs: the UTF-8 bytes of
+/// `<MODEL_ID>:<sha256(req)>:<sha256(resp)>`, with both hashes in lowercase hex.
+pub fn model_signed_text(model: &str, request: &[u8], response: &[u8]) -> String {
+    format!("{model}:{}:{}", hex::encode(env::sha256_array(request)), hex::encode(env::sha256_array(response)))
 }
 
 #[derive(Deserialize)]

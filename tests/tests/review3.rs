@@ -292,12 +292,16 @@ async fn instance_rules_hold_at_new_and_at_create_vault() -> Result<()> {
         json!({
             "preset": preset, "operator": h.relayer.id(), "restrict_create": restrict, "signer": h.mock.id(), "domain_id": 0,
             "sign_tgas": SIGN_TGAS, "callback_tgas": CALLBACK_TGAS, "derive_tgas": DERIVE_TGAS, "network": network, "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP,
+            "operator_passkey": operator_passkey_args(),
         })
     };
     let fresh = h.worker.dev_deploy(&wasm("undo_vault")).await?;
     assert_refused(&fresh.call("new").args_json(args("MainnetProof", false, "mainnet")).transact().await?, "needs restrict_create");
     assert_refused(&fresh.call("new").args_json(args("MainnetProof", true, "mutinynet")).transact().await?, "do not match");
     assert_refused(&fresh.call("new").args_json(args("TestCoin", false, "mainnet")).transact().await?, "do not match");
+    let mut no_key = args("TestCoin", false, "mutinynet");
+    no_key["operator_passkey"]["pubkey"] = json!("abcd");
+    assert_refused(&fresh.call("new").args_json(no_key).transact().await?, "compressed P-256");
     fresh.call("new").args_json(args("MainnetProof", true, "mainnet")).transact().await?.into_result()?;
     let other = h.worker.dev_deploy(&wasm("undo_vault")).await?;
     other.call("new").args_json(args("TestCoin", false, "testnet4")).transact().await?.into_result()?;
@@ -328,7 +332,7 @@ async fn oversized_signer_answer_is_not_read() -> Result<()> {
     h.wait_unlock(&v, id).await?;
     h.mock.call("set_mode").args_json(json!({"mode": "Padded"})).transact().await?.into_result()?;
     let call = h.relayer.call(h.undo.id(), "execute").args_json(json!({"vault": v.hex(), "request": id, "sign_tgas": 200})).gas(gas(MAX_GAS_TGAS));
-    call.transact().await?;
+    let _ = call.transact().await?;
     let r = h.request(&v, id).await?;
     assert_eq!(r["status"], "Signing");
     assert_eq!(r["sigs"][0], Value::Null, "too many bytes, however good the signature inside");
@@ -349,7 +353,7 @@ async fn atk_passkey_thief_after_recovery() -> Result<()> {
     // Owner's K_s is locked out. Thief's K_s has no K_u, so its half-signature fails.
     let c = coins("r3-kp", 1, 100_000);
     let mut as_thief = h.propose_args(&v, &c, &p2wpkh("r3-kp-d"), 99_500, None, v.spend_nonce);
-    let digest = { let spend: Vec<([u8; 32], u32, u64)> = c.iter().map(|x| (x.internal(), x.vout, x.value)).collect(); h.spend_digest(&v, "propose_btc", &(spend, p2wpkh("r3-kp-d"), 99_500u64, Option::<u64>::None), FAR, v.spend_nonce) };
+    let digest = { let spend: Vec<([u8; 32], u32, u64)> = c.iter().map(|x| (x.internal(), x.vout, x.value)).collect(); h.spend_digest(&v, "propose_btc", &(spend, p2wpkh("r3-kp-d"), 99_500u64, Option::<u64>::None, Option::<String>::None), FAR, v.spend_nonce) };
     as_thief["spend_sig"] = json!(hex::encode(thief_ks.sign(&digest).to_bytes()));
     as_thief["half_sigs"] = json!([hex::encode(secp_sign(&secp("r3-kp-thief-ku"), &[7u8; 32]))]);
     assert_refused(&h.propose_raw(as_thief).await?, "bad K_u half-signature");

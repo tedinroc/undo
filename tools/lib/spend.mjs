@@ -14,14 +14,14 @@ function utxoJson(c) {
 }
 
 export const signSpend = {
-  propose({ seed, contract, vault, script, spk, inputs, to, amount, change, nonce, expiresAt }) {
+  propose({ seed, contract, vault, script, spk, inputs, to, amount, change, nonce, expiresAt, memo = null }) {
     const { ks, ku } = spendKeys(seed);
     const outputs = [{ value: amount, spk: to }];
     if (change !== null && change !== undefined) outputs.push({ value: change, spk });
     const tx = makeTx(inputs, SEQUENCE_COSIGNED, outputs);
     const digest = intentDigest({
       tag: SPEND_TAG, contract, vault, method: 'propose_btc',
-      args: argBytes.propose_btc({ inputs, to, amount, change: change ?? null }),
+      args: argBytes.propose_btc({ inputs, to, amount, change: change ?? null, memo }),
       expiresAt, nonce,
     });
     return {
@@ -36,6 +36,7 @@ export const signSpend = {
         nonce,
         expires_at: expiresAt,
         spend_sig: toHex(signEd25519(digest, ks.secret)),
+        memo,
       },
     };
   },

@@ -24,14 +24,18 @@ mod btc;
 mod storage;
 
 use api::{
-    CancelAuth, CheckView, CreateArgs, HexBytes, InstanceView, OutpointView, PasskeyArgs, Preset,
-    RequestView, SignerResponse, Utxo, VaultView, WebAuthn,
+    CancelAuth, ChatCompletion, CheckView, CreateArgs, GrantView, GuardAnswer, HexBytes, InstanceView, ModelSignerView,
+    OutpointView, PasskeyArgs, PolicyArgs, Preset, RequestView, SignerResponse, StatsView, StatusView, UpgradeView, Utxo,
+    VaultView, WebAuthn,
 };
-use auth::{intent_digest, COLD_TAG, PASSKEY_TAG, SPEND_TAG};
+use auth::{intent_digest, COLD_TAG, OPERATOR_TAG, PASSKEY_TAG, SPEND_TAG};
 use near_sdk::borsh::BorshSerialize;
 use near_sdk::{env, near, require, AccountId, Gas, NearToken, PanicOnDefault};
 use storage::{Loaded, Row, Short};
-use undo_core::{Bounds, Caller, Input, Intent, MpcSig, OutpointState, Outputs, Passkey, Policy, ProposeArgs, RequestStatus, SignedOutcome, Vault};
+use undo_core::{
+    utc_text, Bounds, Caller, Input, Intent, MpcSig, OutpointState, Outputs, Passkey, Policy, PolicyOutcome, ProposeArgs,
+    Reason, RequestStatus, SignedOutcome, UpgradeQueue, Vault, GUARD_MODEL,
+};
 
 const PATH_PREFIX: &str = "undo/";
 /// Largest signer response the callback will read, so a hostile signer cannot burn its gas.
@@ -44,6 +48,14 @@ const GAS_MARGIN_TGAS: u64 = 3;
 const MAX_SIGN_TGAS: u64 = 300;
 /// What a caller may attach per sign, if the signer's requirement rises. 0.01 NEAR.
 const MAX_SIGN_DEPOSIT: u128 = 10_000_000_000_000_000_000_000;
+/// Largest model response `assess` will read. A completion with this template is about 1 KB.
+const MAX_GUARD_RESPONSE: usize = 16_384;
+/// Registered model signers. Each is one signature check on every `assess`.
+const MAX_MODEL_SIGNERS: usize = 8;
+/// The team test set taken out of the public count.
+const MAX_STATS_EXCLUDED: usize = 32;
+/// Gas for the new code's `migrate`, which reads the state to prove it can.
+const MIGRATE_TGAS: u64 = 20;
 
 #[near(serializers = [borsh])]
 struct Config {
@@ -60,13 +72,33 @@ struct Config {
     origins: Vec<String>,
     policy: Policy,
     bounds: Bounds,
+    /// A separate contract-level P-256 key held by the operator: it can stop an upgrade and do nothing
+    /// else, so losing the operator account does not mean losing the wait.
+    operator_passkey: Vec<u8>,
+    operator_rp_id_hash: [u8; 32],
+    guard_model: String,
+    /// A bad signer can only cause delay, so the operator may add one at once.
+    model_signers: Vec<(String, [u8; 32])>,
+    stats_excluded: Vec<Vec<u8>>,
 }
 
-/// The signer and its constants have no setter. They change only through the upgrade queue.
+/// Fixed width, so a count changing never changes the contract's own storage.
+#[derive(Default)]
+#[near(serializers = [borsh])]
+struct Stats {
+    vaults_created: u64,
+    vaults_active: u64,
+    passkeys_completed: u64,
+}
+
+/// The signer and its constants have no setter. They change only through the upgrade queue: new code
+/// whose `migrate` sets them, after the same public wait.
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Undo {
     config: Config,
+    upgrade: UpgradeQueue,
+    stats: Stats,
 }
 
 fn fail<E: core::fmt::Debug>(e: E) -> ! {
@@ -104,6 +136,7 @@ impl Undo {
         network: String,
         origins: Vec<String>,
         outflow_cap_24h: u64,
+        operator_passkey: PasskeyArgs,
     ) -> Self {
         let chain = undo_btc::Network::from_name(&network).unwrap_or_else(|_| env::panic_str("unknown network"));
         // Real coins go only through the proof preset, and nobody but the operator makes a vault there:
@@ -114,6 +147,9 @@ impl Undo {
             Preset::TestCoin => (Policy::test_coin(outflow_cap_24h), Bounds::test_coin(outflow_cap_24h)),
             Preset::MainnetProof => (Policy::mainnet_proof(outflow_cap_24h), Bounds::mainnet(outflow_cap_24h)),
         };
+        require!(preset.upgrade().holds(&bounds), "T_upgrade does not outlast a withdrawal by the reaction window");
+        require!(operator_passkey.pubkey.0.len() == 33, "the operator passkey must be a compressed P-256 key");
+        let operator_rp_id_hash: [u8; 32] = operator_passkey.rp_id_hash.fixed("rp_id_hash");
         Self {
             config: Config {
                 preset,
@@ -128,8 +164,22 @@ impl Undo {
                 origins,
                 policy,
                 bounds,
+                operator_passkey: operator_passkey.pubkey.0,
+                operator_rp_id_hash,
+                guard_model: GUARD_MODEL.to_string(),
+                model_signers: Vec::new(),
+                stats_excluded: Vec::new(),
             },
+            upgrade: UpgradeQueue::default(),
+            stats: Stats::default(),
         }
+    }
+
+    /// The upgrade path's other half. It runs in the same batch as the deploy, so new code that cannot
+    /// read this state fails here and the old code stays.
+    #[private]
+    pub fn migrate(&self) {
+        env::log_str("undo:migrated");
     }
 
     /// Stores the vault as Inactive and asks the signer what key this vault's path really derives.
@@ -154,6 +204,7 @@ impl Undo {
         let flags = auth::require_webauthn(&args.pop_p, &digest, &args.passkey.pubkey.0, &rp_id_hash, &cfg.origins);
 
         let script = btc::witness_script(&args.k_u.0, &args.k_m.0, &args.k_e_leaf.0, args.csv).unwrap_or_else(|e| fail(e));
+        self.stats.vaults_created += 1;
         let vault = Vault::create(undo_core::CreateArgs {
             k_s,
             k_u: args.k_u.0,
@@ -172,6 +223,7 @@ impl Undo {
             policy,
             fixed: cfg.preset.fixed(),
             bounds: cfg.bounds,
+            now: now(),
         })
         .unwrap_or_else(|e| fail(e));
         storage::insert(
@@ -202,9 +254,11 @@ impl Undo {
         let derived = signer_result().and_then(|raw| parse_secp_key(&raw));
         let activated = derived.is_some_and(|key| loaded.row.vault.activate(&key).is_ok());
         if activated {
+            self.stats.vaults_active += 1;
             loaded.commit(&id, Short::Reserved);
             env::log_str(&format!("undo:active vault={}", hex::encode(id)));
         } else {
+            self.stats.vaults_created = self.stats.vaults_created.saturating_sub(1);
             let refund = storage::remove(&id, &loaded);
             if refund > 0 {
                 let promise = env::promise_batch_create(&loaded.row.creator);
@@ -236,6 +290,7 @@ impl Undo {
         nonce: u64,
         expires_at: u64,
         spend_sig: HexBytes,
+        memo: Option<String>,
     ) -> u64 {
         let id = vault_key(&vault);
         let mut loaded = storage::load(&id);
@@ -249,7 +304,7 @@ impl Undo {
             fail(undo_core::Error::HalfSigCount);
         }
         loaded.load_outpoints(&id, &inputs.iter().map(|i| i.outpoint).collect::<Vec<_>>());
-        let args = (spend_args(&inputs), &outputs.dest_script, outputs.dest_value, outputs.change_value);
+        let args = (spend_args(&inputs), &outputs.dest_script, outputs.dest_value, outputs.change_value, &memo);
         let digest = intent_digest(SPEND_TAG, &id, "propose_btc", &args, expires_at, Some(nonce));
         auth::require_ed25519(&digest, &spend_sig, &loaded.row.vault.k_s, "K_s");
         let vault = &loaded.row.vault;
@@ -263,7 +318,7 @@ impl Undo {
             .propose(
                 &caller,
                 Intent { nonce, expires_at },
-                ProposeArgs { inputs, outputs, half_sigs: half_sigs.into_iter().map(|s| s.0).collect() },
+                ProposeArgs { inputs, outputs, half_sigs: half_sigs.into_iter().map(|s| s.0).collect(), memo },
                 now(),
             )
             .unwrap_or_else(|e| fail(e));
@@ -328,6 +383,7 @@ impl Undo {
             }
         };
         loaded.row.vault.cancel(&caller, expires_at, request, now()).unwrap_or_else(|e| fail(e));
+        self.note_completed(&mut loaded);
         loaded.commit(&id, Short::Reserved);
         env::log_str(&format!("undo:cancelled request={request}"));
     }
@@ -347,6 +403,185 @@ impl Undo {
         loaded.commit(&id, Short::Reserved);
         env::log_str(&format!("undo:rotating grant={grant}"));
         grant
+    }
+
+    /// `K_p`, at once: removes a known destination, kills pending requests that pay it, and drops an add
+    /// still waiting. Removing power never waits, and needs no credit.
+    pub fn remove_destination(&mut self, vault: HexBytes, script: HexBytes, nonce: u64, expires_at: u64, assertion: WebAuthn) {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load(&id);
+        // The requests it kills free their coins here, so those ledger entries must be in hand.
+        for request in loaded.row.vault.pending.clone() {
+            if loaded.row.vault.requests.get(&request).is_some_and(|r| r.outputs.dest_script == script.0) {
+                loaded.load_inputs(&id, request);
+            }
+        }
+        let caller = self.passkey_caller(&id, &loaded, "remove_destination", &script.0, expires_at, Some(nonce), &assertion);
+        loaded.row.vault.remove_destination(&caller, Intent { nonce, expires_at }, &script.0, now()).unwrap_or_else(|e| fail(e));
+        loaded.commit(&id, Short::Reserved);
+        env::log_str(&format!("undo:destination_removed script={}", hex::encode(&script.0)));
+    }
+
+    /// `K_p`. A destination becomes known only after `T_new`, and `K_e` can veto it.
+    pub fn add_destination(&mut self, vault: HexBytes, script: HexBytes, nonce: u64, expires_at: u64, assertion: WebAuthn) -> u64 {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load(&id);
+        let caller = self.passkey_caller(&id, &loaded, "add_destination", &script.0, expires_at, Some(nonce), &assertion);
+        let grant = loaded.row.vault.add_destination(&caller, Intent { nonce, expires_at }, script.0, now()).unwrap_or_else(|e| fail(e));
+        loaded.commit(&id, Short::Refuse);
+        env::log_str(&format!("undo:grant_begun grant={grant} kind=add_destination"));
+        grant
+    }
+
+    /// `K_p`. Tightening lands at once and needs no credit, and returns nothing. Loosening any field
+    /// waits `T_new` as one grant, which `K_e` can veto, and returns its id. The instance's bounds hold
+    /// either way, so `T_upgrade` still outlasts any withdrawal and the fee cap keeps a floor.
+    pub fn set_policy(&mut self, vault: HexBytes, policy: PolicyArgs, nonce: u64, expires_at: u64, assertion: WebAuthn) -> Option<u64> {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load(&id);
+        let policy = Policy::from(policy);
+        let caller = self.passkey_caller(&id, &loaded, "set_policy", &policy, expires_at, Some(nonce), &assertion);
+        match loaded.row.vault.set_policy(&caller, Intent { nonce, expires_at }, policy, now()).unwrap_or_else(|e| fail(e)) {
+            PolicyOutcome::Applied => {
+                loaded.commit(&id, Short::Reserved);
+                env::log_str("undo:policy_tightened");
+                None
+            }
+            PolicyOutcome::Grant(grant) => {
+                loaded.commit(&id, Short::Refuse);
+                env::log_str(&format!("undo:grant_begun grant={grant} kind=loosen_policy"));
+                Some(grant)
+            }
+        }
+    }
+
+    /// `K_p`, after `T_new`, and `K_e` can veto. `None` removes the guard, which counts as loosening.
+    /// The new guard counts as offline until its first heartbeat.
+    pub fn set_guard(&mut self, vault: HexBytes, guard: Option<AccountId>, nonce: u64, expires_at: u64, assertion: WebAuthn) -> u64 {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load(&id);
+        let caller = self.passkey_caller(&id, &loaded, "set_guard", &guard, expires_at, Some(nonce), &assertion);
+        let grant = loaded.row.vault.set_guard(&caller, Intent { nonce, expires_at }, guard.map(|a| a.to_string()), now()).unwrap_or_else(|e| fail(e));
+        loaded.commit(&id, Short::Refuse);
+        env::log_str(&format!("undo:grant_begun grant={grant} kind=set_guard"));
+        grant
+    }
+
+    /// `K_p`, at once: back to the base unlock, never earlier. A request gets one hold in its life, so
+    /// the guard cannot put it back.
+    pub fn clear_hold(&mut self, vault: HexBytes, request: u64, nonce: u64, expires_at: u64, assertion: WebAuthn) {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load(&id);
+        loaded.fetch_request(&id, request);
+        let caller = self.passkey_caller(&id, &loaded, "clear_hold", &request, expires_at, Some(nonce), &assertion);
+        loaded.row.vault.clear_hold(&caller, Intent { nonce, expires_at }, request, now()).unwrap_or_else(|e| fail(e));
+        loaded.commit(&id, Short::Reserved);
+        env::log_str(&format!("undo:hold_cleared request={request}"));
+    }
+
+    /// The guard's own function-call key, one call per vault it guards. A first beat grows the row, and
+    /// a guard that cannot pay for it just stays offline, which only makes delays longer.
+    pub fn heartbeat(&mut self, vault: HexBytes) {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load_row(&id);
+        let caller = Caller::Guard(env::predecessor_account_id().to_string());
+        loaded.row.vault.heartbeat(&caller, now()).unwrap_or_else(|e| fail(e));
+        loaded.commit(&id, Short::Refuse);
+    }
+
+    /// The guard's key, with the model's answer and its signature. The contract rebuilds the request
+    /// bytes itself, so the guard can choose whether to submit and which answer, but not what was asked.
+    /// A hold adds `hold_ms` at most once. A no-hold is recorded too, which makes a skipped request
+    /// readable. Nothing grows, so no credit is needed.
+    pub fn assess(&mut self, vault: HexBytes, request: u64, response_bytes: HexBytes, signature: HexBytes) {
+        let id = vault_key(&vault);
+        require!(response_bytes.0.len() <= MAX_GUARD_RESPONSE, "response too large");
+        let mut loaded = storage::load(&id);
+        loaded.fetch_request(&id, request);
+        let cfg = &self.config;
+        let stored = loaded.row.vault.requests.get(&request).unwrap_or_else(|| fail(undo_core::Error::RequestNotFound));
+        let body = undo_core::request_body(&cfg.guard_model, env::current_account_id().as_str(), &hex::encode(id), stored);
+        let text = auth::model_signed_text(&cfg.guard_model, body.as_bytes(), &response_bytes.0);
+        let sig: [u8; 64] = signature.fixed("signature");
+        let signed = cfg
+            .model_signers
+            .iter()
+            .any(|(model, key)| *model == cfg.guard_model && env::ed25519_verify(&sig, text.as_bytes(), key));
+        require!(signed, "not signed by a registered signer for this model");
+
+        let completion: ChatCompletion = near_sdk::serde_json::from_slice(&response_bytes.0).unwrap_or_else(|_| env::panic_str("response is not a chat completion"));
+        let content = completion.choices.first().map(|c| c.message.content.as_str()).unwrap_or_else(|| env::panic_str("response has no choice"));
+        let answer: GuardAnswer = near_sdk::serde_json::from_str(content).unwrap_or_else(|_| env::panic_str("answer is not the agreed JSON"));
+        let reason = Reason::from_name(&answer.reason).unwrap_or_else(|| env::panic_str("answer has an unknown reason"));
+
+        let caller = Caller::Guard(env::predecessor_account_id().to_string());
+        loaded.row.vault.assess(&caller, request, answer.hold, reason, now()).unwrap_or_else(|e| fail(e));
+        loaded.commit(&id, Short::Reserved);
+        env::log_str(&format!("undo:assessed request={request} hold={} reason={} model={}", answer.hold, reason.name(), cfg.guard_model));
+    }
+
+    // ---------------------------------------------------------------- operator
+
+    /// At once: a bad signer can only cause delay, so this needs no public wait.
+    pub fn add_model_signer(&mut self, model: String, signer: HexBytes) {
+        self.require_operator();
+        require!(self.config.model_signers.len() < MAX_MODEL_SIGNERS, "too many model signers");
+        self.config.model_signers.push((model.clone(), signer.fixed("signer")));
+        env::log_str(&format!("undo:model_signer model={model} signer={}", hex::encode(&signer.0)));
+    }
+
+    /// At once, for the same reason, and only to a model with a signer. A model that is retired has to
+    /// have a way out, and `guard_prompt` shows what is being asked.
+    pub fn set_guard_model(&mut self, model: String) {
+        self.require_operator();
+        require!(self.config.model_signers.iter().any(|(m, _)| *m == model), "no signer for that model");
+        env::log_str(&format!("undo:guard_model model={model}"));
+        self.config.guard_model = model;
+    }
+
+    /// Takes a team test passkey out of the public count, and lists it.
+    pub fn stats_exclude(&mut self, passkey: HexBytes) {
+        self.require_operator();
+        require!(self.config.stats_excluded.len() < MAX_STATS_EXCLUDED, "too many excluded passkeys");
+        if !self.config.stats_excluded.contains(&passkey.0) {
+            self.config.stats_excluded.push(passkey.0);
+        }
+    }
+
+    /// The operator starts the public wait for new code, by its hash. One at a time.
+    pub fn upgrade_propose(&mut self, code_hash: HexBytes) {
+        self.require_operator();
+        let hash: [u8; 32] = code_hash.fixed("code_hash");
+        let pending = self.upgrade.propose(hash, &self.config.preset.upgrade(), now()).unwrap_or_else(|e| fail(e));
+        env::log_str(&format!("undo:upgrade_proposed code_hash={} unlock={} expires={}", hex::encode(hash), pending.unlock_at, pending.expires_at));
+    }
+
+    /// The operator passkey. The intent names the proposal, so an old assertion cannot stop a later one
+    /// and no nonce can go stale. A cancel means a new full `T_upgrade`.
+    pub fn upgrade_cancel(&mut self, expires_at: u64, assertion: WebAuthn) {
+        let pending = self.upgrade.pending.unwrap_or_else(|| fail(undo_core::Error::NoUpgrade));
+        let args = (pending.code_hash, pending.proposed_at);
+        let digest = intent_digest(OPERATOR_TAG, &[0; 32], "upgrade_cancel", &args, expires_at, None);
+        require!(now() <= expires_at, "intent expired");
+        let cfg = &self.config;
+        auth::require_webauthn(&assertion, &digest, &cfg.operator_passkey, &cfg.operator_rp_id_hash, &cfg.origins);
+        self.upgrade.cancel().unwrap_or_else(|e| fail(e));
+        env::log_str(&format!("undo:upgrade_cancelled code_hash={}", hex::encode(pending.code_hash)));
+    }
+
+    /// Anyone, with the code as the raw call input, whose hash matches, once it unlocks and before it
+    /// runs out. Deploys to this account through its own receipt, so it needs no access key: the
+    /// contract can have none. The new code's `migrate` runs in the same batch, so code that cannot read
+    /// this state does not land. The attempt uses up the approval either way.
+    pub fn upgrade_apply(&mut self) {
+        let code = env::input().unwrap_or_else(|| env::panic_str("no code"));
+        let pending = self.upgrade.take_for_apply(env::sha256_array(&code), now()).unwrap_or_else(|e| fail(e));
+        let promise = env::promise_batch_create(&env::current_account_id());
+        env::promise_batch_action_deploy_contract(promise, &code);
+        env::promise_batch_action_function_call(promise, "migrate", &[], NearToken::from_yoctonear(0), Gas::from_tgas(MIGRATE_TGAS));
+        // So the transaction's own status says whether the code landed.
+        env::promise_return(promise);
+        env::log_str(&format!("undo:upgrade_applied code_hash={}", hex::encode(pending.code_hash)));
     }
 
     /// Anyone, after the grant's delay.
@@ -471,6 +706,9 @@ impl Undo {
         };
         let payload = <[u8; 32]>::try_from(payload.0.as_slice()).unwrap_or([0xff; 32]);
         let outcome = loaded.row.vault.on_signed(request, attempt, index, payload, recomputed, signature, now());
+        if outcome == (SignedOutcome::Stored { complete: true }) {
+            self.note_completed(&mut loaded);
+        }
         match outcome {
             SignedOutcome::DroppedUnknownRequest
             | SignedOutcome::DroppedStaleAttempt
@@ -573,6 +811,7 @@ impl Undo {
     pub fn instance(&self) -> InstanceView {
         let c = &self.config;
         let f = c.preset.fixed();
+        let rules = c.preset.upgrade();
         InstanceView {
             preset: c.preset,
             signer: c.signer.clone(),
@@ -587,9 +826,86 @@ impl Undo {
             policy: c.policy.into(),
             t_recover_ms: f.t_recover_ms,
             expiry_window_ms: f.expiry_window_ms,
-            bump_wait_ms: f.bump_wait_ms,
             block_ms: f.block_ms,
+            csv_min: f.csv_min,
+            csv_max: f.csv_max,
+            t_upgrade_ms: rules.t_upgrade_ms,
+            upgrade_expiry_ms: rules.expiry_ms,
+            reaction_window_ms: rules.reaction_window_ms(&c.bounds),
+            pending_upgrade: self.upgrade.pending.map(|p| UpgradeView {
+                code_hash: HexBytes(p.code_hash.to_vec()),
+                proposed_at: p.proposed_at,
+                unlock_at: p.unlock_at,
+                expires_at: p.expires_at,
+            }),
+            operator_passkey: HexBytes(c.operator_passkey.clone()),
+            guard_model: c.guard_model.clone(),
+            model_signers: c.model_signers.iter().map(|(model, key)| ModelSignerView { model: model.clone(), signer: HexBytes(key.to_vec()) }).collect(),
         }
+    }
+
+    /// Plain language. With no vault, the instance: what the operator could do next and when. With a
+    /// vault, also that vault's state. Works with one curl line and no key. A contract cannot see its
+    /// relay or dispenser, so those report themselves on the page.
+    pub fn status(&self, vault: Option<HexBytes>) -> StatusView {
+        let mut ok = true;
+        let mut lines = Vec::new();
+        if let Some(vault) = vault {
+            let id = vault_key(&vault);
+            let loaded = storage::load(&id);
+            let (vault_ok, vault_lines) = loaded.row.vault.status_lines(now());
+            ok &= vault_ok;
+            lines.extend(vault_lines);
+            if loaded.row.credit < storage::request_floor() {
+                ok = false;
+                lines.push("storage credit low: new proposals stop until anyone tops it up. Cancel, rotate, freeze and execute do not need it".to_string());
+            }
+        }
+        let c = &self.config;
+        let rules = c.preset.upgrade();
+        match self.upgrade.pending {
+            Some(p) if now() > p.expires_at => lines.push(format!("an upgrade approval ran out at {}: it can no longer land, and a new one needs the full wait", utc_text(p.expires_at))),
+            Some(p) => {
+                ok = false;
+                lines.push(format!(
+                    "upgrade pending: code {} can land from {} until {}. Any owner can leave before then, if they react within the reaction window of {} min",
+                    hex::encode(p.code_hash),
+                    utc_text(p.unlock_at),
+                    utc_text(p.expires_at),
+                    rules.reaction_window_ms(&c.bounds) / 60_000,
+                ));
+            }
+            None => lines.push(format!("no upgrade pending. New code would wait {} min in public", rules.t_upgrade_ms / 60_000)),
+        }
+        if !c.model_signers.iter().any(|(m, _)| *m == c.guard_model) {
+            lines.push(format!("no signer registered for {}: no new holds, and every other rule still holds", c.guard_model));
+        }
+        StatusView { ok, lines }
+    }
+
+    /// The public count. It counts distinct passkeys that completed a cancel or a spend, so one person
+    /// with many vaults on one passkey counts once. Sybil cannot be ruled out.
+    pub fn stats(&self) -> StatsView {
+        let excluded = &self.config.stats_excluded;
+        let excluded_that_completed = excluded.iter().filter(|p| storage::passkey_counted(p)).count() as u64;
+        StatsView {
+            vaults_created: self.stats.vaults_created,
+            vaults_active: self.stats.vaults_active,
+            passkeys_completed: self.stats.passkeys_completed,
+            excluded_passkeys: excluded.iter().map(|p| HexBytes(p.clone())).collect(),
+            excluded_that_completed,
+            counted: self.stats.passkeys_completed.saturating_sub(excluded_that_completed),
+        }
+    }
+
+    /// The exact request body the guard must send, as a string whose UTF-8 bytes are what a model signs
+    /// over. Built here from the template and the snapshot taken at propose.
+    pub fn guard_prompt(&self, vault: HexBytes, request: u64) -> String {
+        let id = vault_key(&vault);
+        let mut loaded = storage::load_row(&id);
+        loaded.fetch_request(&id, request);
+        let stored = loaded.row.vault.requests.get(&request).unwrap_or_else(|| fail(undo_core::Error::RequestNotFound));
+        undo_core::request_body(&self.config.guard_model, env::current_account_id().as_str(), &hex::encode(id), stored)
     }
 
     pub fn vault(&self, vault: HexBytes) -> Option<VaultView> {
@@ -613,6 +929,11 @@ impl Undo {
             backup_eligible: v.passkey.backup_eligible,
             backup_state: v.passkey.backup_state,
             guard: v.guard.as_ref().and_then(|g| g.parse().ok()),
+            guard_online: v.guard_online(now()),
+            last_heartbeat: v.last_heartbeat,
+            created_at: v.created_at,
+            known: v.known.iter().map(|s| HexBytes(s.clone())).collect(),
+            fee_used_24h: v.fee_used_24h(now()),
             csv: v.csv_blocks,
             script_pubkey: HexBytes(v.vault_spk.clone()),
             address: undo_btc::address::p2wsh_address(network, program),
@@ -624,6 +945,7 @@ impl Undo {
             cold_nonce: v.cold_nonce,
             pending: v.pending.clone(),
             grants: v.grants.iter().map(|g| g.id).collect(),
+            grant_list: v.grants.iter().map(|g| GrantView { id: g.id, kind: g.kind.describe().to_string(), begun_at: g.begun_at, ready_at: g.ready_at }).collect(),
             recover_cancels: v.recover_cancels,
             recovery_ready_at: v.recovery.as_ref().map(|r| r.ready_at),
             storage_credit: loaded.row.credit.into(),
@@ -704,6 +1026,17 @@ impl Undo {
 }
 
 impl Undo {
+    fn require_operator(&self) {
+        require!(env::predecessor_account_id() == self.config.operator, "only the operator");
+    }
+
+    /// The first completed cancel or spend puts this vault's passkey in the public count.
+    fn note_completed(&mut self, loaded: &mut Loaded) {
+        if loaded.row.vault.mark_completed() && loaded.count_passkey() {
+            self.stats.passkeys_completed += 1;
+        }
+    }
+
     fn ask_signer_for_key(&self, id: &[u8; 32]) {
         let cfg = &self.config;
         let need = Gas::from_tgas(cfg.derive_tgas + ON_DERIVED_TGAS + GAS_MARGIN_TGAS);

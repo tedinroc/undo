@@ -347,6 +347,16 @@ pub struct Harness {
     pub mock: Contract,
     pub relayer: Account,
     pub secret: [u8; 32],
+    pub operator_key: p256::ecdsa::SigningKey,
+}
+
+/// The operator passkey every test instance uses, as `new` takes it. A label, not a secret.
+pub fn operator_key() -> p256::ecdsa::SigningKey {
+    p256::ecdsa::SigningKey::from_bytes((&test_key("operator-passkey")).into()).unwrap()
+}
+
+pub fn operator_passkey_args() -> Value {
+    json!({"pubkey": hex::encode(p256_compressed(&operator_key())), "rp_id_hash": hex::encode(sha256(RP_ID.as_bytes()))})
 }
 
 /// What create_vault is signed over. Tests change one field to show it is load-bearing.
@@ -386,12 +396,12 @@ impl Harness {
                 "preset": o.preset, "operator": relayer.id(), "restrict_create": o.restrict_create || o.preset == "MainnetProof",
                 "signer": mock.id(), "domain_id": 0, "sign_tgas": SIGN_TGAS, "callback_tgas": o.callback_tgas,
                 "derive_tgas": DERIVE_TGAS, "network": if o.preset == "MainnetProof" { "mainnet" } else { "mutinynet" },
-                "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP,
+                "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP, "operator_passkey": operator_passkey_args(),
             }))
             .transact()
             .await?
             .into_result()?;
-        Ok(Self { worker, undo, mock, relayer, secret })
+        Ok(Self { worker, undo, mock, relayer, secret, operator_key: operator_key() })
     }
 
     pub fn contract(&self) -> &str {
@@ -541,6 +551,11 @@ impl Harness {
     }
 
     pub fn propose_args(&self, v: &Vault, inputs: &[Coin], to: &[u8], amount: u64, change: Option<u64>, nonce: u64) -> Value {
+        self.propose_args_memo(v, inputs, to, amount, change, nonce, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_args_memo(&self, v: &Vault, inputs: &[Coin], to: &[u8], amount: u64, change: Option<u64>, nonce: u64, memo: Option<String>) -> Value {
         let tx = unsigned_tx(inputs, to, amount, change.map(|c| (c, &v.spk)));
         let half: Vec<String> = inputs
             .iter()
@@ -549,10 +564,10 @@ impl Harness {
             .collect();
         let expires_at = u64::MAX / 2;
         let spend: Vec<([u8; 32], u32, u64)> = inputs.iter().map(|c| (c.internal(), c.vout, c.value)).collect();
-        let digest = self.spend_digest(v, "propose_btc", &(spend, to.to_vec(), amount, change), expires_at, nonce);
+        let digest = self.spend_digest(v, "propose_btc", &(spend, to.to_vec(), amount, change, memo.clone()), expires_at, nonce);
         json!({
             "vault": v.hex(), "inputs": coins_json(inputs), "to": hex::encode(to), "amount": amount, "change": change,
-            "half_sigs": half, "nonce": nonce, "expires_at": expires_at,
+            "half_sigs": half, "nonce": nonce, "expires_at": expires_at, "memo": memo,
             "spend_sig": hex::encode(v.k_s.sign(&digest).to_bytes()),
         })
     }

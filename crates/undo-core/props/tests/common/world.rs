@@ -25,7 +25,6 @@ pub enum Action {
     ExecuteOwning { coin: usize },
     DeliverSignatures { pick: usize },
     Reclaim { coin: usize, truth: bool, fee: Sats },
-    Bump { pick: usize, extra: Sats },
     Assess { pick: usize, hold: bool },
     ClearHold { pick: usize },
     Heartbeat,
@@ -79,7 +78,6 @@ pub struct Coverage {
     pub executes: usize,
     pub executed_with_hold_cleared: usize,
     pub reclaims: usize,
-    pub bumps: usize,
     pub grants_applied: usize,
     pub freezes: usize,
     pub rotations: usize,
@@ -282,26 +280,6 @@ impl World {
                     Err(_) => false,
                 }
             }
-            Action::Bump { pick, extra } => {
-                let Some(id) = self.pick_request(pick) else { return false };
-                let old = self.h.v.requests[&id].clone();
-                match self.h.bump(id, old.fee + extra) {
-                    Ok(p) => {
-                        let shadow_old = self.reqs[&id].clone();
-                        let executed = shadow_old.executed_at.expect("bump of an unexecuted request");
-                        assert!(self.h.now >= executed + self.h.v.fixed.bump_wait_ms, "bump too soon");
-                        assert_eq!(p.base_unlock, shadow_old.base, "bump must inherit the base unlock");
-                        let new = &self.h.v.requests[&p.id];
-                        assert_eq!(new.inputs, old.inputs, "bump must keep every declared value");
-                        assert_eq!(new.outputs.dest_script, old.outputs.dest_script, "bump must keep the destination");
-                        self.reqs.remove(&id);
-                        self.track_new(p, RequestKind::Bump { predecessor: id });
-                        self.coverage.bumps += 1;
-                        true
-                    }
-                    Err(_) => false,
-                }
-            }
             Action::Assess { pick, hold } => {
                 let Some(id) = self.pick_request(pick) else { return false };
                 let hold_ms = self.policy.hold_ms;
@@ -374,6 +352,7 @@ impl World {
                             GrantKind::RotateSpend { new_k_s } => {
                                 self.spend_key = new_k_s;
                                 self.suspended = false;
+                                self.charges.clear();
                             }
                             GrantKind::AddDestination { script } => {
                                 self.known.insert(script);
@@ -485,6 +464,7 @@ impl World {
             inputs: inputs.iter().map(|(o, v)| Input { outpoint: *o, value: *v }).collect(),
             outputs: Outputs { dest_script: script.clone(), dest_value, change_value },
             half_sigs: vec![vec![1; 65]; inputs.len()],
+            memo: None,
         };
         let key = if stale_key { [0xee; 32] } else { self.h.v.k_s };
         let intent = self.h.sp();
@@ -572,7 +552,7 @@ impl World {
         let overridden = request.fee_override.is_some();
         let cap = request.fee_override.unwrap_or(self.policy.fee_cap_tx);
         assert!(request.fee <= cap, "fee over cap at execute");
-        let charge = request.fee - request.fee_prepaid;
+        let charge = request.fee;
         self.charges.retain(|(at, _, _)| now < at + DAY);
         let used: Sats = self.charges.iter().map(|c| c.1).sum();
         if !overridden {
@@ -763,7 +743,6 @@ pub fn action() -> impl Strategy<Value = Action> {
         15 => pick().prop_map(|pick| Action::DeliverSignatures { pick }),
         20 => (coin_index(), any::<bool>(), prop_oneof![Just(400u64), Just(1_000)])
             .prop_map(|(coin, truth, fee)| Action::Reclaim { coin, truth, fee }),
-        10 => (pick(), prop_oneof![Just(100u64), Just(400)]).prop_map(|(pick, extra)| Action::Bump { pick, extra }),
         15 => (pick(), any::<bool>()).prop_map(|(pick, hold)| Action::Assess { pick, hold }),
         10 => pick().prop_map(|pick| Action::ClearHold { pick }),
         15 => Just(Action::Heartbeat),
@@ -831,7 +810,7 @@ pub fn reclaim_sequence() -> impl Strategy<Value = Vec<Action>> {
                 vec![Action::Advance(2 * MINUTE), Action::ExecuteOwning { coin: x }],
                 vec![Action::Advance(21 * MINUTE), Action::Reclaim { coin: x, truth, fee: 400 }],
                 vec![Action::Advance(2 * MINUTE), Action::ExecuteOwning { coin: x }],
-                vec![Action::Advance(6 * MINUTE), Action::Bump { pick: 0, extra: 400 }],
+                vec![Action::Advance(6 * MINUTE)],
                 vec![Action::ExecuteOwning { coin: x }],
                 vec![Action::Advance(21 * MINUTE), Action::Reclaim { coin: x, truth: !truth, fee: 600 }],
                 vec![Action::Advance(2 * MINUTE), Action::ExecuteOwning { coin: x }],

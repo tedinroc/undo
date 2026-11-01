@@ -71,6 +71,7 @@ pub fn create_args(policy: Policy, fixed: Fixed, bounds: Bounds, spk: Vec<u8>) -
         policy,
         fixed,
         bounds,
+        now: START,
     }
 }
 
@@ -180,6 +181,7 @@ impl H {
             inputs: inputs.iter().map(|(o, v)| Input { outpoint: *o, value: *v }).collect(),
             outputs: Outputs { dest_script: dest.to_vec(), dest_value, change_value: change },
             half_sigs: vec![vec![0xaa; 65]; inputs.len()],
+            memo: None,
         };
         let (caller, intent) = (self.spend_caller(), self.sp());
         self.tx(|v, now| v.propose(&caller, intent, args, now))
@@ -209,11 +211,6 @@ impl H {
     pub fn reclaim(&mut self, outpoint: Outpoint, value: Sats, fee: Sats) -> Result<Proposed, Error> {
         let (caller, intent) = (self.spend_caller(), self.sp());
         self.tx(|v, now| v.reclaim(&caller, intent, outpoint, value, fee, vec![0xaa; 65], now))
-    }
-    pub fn bump(&mut self, id: RequestId, new_fee: Sats) -> Result<Proposed, Error> {
-        let n = self.v.requests.get(&id).map_or(1, |r| r.inputs.len());
-        let (caller, intent) = (self.spend_caller(), self.sp());
-        self.tx(|v, now| v.bump(&caller, intent, id, new_fee, vec![vec![0xaa; 65]; n], now))
     }
     pub fn cancel(&mut self, id: RequestId) -> Result<(), Error> {
         let (caller, exp) = (self.pass_caller(), self.exp());
@@ -284,6 +281,6 @@ impl H {
     }
     pub fn assess(&mut self, id: RequestId, hold: bool) -> Result<(), Error> {
         let caller = self.guard_caller();
-        self.tx(|v, now| v.assess(&caller, id, hold, now))
+        self.tx(|v, now| v.assess(&caller, id, hold, Reason::Other, now))
     }
 }

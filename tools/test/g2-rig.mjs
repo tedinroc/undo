@@ -408,6 +408,7 @@ export async function startRig({ log = () => {}, protocol = 88, blockMs = 1500 }
     action.call('new', {
       preset: 'TestCoin', operator: payer.accountId, restrict_create: false, signer: mock.accountId, domain_id: 0,
       sign_tgas: 15, callback_tgas: 10, derive_tgas: 30, network: 'regtest', origins: [ORIGIN], outflow_cap_24h: 1_000_000,
+      operator_passkey: throwawayOperatorPasskey(new URL(ORIGIN).hostname),
     }, 100n * TGAS, 0n),
   ]);
   if (failureOf(deployed.result)) throw new Error(`contract deploy failed: ${failureOf(deployed.result)}`);

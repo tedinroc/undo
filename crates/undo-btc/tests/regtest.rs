@@ -47,7 +47,10 @@ impl Node {
             .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".tools/bitcoin-32.1/bin"));
         assert!(bin.join("bitcoind").exists(), "no bitcoind: run scripts/fetch-bitcoind.sh or set UNDO_BITCOIN_BIN");
 
-        let datadir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("regtest-{}", std::process::id()));
+        // Tests run side by side, and two nodes on one datadir leave the second unable to start.
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let datadir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("regtest-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&datadir);
         std::fs::create_dir_all(&datadir).unwrap();
         let rpc_port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();

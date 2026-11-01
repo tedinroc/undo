@@ -265,7 +265,9 @@ async fn a_request_lives_on_its_reservation_and_the_reservation_is_exact() -> Re
     assert_books(&h, &v, base, paid).await?;
     h.verified_final_tx(&v, id, &real).await?;
 
-    assert_eq!(h.vault_view(&v).await?["reserved_bytes"].as_u64().unwrap(), idle, "only the vault's own reservation is left");
+    // The last answer completed a spend, so the public count's entry was written from what the row held
+    // for it: 40 of overhead, 33 of key, 1 of value.
+    assert_eq!(h.vault_view(&v).await?["reserved_bytes"].as_u64().unwrap(), idle - (40 + 33 + 1), "only the vault's own reservation is left");
     // Transient or unused: an in-flight entry per input, the pending entry, the slot's holder, and the
     // override nobody asked for.
     assert_eq!(h.credit(&v).await?, (2 * 8 + 8 + 8 + 8) as u128 * BYTE, "the reservation was exact");
@@ -451,6 +453,7 @@ async fn only_the_account_itself_initialises_the_contract() -> Result<()> {
         json!({
             "preset": "TestCoin", "operator": h.relayer.id(), "restrict_create": false, "signer": h.mock.id(), "domain_id": 0,
             "sign_tgas": SIGN_TGAS, "callback_tgas": CALLBACK_TGAS, "derive_tgas": DERIVE_TGAS, "network": network, "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP,
+            "operator_passkey": operator_passkey_args(),
         })
     };
     let outsider = h.relayer.call(fresh.id(), "new").args_json(args("mutinynet")).transact().await?;

@@ -84,7 +84,7 @@ fn links(spk: &[u8]) -> Vec<(Input, Outputs)> {
 fn probe_request(input: Input, outputs: &Outputs) -> Request {
     let mut h = H::test_coin();
     h.v.vault_spk = outputs.dest_script.clone();
-    let args = ProposeArgs { inputs: vec![input], outputs: outputs.clone(), half_sigs: vec![vec![0xaa; 65]] };
+    let args = ProposeArgs { inputs: vec![input], outputs: outputs.clone(), half_sigs: vec![vec![0xaa; 65]], memo: None };
     let (caller, intent) = (h.spend_caller(), h.sp());
     let id = h.v.propose(&caller, intent, args, h.now).unwrap().id;
     h.v.requests[&id].clone()

@@ -2,7 +2,7 @@
 
 use near_sdk::serde::{Deserialize, Deserializer, Serialize, Serializer};
 use near_sdk::{env, near};
-use undo_core::{Fixed, Input, Outpoint, Outputs, Policy, Request, RequestKind, RequestStatus, Tier};
+use undo_core::{Fixed, Input, Outpoint, Outputs, Policy, Request, RequestKind, RequestStatus, Snapshot, Tier, UpgradeRules};
 
 /// Bytes as lowercase hex in JSON.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,8 +170,91 @@ pub struct InstanceView {
     pub policy: PolicyArgs,
     pub t_recover_ms: u64,
     pub expiry_window_ms: u64,
-    pub bump_wait_ms: u64,
     pub block_ms: u64,
+    pub csv_min: u32,
+    pub csv_max: u32,
+    pub t_upgrade_ms: u64,
+    pub upgrade_expiry_ms: u64,
+    /// How long an owner has to notice an upgrade and still be out before it lands.
+    pub reaction_window_ms: u64,
+    pub pending_upgrade: Option<UpgradeView>,
+    pub operator_passkey: HexBytes,
+    pub guard_model: String,
+    pub model_signers: Vec<ModelSignerView>,
+}
+
+#[near(serializers = [json])]
+pub struct UpgradeView {
+    pub code_hash: HexBytes,
+    pub proposed_at: u64,
+    pub unlock_at: u64,
+    pub expires_at: u64,
+}
+
+#[near(serializers = [json])]
+pub struct ModelSignerView {
+    pub model: String,
+    pub signer: HexBytes,
+}
+
+/// Plain language for a person with curl. `ok` is false when a line calls for attention.
+#[near(serializers = [json])]
+pub struct StatusView {
+    pub ok: bool,
+    pub lines: Vec<String>,
+}
+
+/// Vaults whose distinct passkey completed a cancel or a spend, with a team test set taken out and
+/// listed. Nothing here can rule out one person holding many passkeys.
+#[near(serializers = [json])]
+pub struct StatsView {
+    pub vaults_created: u64,
+    pub vaults_active: u64,
+    pub passkeys_completed: u64,
+    pub excluded_passkeys: Vec<HexBytes>,
+    pub excluded_that_completed: u64,
+    pub counted: u64,
+}
+
+#[near(serializers = [json])]
+pub struct GrantView {
+    pub id: u64,
+    pub kind: String,
+    pub begun_at: u64,
+    pub ready_at: u64,
+}
+
+#[near(serializers = [json])]
+pub struct SnapshotView {
+    pub destination_seen_hours_ago: Option<u32>,
+    pub amount_sats: u64,
+    pub inputs_sats: u64,
+    pub share_bps: u16,
+    pub proposals_24h: u8,
+    pub cancels_30d: u8,
+    pub hours_since_last_spend: Option<u32>,
+    pub vault_age_hours: u32,
+    pub spend_key_age_hours: u32,
+    pub utc_hour: u8,
+    pub memo: Option<String>,
+}
+
+impl SnapshotView {
+    fn of(s: &Snapshot) -> Self {
+        SnapshotView {
+            destination_seen_hours_ago: s.destination_seen_hours_ago,
+            amount_sats: s.amount_sats,
+            inputs_sats: s.inputs_sats,
+            share_bps: s.share_bps,
+            proposals_24h: s.proposals_24h,
+            cancels_30d: s.cancels_30d,
+            hours_since_last_spend: s.hours_since_last_spend,
+            vault_age_hours: s.vault_age_hours,
+            spend_key_age_hours: s.spend_key_age_hours,
+            utc_hour: s.utc_hour,
+            memo: s.memo.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -186,6 +269,13 @@ impl Preset {
         match self {
             Preset::TestCoin => Fixed::test_coin(),
             Preset::MainnetProof => Fixed::mainnet_proof(),
+        }
+    }
+
+    pub fn upgrade(self) -> UpgradeRules {
+        match self {
+            Preset::TestCoin => UpgradeRules::test_coin(),
+            Preset::MainnetProof => UpgradeRules::mainnet_proof(),
         }
     }
 }
@@ -205,6 +295,11 @@ pub struct VaultView {
     pub backup_eligible: bool,
     pub backup_state: bool,
     pub guard: Option<near_sdk::AccountId>,
+    pub guard_online: bool,
+    pub last_heartbeat: Option<u64>,
+    pub created_at: u64,
+    pub known: Vec<HexBytes>,
+    pub fee_used_24h: u64,
     pub csv: u32,
     pub script_pubkey: HexBytes,
     pub address: String,
@@ -216,6 +311,7 @@ pub struct VaultView {
     pub cold_nonce: u64,
     pub pending: Vec<u64>,
     pub grants: Vec<u64>,
+    pub grant_list: Vec<GrantView>,
     pub recover_cancels: u8,
     pub recovery_ready_at: Option<u64>,
     pub storage_credit: near_sdk::json_types::U128,
@@ -243,6 +339,12 @@ pub struct RequestView {
     pub attempt: u32,
     pub in_flight: u32,
     pub sigs: Vec<Option<HexBytes>>,
+    pub assessed: bool,
+    pub assess_hold: bool,
+    pub assess_reason: String,
+    pub hold_used: bool,
+    pub hold_active: bool,
+    pub snapshot: SnapshotView,
 }
 
 impl RequestView {
@@ -252,7 +354,6 @@ impl RequestView {
             id: r.id,
             kind: match r.kind {
                 RequestKind::Normal => "Normal",
-                RequestKind::Bump { .. } => "Bump",
                 RequestKind::Reclaim => "Reclaim",
             }
             .to_string(),
@@ -277,6 +378,12 @@ impl RequestView {
             attempt: r.attempt,
             in_flight: r.in_flight.len() as u32,
             sigs: r.sigs.iter().map(|s| s.clone().map(HexBytes)).collect(),
+            assessed: r.assessed,
+            assess_hold: r.assess_hold,
+            assess_reason: r.assess_reason.name().to_string(),
+            hold_used: r.hold_used,
+            hold_active: r.hold_active,
+            snapshot: SnapshotView::of(&r.snapshot),
         }
     }
 }
@@ -326,4 +433,32 @@ pub struct SignerResponse {
     pub big_r: AffinePoint,
     pub s: Scalar,
     pub recovery_id: u8,
+}
+
+/// The parts of a chat completion this contract reads. Other fields are ignored, because the provider
+/// adds them, and the signature already covers every byte.
+#[derive(Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ChatCompletion {
+    pub choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ChatChoice {
+    pub message: ChatMessage,
+}
+
+#[derive(Deserialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct ChatMessage {
+    pub content: String,
+}
+
+/// What the model is told to answer with, and nothing else.
+#[derive(Deserialize)]
+#[serde(crate = "near_sdk::serde", deny_unknown_fields)]
+pub struct GuardAnswer {
+    pub hold: bool,
+    pub reason: String,
 }

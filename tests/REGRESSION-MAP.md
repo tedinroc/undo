@@ -71,12 +71,12 @@ result, and its partner is the test that shows the refusal.
 | 5 | high | Pending requests survive rotation, unlimited decoys | `review_contract` | Phone-page sorting. |
 | 6 | high | Passkey is blind signing | Grant delay in `crates/undo-core/props`, BE and BS flags in `f17`, `review1: veto_grant_on_the_wasm` | Page hash. |
 | 7 | high | Printed mainnet plan | Plan change, no test | - |
-| 8 | high | `bump` and `reclaim` could not complete | `review_contract`, `crates/undo-core/props` | `bump` is not in the shell. |
+| 8 | high | `bump` and `reclaim` could not complete | `review_contract`, `crates/undo-core/props` | `bump` was cut 11/1. `reclaim` covers a stuck coin. |
 | 9 | high | Bare `K_e` cannot escape | `crates/undo-btc/tests/recovery.rs` | Browser and Node tools. |
 | 10 | high | Public relay key griefable | `review_relay` | The relay itself. |
 | 11 | high | Sponsored storage, callback lost at floor | `review_contract` | Live relay ceiling. |
-| 12 | high | Upgrade window and expiry | Nothing yet | The upgrade queue is not built. |
-| 13 | medium | Signer outage while the owner is away | `review_contract` | Canary, `status` text. |
+| 12 | high | Upgrade window and expiry | `surface: an_upgrade_lands_*`, `upgrade_authority_*`, `code_without_a_migrate_*`, `crates/undo-core/props: upgrade_rules_*`, `an_upgrade_waits_*` | A real operator passkey. |
+| 13 | medium | Signer outage while the owner is away | `review_contract`, `surface: status_is_plain_*` | Canary. |
 | 14 | medium | Fee cap strands exits | `review_contract`, `crates/undo-core/props` | Mainnet cap sizing. |
 | 15 | medium | Consensus-lib overclaim, CSV operand | `review_script`, `review_contract`, `crates/undo-btc/tests/regtest.rs` | - |
 | 16 | medium | `K_e` intents undefined | Intent format in `contracts/undo/src/auth.rs`, tested through `cold_key_cancel`, `review1`, and `tools/freeze.mjs` in `tools/test/sandbox-intents.mjs` | - |
@@ -84,7 +84,7 @@ result, and its partner is the test that shows the refusal.
 | 18 | medium | Request expiry undefined | `review_contract`, `crates/undo-core/props` | - |
 | 19 | medium | Agent mode against protocol limits | `review_fckey` | Live allowance. |
 | 20 | medium | Committed sentence as key material | No such key exists. Secret scan in `scripts/secret-scan.sh`. | - |
-| 21 | medium | Guard claims overstate | Hold rule in `crates/undo-core/props` | `assess` is not in the shell. |
+| 21 | medium | Guard claims overstate | Hold rule in `crates/undo-core/props`, `surface: assess_*`, `guard_prompt_*`, `memo_*` | A recorded `provider_tee` signature, gate G4. |
 | 22 | medium | Vault id squat | `review_contract` | - |
 | 23 | low | EVM path compiled by default | No EVM code in the contract, `scripts/check-wasm.sh` | - |
 
@@ -106,3 +106,50 @@ covered here, on protocols 86 and 88.
 | Secret scan missed this project's key formats | `scripts/test-secret-scan.sh` | `cold_key`, `secret` and a bare seed line are hits. `proofs/vault-recovery.json` is ignored by git. |
 
 `scripts/shell-mutants.py` carries the four mutants that survived, plus one for each new rule.
+
+## Fourth review (round 3)
+
+No loss of funds and no way past the delay. Its scratch attacks are kept in `tests/tests/review3.rs`, and the survivors have tests and mutants.
+
+| Finding | Test | Result expected now |
+|---|---|---|
+| Fee budget burnt on fake coins blocks the exit to a new vault | `review3: budget_burnt_*`, `crates/undo-core/props: a_rotation_landing_*`, `a_vetoed_rotation_*` | Refused while the window is full, and the override does not reach it. Goes out once the rotation lands. |
+| The escape is a fee race nobody stated | `crates/undo-btc/tests/regtest.rs: the_escape_is_a_fee_race_*`, `tools/test/offline.test.mjs` | 1,200 replaces 1,000. 2,500 loses to three stacked links of 1,000, and 3,500 wins. The tool prints it. A small coin needs no flag. |
+| Instance rules not enforced | `review3: instance_rules_*`, `crates/undo-core/props: csv_stays_*` | `new` and `create_vault` refuse them. |
+| Survivors: reclaim's fee ceiling, pending cap, dust and value checks, cancel's expiry, `raise_fee_cap` during a freeze, `recover_begin` over a running recovery, a freeze ending now, the outflow trim, the retry window, `loosens` per field, fee cap above budget, max money | One named test each at the end of `crates/undo-core/props/tests/scenarios.rs` | Each is a mutant in `crates/undo-core/props/mutation-check.py`. |
+| A signer's answer of any size | `review3: oversized_signer_*`, mock mode `Padded` | A good signature inside too many bytes is not read. |
+| Harnesses had no control | Both mutation scripts | An unmutated run comes first, and a red one stops the run. |
+| Secret scan too narrow | `scripts/test-secret-scan.sh` | Generic names, `hex!` and a NEAR secp256k1 secret hit. A txid, a digest and a public key do not. |
+
+Two of that review's mutants have no test on purpose, because no input can tell them from the real code. `apply_grant` committing with `Short::Reserved` is the same as `Short::Refuse`, because a landing grant never grows the vault. Dropping `btc::encodable` changes nothing, because `ecrecover` refuses every r and s it would.
+
+Kept as they were: `escape branch`, `stale epoch`, `spoofed callbacks`, `wrong K_m variants`, `outpoint reuse`, `partial execute`, `storage griefing`, `passkey thief after recovery`, `small rules`, all in `review3`.
+
+## Section 11, the last methods
+
+Every method is on both protocols through `scripts/protocol-check.sh`, with a positive and a negative in `tests/tests/surface.rs`:
+
+| Method | Tests |
+|---|---|
+| `add_destination` | `add_destination_waits_*`, `add_destination_negatives`, `removing_and_tightening_*` |
+| `remove_destination` | `remove_destination_lands_*`, `removing_and_tightening_*` |
+| `set_policy` | `tightening_is_at_once_*`, `set_policy_is_bounded_*`, `a_loosening_with_no_credit_*` |
+| `set_guard` | `set_guard_waits_*` |
+| `clear_hold` | `clear_hold_returns_*` |
+| `heartbeat`, `delay_now` | `heartbeat_keeps_*`, `first_heartbeat_with_no_credit_*`, `a_guard_function_call_key_*` |
+| `guard_prompt`, memo, snapshot | `guard_prompt_is_built_*`, `memo_is_bound_*` |
+| `assess`, `add_model_signer`, `set_guard_model` | `assess_checks_*`, `assess_refuses_*`, `assess_needs_no_credit`, `model_signers_*` |
+| `status` | `status_is_plain_*`, `status_says_*` |
+| `stats`, `stats_exclude` | `stats_counts_*`, `cancel_at_zero_credit_*` |
+| `upgrade_propose`, `upgrade_cancel`, `upgrade_apply`, `migrate` | `an_upgrade_lands_*`, `upgrade_authority_*`, `code_without_a_migrate_*`, `migrate_is_private` |
+
+What the film and the page read, each with its own test in `tests/tests/surface.rs`:
+
+| Film needs | Test | Result expected |
+|---|---|---|
+| A new vault reads 5:00 | `film_a_new_vault_reads_five_minutes_*` | The relay is the guard the vault signed for and beats in the creating transaction. With no beat it reads 10:00, and a relay it did not name is refused |
+| The thief tab fires at zero | `film_the_thief_tab_can_execute_*`, and `crates/undo-core/props: execute_goes_through_the_moment_*` | Any account, no deposit. One millisecond early is refused, the unlock's own millisecond is not |
+| Cancel stops the clock | `film_the_phones_cancel_*` | Epochs differ from that block on while the status still reads `Pending`. Then the request reads null. Thief's execute reaches no signer, and the stolen key is refused before and after the new one lands |
+| `+5:00` lands once | `film_a_hold_adds_exactly_*` | `unlock` moves by exactly 5 min, `hold_active` and `assess_reason` read back, and a rotation still kills it |
+
+Found while building these: a full grant list stopped the panic button (`crates/undo-core/props: the_panic_button_fits_*`), and known destinations were unbounded (`known_destinations_are_bounded_*`). Found on the first full run: `upgrade_apply` reported success on the transaction when the deploy had rolled back, because nothing returned the batch, so it now returns it (`code_without_a_migrate_*`).
