@@ -15,18 +15,36 @@ export const CREATE_DEPOSIT_MILLI = 30;
 /**
  * tgas: attached, unused gas comes back. costMicro: what a call counts for against its key's daily
  * ceiling in millionths of a NEAR, from burnt gas in docs/measurements.md at 1e-4 NEAR per Tgas, rounded up.
- * perIpHour: limit per hashed IP. perVaultMinute: limit per vault.
+ * perIpHour: limit per hashed IP. perVaultMinute: limit per vault. perVaultDay: shared across a key's methods.
+ * operatorOnly: off the public list. A stranger could otherwise make a vault read guard online, which halves
+ * its wait, so it answers only to the BEAT_TOKEN binding, and with none set not at all.
  */
 export const RELAY_METHODS = Object.freeze({
   create_vault: { key: GENERAL, tgas: 120, heartbeatTgas: 10, depositMilli: CREATE_DEPOSIT_MILLI, pow: true, costMicro: CREATE_DEPOSIT_MILLI * 1000 + 2000, perIpHour: 3 },
   activate: { key: GENERAL, tgas: 60, costMicro: 1500, perIpHour: 10 },
-  heartbeat: { key: GENERAL, tgas: 10, costMicro: 400, perIpHour: 20, perVaultMinute: 2 },
+  heartbeat: { key: GENERAL, tgas: 10, costMicro: 400, perIpHour: 20, perVaultMinute: 2, operatorOnly: true },
   propose_btc: { key: GENERAL, tgas: 40, costMicro: 1200, perIpHour: 10 },
   execute: { key: GENERAL, tgas: null, costMicro: 3000, perIpHour: 20, perVaultMinute: 30 },
   // No per-IP limit: a phone on a shared address must still be able to cancel.
-  cancel: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6 },
-  cancel_all_and_rotate: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6 },
+  cancel: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12 },
+  cancel_all_and_rotate: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12 },
 });
+
+/** Vaults may take this share of the general ceiling, so a day of them still leaves room for calls already under way. */
+export const CREATE_SHARE = 0.7;
+
+/**
+ * What a 30 Tgas owner send holds of its key's allowance until its refund lands, measured: about 0.031 NEAR. One
+ * vault can have 6 in flight at once, and the owner ceiling's worth of vaults, at 12 sends a day each, can all burst
+ * together. OWNER_ALLOWANCE_NEAR must stay above that, or a burst of sends refuses an innocent cancel.
+ */
+export const OWNER_SEND_HOLD_MILLI = 31;
+export const CEILING_OWNER_DEFAULT_MICRO = 300_000;
+export const ownerAllowanceNeeded = (ceilingMicro, { costMicro, perVaultMinute, perVaultDay } = RELAY_METHODS.cancel_all_and_rotate) => {
+  const vaults = Math.ceil(ceilingMicro / costMicro / perVaultDay);
+  return (Math.min(vaults * perVaultMinute, Math.ceil(ceilingMicro / costMicro)) * OWNER_SEND_HOLD_MILLI) / 1000;
+};
+export const OWNER_ALLOWANCE_NEAR = 8;
 
 /**
  * Prepaid gas for `execute`. Measured least: 46, 130, 344 and 688 Tgas at 1, 3, 8 and 16 inputs with 30 + 10
@@ -36,6 +54,7 @@ export const executeTgas = (inputs, { signTgas, callbackTgas }) => inputs * (sig
 
 export const RELAY_ERRORS = Object.freeze({
   bad_request: 400,
+  would_refuse: 422,
   bad_origin: 403,
   unknown_method: 400,
   pow_required: 400,
@@ -87,7 +106,8 @@ export const MAX_RELAY_BODY = 24 * 1024;
 /** Returns null, or the error code to answer with. */
 export function relayBodyProblem(body) {
   if (!only(body, ['method', 'args', 'pow'])) return 'bad_request';
-  if (!Object.hasOwn(RELAY_METHODS, body.method)) return 'unknown_method';
+  // A string only: Object.hasOwn coerces, so ["cancel"] would pass here and miss every check keyed on the name.
+  if (typeof body.method !== 'string' || !Object.hasOwn(RELAY_METHODS, body.method)) return 'unknown_method';
   if (!SHAPES[body.method](body.args)) return 'bad_request';
   if (RELAY_METHODS[body.method].pow && !Number.isSafeInteger(body.pow)) return 'pow_required';
   return null;

@@ -15,7 +15,7 @@ import { action, failureOf, keyFromSecret, Near, NEAR, TGAS } from '../../tools/
 import { sendEverything } from '../lib/bitcoin.mjs';
 import { buildCreateArgs, buildPropose, cancelArgs, cancelDigest, newVaultKeys, rotateArgs, rotateDigest, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
 import { NearReader } from '../lib/near-read.mjs';
-import { checkPow, solvePow } from '../lib/pow.mjs';
+import { checkPow, fundsPowTarget, solvePow } from '../lib/pow.mjs';
 import { CREATE_DEPOSIT_MILLI, executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { requestState } from '../lib/request-state.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
@@ -63,16 +63,19 @@ async function buildVault(name) {
 
 const worker = (name) => mf.getWorker(name);
 
-async function post(name, path, body, { ip = freshIp(), origin = null } = {}) {
+const BEAT = 'undo-test-only:beat';
+
+async function post(name, path, body, { ip = freshIp(), origin = null, beat = BEAT } = {}) {
   const headers = { 'content-type': 'application/json', 'cf-connecting-ip': ip };
   if (origin) headers.origin = origin;
+  if (beat) headers['x-undo-beat'] = beat;
   const res = await (await worker(name)).fetch(`${SITE}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
   const text = await res.text();
   return { status: res.status, body: JSON.parse(text), text };
 }
 
 const relay = (name, method, args, opts = {}) => post(name, '/api/relay', opts.pow === undefined ? { method, args } : { method, args, pow: opts.pow }, opts);
-const funds = (name, vault, opts) => post(name, '/api/funds', { vault }, opts);
+const funds = async (name, vault, opts) => post(name, '/api/funds', { vault, pow: await solvePow(fundsPowTarget(vault), POW_BITS) }, opts);
 const status = async (name) => (await (await worker(name)).fetch(`${SITE}/api/relay`)).json();
 
 async function makeVault(name, on = 'main', opts = {}) {
@@ -89,7 +92,7 @@ async function makeVault(name, on = 'main', opts = {}) {
 async function proposeBody(v) {
   const vault = await views.vault(v.vaultHex);
   const script = fromHex(await views.script(v.vaultHex));
-  const coin = { txid: toHex(label(`coin-${v.vaultHex}-${vault.spend_nonce}`)), vout: 0, value: 2000 };
+  const coin = v.coinFrom?.inputs[0] ?? { txid: toHex(label(`coin-${v.vaultHex}-${vault.spend_nonce}`)), vout: 0, value: 2000 };
   const to = fromHex(`0014${toHex(label('thief')).slice(0, 40)}`);
   const spend = sendEverything({ coins: [coin], to, script, feeRate: 2 });
   const chainNow = (await reader.blockTime()).blockMs;
@@ -176,6 +179,8 @@ before(async () => {
     IP_SALT: 'undo-test-only:workerd',
     POW_BITS: String(POW_BITS),
     STATUS_CACHE_MS: '0',
+    KEY_CACHE_MS: '0',
+    BEAT_TOKEN: BEAT,
   };
   const { Miniflare } = loadMiniflare();
   mf = startWorkerd({ Miniflare }, {
@@ -184,8 +189,8 @@ before(async () => {
     pages: {
       // This file makes more vaults than the default ceiling's 18.
       main: { bindings: { ...common, UNDO_STATE_NAME: 'main', CEILING_GENERAL_MICRO: '100000000' } },
-      // Just room for one vault, one proposal and two heartbeats. One funding, one dispenser with nothing in it.
-      low: { bindings: { ...common, UNDO_STATE_NAME: 'low', CEILING_GENERAL_MICRO: '34000', CEILING_FUNDS_SATS: '2000' } },
+      // Just room for one proposal and two heartbeats, on a vault made elsewhere. One funding, one dispenser with nothing in it.
+      low: { bindings: { ...common, UNDO_STATE_NAME: 'low', CEILING_GENERAL_MICRO: '2000', CEILING_FUNDS_SATS: '2000' } },
       poor: { bindings: { ...common, UNDO_STATE_NAME: 'poor', DISPENSER_SECRET: poor } },
       broken: { bindings: { ...common }, state: { className: 'Broken', scriptName: 'broken-state' } },
     },
@@ -261,18 +266,25 @@ test('propose, heartbeat, execute: the contract takes each, on the general key a
   assert.equal(failureOf(beatResult), null);
   noteGas('heartbeat', beatResult);
 
+  const nonceBefore = await keyNonce(stage.relay.publicKey);
   const again = await relay('main', 'activate', { vault: v.vaultHex });
-  assert.equal(again.body.ok, true, 'inclusion says nothing about what the contract did');
-  const activate = await settled(again.body.hash);
-  assert.deepEqual(attached(activate), [['activate', 60]]);
-  noteGas('activate (already active)', activate);
+  assert.deepEqual([again.status, again.body.code, again.body.message], [422, 'would_refuse', 'that vault is already active'], 'refused before the key signs');
 
   const r0 = await views.request(v.vaultHex, request);
   const early = await relay('main', 'execute', { vault: v.vaultHex, request });
-  assert.equal(early.body.ok, true);
-  const refused = await settled(early.body.hash);
-  assert.ok(failureOf(refused), 'before the unlock the contract refuses, and the page reads why');
-  noteGas('execute (before unlock)', refused);
+  assert.deepEqual([early.status, early.body.code, early.body.message], [422, 'would_refuse', 'that request has not unlocked']);
+  assert.ok(early.body.retry_after_s > 0);
+  assert.equal(await keyNonce(stage.relay.publicKey), nonceBefore, 'neither was sent');
+
+  // What the contract says to a stranger's stale or made-up proposal comes back in its own words, with no transaction.
+  const busy = await relay('main', 'propose_btc', await proposeBody({ ...v, coinFrom: r0 }));
+  assert.equal(busy.body.ok, false);
+  assert.equal(busy.body.code, 'would_refuse');
+  assert.match(busy.body.verbatim, /OutpointBusy|DoubleSpend|Busy/, busy.text);
+  assert.equal(await keyNonce(stage.relay.publicKey), nonceBefore);
+  const made = await relay('main', 'propose_btc', { ...(await proposeBody(v)), vault: 'ab'.repeat(32) });
+  assert.equal(made.body.message, 'no such vault');
+
   for (let i = 0; i < 200; i += 1) {
     const now = (await reader.blockTime()).blockMs;
     if (now >= r0.unlock) break;
@@ -293,7 +305,7 @@ test('propose, heartbeat, execute: the contract takes each, on the general key a
 });
 
 test('saturated general key: at its ceiling and refusing, a cancel_all_and_rotate still lands on the owner key, and the two states read differently', { skip, timeout: 90_000 }, async () => {
-  const v = await makeVault('saturated', 'low');
+  const v = await makeVault('saturated');
   const { request } = await propose(v, 'low');
   const s0 = await status('low');
   assert.deepEqual([s0.general.up, s0.general.why], [false, 'daily_ceiling'], 'a new vault no longer fits');
@@ -597,5 +609,5 @@ test('the stage serves the same relay class over its node:sqlite shim, so page t
 
 test('measured gas, local, mock signer', { skip }, (t) => {
   for (const [method, line] of Object.entries(gas)) t.diagnostic(`${method}: ${line}`);
-  assert.ok(Object.keys(gas).length >= 8);
+  assert.ok(Object.keys(gas).length >= 6);
 });

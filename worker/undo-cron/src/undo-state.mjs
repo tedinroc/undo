@@ -57,18 +57,21 @@ export class UndoState {
     if (now - this.prunedAt < PRUNE_EVERY) return;
     this.prunedAt = now;
     this.sql.exec('DELETE FROM ip_counter WHERE window_start < ?', now - 2 * HOUR);
-    this.sql.exec('DELETE FROM vault_counter WHERE window_start < ?', now - 2 * HOUR);
+    this.sql.exec("DELETE FROM vault_counter WHERE window_start < ? AND method NOT LIKE '%:day'", now - 2 * HOUR);
+    this.sql.exec('DELETE FROM vault_counter WHERE window_start < ?', now - 2 * DAY);
     this.sql.exec('DELETE FROM daily_ceiling WHERE day < ?', dayOf(now) - 7);
     this.sql.exec('DELETE FROM heartbeat_log WHERE at < ?', now - DAY);
   }
 
   /** A ceiling first, because it holds for everybody. Nothing is counted unless everything passes. */
-  chargeNow({ key, method, ipHash, vault, now, ceiling, cost, perIpHour, perVaultMinute }) {
+  chargeNow({ key, method, ipHash, vault, now, ceiling, cost, perIpHour, perVaultMinute, perVaultDay }) {
     this.prune(now);
     const spent = this.spentToday(key, now);
     if (spent + cost > ceiling) return { ok: false, code: 'daily_ceiling', bucket: key, resets_at: resetsAt(now) };
     const ipWindow = Math.floor(now / HOUR) * HOUR;
     const vaultWindow = Math.floor(now / MINUTE) * MINUTE;
+    const vaultDay = dayOf(now) * DAY;
+    const dayCounter = `${key}:day`;
     if (perIpHour) {
       const seen = this.first('SELECT count FROM ip_counter WHERE ip_hash = ? AND method = ? AND window_start = ?', ipHash, method, ipWindow)?.count ?? 0;
       if (seen >= perIpHour) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((ipWindow + HOUR - now) / 1000) };
@@ -77,8 +80,13 @@ export class UndoState {
       const seen = this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ?', vault, method, vaultWindow)?.count ?? 0;
       if (seen >= perVaultMinute) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((vaultWindow + MINUTE - now) / 1000) };
     }
+    if (perVaultDay) {
+      const seen = this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ?', vault, dayCounter, vaultDay)?.count ?? 0;
+      if (seen >= perVaultDay) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((vaultDay + DAY - now) / 1000) };
+    }
     if (perIpHour) this.sql.exec('INSERT INTO ip_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', ipHash, method, ipWindow);
     if (perVaultMinute) this.sql.exec('INSERT INTO vault_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', vault, method, vaultWindow);
+    if (perVaultDay) this.sql.exec('INSERT INTO vault_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', vault, dayCounter, vaultDay);
     this.sql.exec('INSERT INTO daily_ceiling VALUES (?, ?, ?) ON CONFLICT DO UPDATE SET spent = spent + ?', dayOf(now), key, cost, cost);
     return { ok: true, spent: spent + cost };
   }
@@ -106,7 +114,16 @@ export class UndoState {
     charge({ key, method, ipHash = null, vault = null, now, ceiling }) {
       const spec = RELAY_METHODS[method];
       if (!spec || spec.key !== key || !Number.isFinite(ceiling)) return { ok: false, code: 'bad_request' };
-      return this.chargeNow({ key, method, ipHash, vault, now, ceiling, cost: spec.costMicro, perIpHour: spec.perIpHour, perVaultMinute: spec.perVaultMinute });
+      return this.chargeNow({ key, method, ipHash, vault, now, ceiling, cost: spec.costMicro, perIpHour: spec.perIpHour, perVaultMinute: spec.perVaultMinute, perVaultDay: spec.perVaultDay });
+    },
+
+    /** The rest of a call whose size was only known after a read, such as an execute of several inputs. */
+    addCost({ key, cost, now, ceiling }) {
+      const spent = this.spentToday(key, now);
+      if (!Number.isFinite(cost) || cost < 0 || !Number.isFinite(ceiling)) return { ok: false, code: 'bad_request' };
+      if (spent + cost > ceiling) return { ok: false, code: 'daily_ceiling', bucket: key, resets_at: resetsAt(now) };
+      this.sql.exec('INSERT INTO daily_ceiling VALUES (?, ?, ?) ON CONFLICT DO UPDATE SET spent = spent + ?', dayOf(now), key, cost, cost);
+      return { ok: true };
     },
 
     /** Gives back what a call charged when its transaction never ran. A per-IP count stays. */

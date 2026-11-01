@@ -2,6 +2,7 @@
 // on vault creation. The address comes from the contract, so nobody can name a payee.
 import { classifyBroadcast } from '../../../tools/lib/esplora.mjs';
 import { fromHex } from '../../../tools/lib/bytes.mjs';
+import { checkPow, fundsPowTarget } from '../../lib/pow.mjs';
 import { hashIp, json, numberOr, readBody, Refusal } from './answer.mjs';
 import { buildFunding, dispenserFromSecret } from './funding.mjs';
 
@@ -133,15 +134,30 @@ async function fund(relay, dispenser, payTo, vault, { sats, feeRate }) {
   }
 }
 
+async function refuseIfItHoldsACoin(relay, row) {
+  const { status, body } = await esplora(relay, `/address/${row.address}/utxo`);
+  let listed = null;
+  if (status === 200) {
+    try {
+      listed = JSON.parse(body);
+    } catch {
+      // Falls through as a dead Esplora.
+    }
+  }
+  if (!Array.isArray(listed)) throw new Refusal('esplora_down', { message: 'could not read that vault\'s coins', verbatim: body.slice(0, 400) });
+  if (listed.length > 0) throw new Refusal('would_refuse', { message: 'that vault already holds a coin' });
+}
+
 export async function fundsHandler(relay, request) {
   if (relay.originProblem(request)) throw new Refusal('bad_origin', { message: 'that origin may not call this' });
   const body = await readBody(request);
-  const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body) : [];
-  if (fields.length !== 1 || fields[0] !== 'vault' || typeof body.vault !== 'string' || !/^[0-9a-f]{64}$/.test(body.vault)) {
-    throw new Refusal('bad_request', { message: 'name one vault' });
+  const fields = body && typeof body === 'object' && !Array.isArray(body) ? Object.keys(body).sort() : [];
+  if (fields.join() !== 'pow,vault' || typeof body.vault !== 'string' || !/^[0-9a-f]{64}$/.test(body.vault)) {
+    throw new Refusal('bad_request', { message: 'name one vault, with its proof of work' });
   }
   if (!fundsConfigured(relay)) throw new Refusal('relay_not_configured', { message: 'the dispenser is not set' });
   const { vault } = body;
+  if (!checkPow(fundsPowTarget(vault), body.pow, relay.powBits)) throw new Refusal('pow_bad', { message: 'that proof of work does not solve this vault' });
   let row;
   try {
     row = await relay.reader().view(relay.contract, 'vault', { vault });
@@ -150,6 +166,8 @@ export async function fundsHandler(relay, request) {
   }
   if (row === null) throw new Refusal('bad_request', { message: 'no such vault' });
   if (!row.active) throw new Refusal('bad_request', { message: 'that vault is not active' });
+  // Anyone can make a vault directly, free of this relay's limits, and name whatever guard they like.
+  if (row.guard !== relay.account) throw new Refusal('would_refuse', { message: 'this relay only funds vaults it guards' });
 
   const conf = settings(relay);
   const dispenser = dispenserOf(relay);
@@ -170,6 +188,7 @@ export async function fundsHandler(relay, request) {
   }
   if (claim.already) return json(200, { ok: true, txid: claim.txid, vout: 0, value: conf.sats, already: true, broadcast: null });
   try {
+    await refuseIfItHoldsACoin(relay, row);
     return await fund(relay, dispenser, fromHex(row.script_pubkey), vault, conf);
   } catch (err) {
     if (!err.keepClaim) await relay.state.call('fundedDrop', { vault, sats: conf.sats, now: relay.nowFn() }).catch(() => {});

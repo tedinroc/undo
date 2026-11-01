@@ -22,7 +22,7 @@ import { makeRelay } from '../functions/_relay/handler.mjs';
 import { p256Uncompressed } from '../functions/_relay/owner-check.mjs';
 import { StateClient } from '../functions/_relay/state-client.mjs';
 import { cancelArgs, cancelDigest, rotateArgs, rotateDigest } from '../lib/intents.mjs';
-import { RELAY_METHODS } from '../lib/relay-table.mjs';
+import { CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, OWNER_ALLOWANCE_NEAR, ownerAllowanceNeeded, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { RelayClient } from '../lib/relay-client.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
@@ -42,6 +42,8 @@ const NOW = Date.UTC(2026, 10, 1, 12, 0, 0);
 const BLOCK = base58Encode(label('block'));
 const ESPLORA = 'http://esplora.test';
 const RPC = 'http://rpc.test';
+const POLICY = { t_known_ms: 60_000, t_new_ms: 300_000, t_new_unguarded_ms: 600_000, hold_ms: 300_000, t_stuck_ms: 900_000, fee_cap_tx: 1000, fee_budget_24h: 2000, outflow_cap_24h: 1_000_000 };
+const BEAT = 'undo-test-only:beat';
 
 // ---------------------------------------------------------------- what a signed transaction says
 
@@ -101,6 +103,9 @@ function fakeWorld({ vaults = {}, requests = {} } = {}) {
     rpcDown: false,
     viewDown: false,
     utxos: [],
+    vaultCoins: {},
+    accessKeys: {},
+    account: { amount: `${10n ** 25n}`, storage_usage: 182 },
     posts: [],
     postRule: null,
     utxoStatus: 200,
@@ -121,7 +126,12 @@ function fakeWorld({ vaults = {}, requests = {} } = {}) {
         const txid = w.lastBuiltTxid(init.body);
         return new Response(txid);
       }
-      if (path.endsWith('/utxo')) return w.utxoStatus === 200 ? new Response(JSON.stringify(w.utxos)) : new Response('Bad Gateway', { status: w.utxoStatus });
+      if (path.endsWith('/utxo')) {
+        if (w.utxoStatus !== 200) return new Response('Bad Gateway', { status: w.utxoStatus });
+        // A vault's own coins, as against the dispenser's.
+        const vaultCoins = w.vaultCoins[path.split('/')[2]];
+        return new Response(JSON.stringify(vaultCoins ?? (path.includes('vault-address') ? [] : w.utxos)));
+      }
       return new Response('Transaction not found', { status: 404 });
     }
     if (w.rpcDown) throw new TypeError('network');
@@ -129,15 +139,18 @@ function fakeWorld({ vaults = {}, requests = {} } = {}) {
     if (method === 'block') return ok({ header: { hash: BLOCK, height: 1000, timestamp_nanosec: `${NOW}000000` } });
     if (method === 'query' && params.request_type === 'view_access_key') {
       const pub = params.public_key;
-      return ok({ nonce: nonceOf(pub), block_height: 1000 });
+      return ok({ nonce: nonceOf(pub), block_height: 1000, permission: 'FullAccess', ...w.accessKeys[pub] });
     }
+    if (method === 'query' && params.request_type === 'view_account') return ok({ block_height: 1000, ...w.account });
     if (method === 'query') {
       w.reads += 1;
       if (w.viewDown) throw new TypeError('network');
       const args = JSON.parse(new TextDecoder().decode(fromBase64(params.args_base64)));
       const value = params.method_name === 'vault' ? (vaults[args.vault] ?? null)
         : params.method_name === 'request' ? (requests[args.request] ?? null)
-          : params.method_name === 'instance' ? { sign_tgas: 30, callback_tgas: 10 } : null;
+          : params.method_name === 'instance' ? { sign_tgas: 30, callback_tgas: 10, policy: POLICY }
+            : params.method_name === 'check_propose' ? { tier: 'New', delay_ms: 300_000, fee: 300, unguarded: false } : null;
+      if (w.viewRefuses?.[params.method_name]) return ok({ error: w.viewRefuses[params.method_name], logs: [], block_height: 1000 });
       return ok({ result: [...utf8(JSON.stringify(value))], block_height: 1000, logs: [] });
     }
     if (method === 'send_tx') {
@@ -191,13 +204,16 @@ function relayWith(world, extra = {}) {
     IP_SALT: 'undo-test-only:salt',
     POW_BITS: 0,
     STATUS_CACHE_MS: 0,
+    KEY_CACHE_MS: 0,
+    BEAT_TOKEN: BEAT,
     UNDO_STATE: ns,
     ...extra,
   };
   const handler = makeRelay(env, { fetchFn: world.fetchFn, nowFn: () => world.now ?? NOW });
-  const post = async (path, body, { ip = '198.51.100.7', origin = null, raw = null } = {}) => {
+  const post = async (path, body, { ip = '198.51.100.7', origin = null, raw = null, beat = BEAT } = {}) => {
     const headers = { 'content-type': 'application/json', 'cf-connecting-ip': ip };
     if (origin) headers.origin = origin;
+    if (beat) headers['x-undo-beat'] = beat;
     const res = await handler(new Request(`https://site.test${path}`, { method: 'POST', headers, body: raw ?? JSON.stringify(body) }));
     return { status: res.status, cache: res.headers.get('cache-control'), body: await res.json() };
   };
@@ -205,7 +221,7 @@ function relayWith(world, extra = {}) {
     env,
     ns,
     relay: (method, args, opts = {}) => post('/api/relay', opts.pow === undefined ? { method, args } : { method, args, pow: opts.pow }, opts),
-    funds: (vault, opts) => post('/api/funds', { vault }, opts),
+    funds: (vault, opts) => post('/api/funds', { vault, pow: 0 }, opts),
     post,
     status: async () => {
       const res = await handler(new Request('https://site.test/api/relay'));
@@ -221,7 +237,8 @@ const passkey = await (async () => {
   return { soft, made, hex: toHex(made.pubkey) };
 })();
 
-const vaultRow = (over = {}) => ({ passkey: passkey.hex, passkey_nonce: 3, k_e_intent: null, active: true, script_pubkey: `0020${toHex(label('spk'))}`, ...over });
+const vaultRow = (over = {}) => ({ passkey: passkey.hex, passkey_nonce: 3, k_e_intent: null, active: true, script_pubkey: `0020${toHex(label('spk'))}`, guard: ACCOUNT, address: 'vault-address', spend_epoch: 2, spend_nonce: 0, k_s: toHex(ed25519.getPublicKey(label('ks'))), ...over });
+const requestRow = (over = {}) => ({ inputs: [{}], status: 'Pending', epoch: 2, unlock: NOW - 1000, expires_at: NOW + 3_600_000, ...over });
 
 async function rotateBody({ nonce = 3, digestNonce = nonce, soft = passkey.soft } = {}) {
   const newKs = ed25519.getPublicKey(label('new-ks'));
@@ -433,13 +450,14 @@ test('relay: the transaction is the relay\'s own: exact gas, this contract, and 
 });
 
 test('relay: execute reads its input count and takes the gas that count needs, and refuses a request that does not exist', async () => {
-  const world = fakeWorld({ requests: { 7: { inputs: [{}, {}, {}] } } });
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 7: requestRow({ inputs: [{}, {}, {}] }) } });
   const r = relayWith(world);
   assert.equal((await r.relay('execute', { vault: VAULT, request: 7 })).body.ok, true);
   assert.deepEqual(decodeTx(world.sent[0]).actions.map((a) => [a.method, a.tgas]), [['execute', 3 * (30 + 10 + 4) + 6]]);
   const none = await r.relay('execute', { vault: VAULT, request: 8 });
   assert.equal(none.body.code, 'bad_request');
   assert.equal(world.sent.length, 1);
+  assert.equal((await r.state.call('status', { now: NOW })).spent.general, 3 * RELAY_METHODS.execute.costMicro, 'three inputs cost three, and the refused one nothing');
 });
 
 test('relay: create_vault checks guard and proof of work before any cost, and sends create and heartbeat in one batch', async () => {
@@ -451,7 +469,7 @@ test('relay: create_vault checks guard and proof of work before any cost, and se
   const { checkPow, solvePow } = await import('../lib/pow.mjs');
   const keys = newVaultKeys({ seed: label('seed'), cold: label('cold') });
   const built = await buildCreateArgs({
-    contract: CONTRACT, keys, passkeyPub: made.pubkey, rpIdHash: rpIdHashOf('site.test'), km: secp256k1.getPublicKey(label('km'), true), guard: ACCOUNT, policy: { t_known_ms: 60_000, t_new_ms: 300_000, t_new_unguarded_ms: 600_000, hold_ms: 300_000, t_stuck_ms: 900_000, fee_cap_tx: 1000, fee_budget_24h: 2000, outflow_cap_24h: 1_000_000 }, csv: 6, expiresAt: NOW + 60_000,
+    contract: CONTRACT, keys, passkeyPub: made.pubkey, rpIdHash: rpIdHashOf('site.test'), km: secp256k1.getPublicKey(label('km'), true), guard: ACCOUNT, policy: POLICY, csv: 6, expiresAt: NOW + 60_000,
     assert: async (digest) => (await getAssertion({ credentials: soft, digest, rpId: 'site.test' })).args,
   });
   const noPow = await r.relay('create_vault', built.args);
@@ -473,7 +491,7 @@ test('relay: create_vault checks guard and proof of work before any cost, and se
 });
 
 test('relay: a stale nonce re-signs with the node\'s number, up to twice, and then says so and gives the charge back', async () => {
-  const world = fakeWorld();
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow() } });
   const r = relayWith(world);
   world.nonces.set(GENERAL.publicKey, 100);
   assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true);
@@ -484,7 +502,7 @@ test('relay: a stale nonce re-signs with the node\'s number, up to twice, and th
   assert.equal(decodeTx(world.sent.at(-1)).nonce, 5001);
   world.invalidNonceTimes = 3;
   const spentBefore = (await r.state.call('status', { now: NOW })).spent.general;
-  const gone = await r.relay('propose_btc', { vault: VAULT, inputs: [{ txid: VAULT, vout: 0, value: 2000 }], to: '0014', amount: 1, change: null, half_sigs: ['ab'.repeat(65)], nonce: 0, expires_at: 1, spend_sig: 'ab'.repeat(64), memo: null });
+  const gone = await r.relay('execute', { vault: VAULT, request: 1 });
   assert.equal(gone.status, 503);
   assert.equal(gone.body.code, 'stale_nonce');
   assert.ok(gone.body.verbatim.includes('InvalidNonce'), 'the node\'s words');
@@ -994,3 +1012,335 @@ for (const script of ['worker/undo-cron/deploy.sh', 'site/deploy.sh']) {
     }
   });
 }
+
+// ---------------------------------------------------------------- what the attack on the relay found
+
+const spentGeneral = async (r) => (await r.state.call('status', { now: NOW })).spent.general;
+
+test('attack 1: a well-signed call that cannot work spends nothing of the owner ceiling', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world);
+  const newKs = ed25519.getPublicKey(label('new-ks'));
+  const rotate = async ({ nonce = 3, expiresAt = NOW + 60_000 }) => {
+    const digest = rotateDigest({ contract: CONTRACT, vaultHex: VAULT, newKs, nonce, expiresAt });
+    const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
+    return rotateArgs({ vaultHex: VAULT, newKs, nonce, expiresAt, assertion: args });
+  };
+  const expired = await r.relay('cancel_all_and_rotate', await rotate({ expiresAt: 1 }));
+  assert.deepEqual([expired.status, expired.body.code, expired.body.message], [422, 'assertion_refused', 'that intent has expired']);
+  const ahead = await r.relay('cancel_all_and_rotate', await rotate({ nonce: 1003 }));
+  assert.deepEqual([ahead.status, ahead.body.message], [422, 'that passkey nonce is too far ahead']);
+  assert.equal(world.sent.length, 0, 'the owner key signed neither');
+  assert.equal(r.ns.calls.length, 0, 'and nothing was charged');
+  assert.equal((await r.relay('cancel_all_and_rotate', await rotate({ nonce: 5 }))).body.ok, true, 'a node two behind is still a lagging node');
+});
+
+test('attack 1: a cancel already past cancelling is refused before the owner key signs', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 5: requestRow({ status: 'Signed' }) } });
+  const r = relayWith(world);
+  const digest = cancelDigest({ contract: CONTRACT, vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000 });
+  const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
+  const out = await r.relay('cancel', cancelArgs({ vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000, assertion: args }));
+  assert.equal(out.body.message, 'that request is past cancelling');
+  assert.equal(world.sent.length, 0);
+});
+
+test('attack 1: one vault gets twelve owner sends a day, whichever method, and someone else\'s cancel still lands', async () => {
+  const other = 'ef'.repeat(32);
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow(), [other]: vaultRow() } });
+  const r = relayWith(world);
+  let clock = NOW;
+  Object.defineProperty(world, 'now', { get: () => clock });
+  const newKs = ed25519.getPublicKey(label('new-ks'));
+  const rotate = async (vaultHex) => {
+    const expiresAt = clock + 60_000;
+    const digest = rotateDigest({ contract: CONTRACT, vaultHex, newKs, nonce: 3, expiresAt });
+    const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
+    return rotateArgs({ vaultHex, newKs, nonce: 3, expiresAt, assertion: args });
+  };
+  for (let i = 0; i < RELAY_METHODS.cancel_all_and_rotate.perVaultDay; i += 1) {
+    assert.equal((await r.relay('cancel_all_and_rotate', await rotate(VAULT))).body.ok, true, `send ${i}`);
+    clock += 61_000;
+  }
+  const over = await r.relay('cancel_all_and_rotate', await rotate(VAULT));
+  assert.deepEqual([over.status, over.body.code], [429, 'rate_limited']);
+  assert.ok(over.body.retry_after_s > 60, 'until the day turns');
+  assert.equal(over.body.bucket, null, 'a limit, not the ceiling');
+  assert.equal((await r.relay('cancel_all_and_rotate', await rotate(other))).body.ok, true);
+  clock += 86_400_000;
+  assert.equal((await r.relay('cancel_all_and_rotate', await rotate(VAULT))).body.ok, true, 'the next day it may send again');
+});
+
+test('attack 4: the owner key\'s allowance covers every send that can be in flight at the default ceiling', () => {
+  const needed = ownerAllowanceNeeded(CEILING_OWNER_DEFAULT_MICRO);
+  assert.ok(needed > 2, 'the old 2 NEAR would not have done');
+  assert.ok(OWNER_ALLOWANCE_NEAR >= needed, `${OWNER_ALLOWANCE_NEAR} NEAR allowance, ${needed} NEAR can be held at once`);
+});
+
+test('attack 5: junk a contract would refuse is refused first, in the contract\'s words when it gave any, and costs no ceiling', async () => {
+  const ks = label('ks');
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow(), [`${'cd'.repeat(32)}`]: vaultRow({ active: false }) }, requests: {} });
+  const r = relayWith(world);
+  const { intentDigest, argBytes, SPEND_TAG, signEd25519 } = await import('../../tools/lib/intent.mjs');
+  const coin = { txid: 'ab'.repeat(32), vout: 0, value: 2000 };
+  const propose = (over = {}) => {
+    const fields = { vault: VAULT, inputs: [coin], to: `0014${'11'.repeat(20)}`, amount: 1500, change: null, half_sigs: ['ab'.repeat(65)], nonce: 0, expires_at: NOW + 60_000, memo: null, ...over };
+    const digest = intentDigest({ tag: SPEND_TAG, contract: CONTRACT, vault: fromHex(fields.vault), method: 'propose_btc', args: argBytes.propose_btc({ inputs: fields.inputs, to: fromHex(fields.to), amount: fields.amount, change: fields.change, memo: fields.memo }), expiresAt: fields.expires_at, nonce: fields.nonce });
+    return { ...fields, spend_sig: toHex(signEd25519(digest, ks)) };
+  };
+  const refusals = [
+    [propose({ vault: 'ef'.repeat(32) }), 'no such vault'],
+    [propose({ vault: 'cd'.repeat(32) }), 'that vault is not active yet'],
+    [{ ...propose(), spend_sig: 'ab'.repeat(64) }, 'that proposal is not signed by this vault\'s spend key'],
+    [propose({ expires_at: 1 }), 'that intent has expired'],
+  ];
+  for (const [args, words] of refusals) {
+    const out = await r.relay('propose_btc', args);
+    assert.deepEqual([out.status, out.body.code, out.body.message], [422, 'would_refuse', words]);
+  }
+  const usedNonce = relayWith(fakeWorld({ vaults: { [VAULT]: vaultRow({ spend_nonce: 4 }) } }));
+  assert.equal((await usedNonce.relay('propose_btc', propose({ nonce: 3 }))).body.message, 'that spend nonce was already used');
+  world.viewRefuses = { check_propose: 'wasm execution failed with error: Smart contract panicked: OutpointBusy' };
+  const busy = await r.relay('propose_btc', propose());
+  assert.deepEqual([busy.body.code, busy.body.verbatim], ['would_refuse', 'wasm execution failed with error: Smart contract panicked: OutpointBusy'], 'the contract\'s own words, untouched');
+  world.viewRefuses = null;
+  assert.equal(world.sent.length, 0, 'the general key signed none of them');
+  assert.equal(await spentGeneral(r), 0, 'and every charge came back');
+  assert.equal((await r.relay('propose_btc', propose())).body.ok, true, 'the real one goes');
+  assert.equal(await spentGeneral(r), RELAY_METHODS.propose_btc.costMicro);
+});
+
+test('attack 5: activate on a vault that is missing or already active goes nowhere', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow(), [`${'cd'.repeat(32)}`]: vaultRow({ active: false }) } });
+  const r = relayWith(world);
+  assert.equal((await r.relay('activate', { vault: 'ef'.repeat(32) })).body.message, 'no such vault');
+  assert.equal((await r.relay('activate', { vault: VAULT })).body.message, 'that vault is already active');
+  assert.equal(world.sent.length, 0);
+  assert.equal((await r.relay('activate', { vault: 'cd'.repeat(32) })).body.ok, true);
+});
+
+test('attack 5: execute goes only when it can run: not early, not cancelled, not signed, not expired', async () => {
+  const world = fakeWorld({
+    vaults: { [VAULT]: vaultRow() },
+    requests: {
+      1: requestRow({ unlock: NOW + 281_000 }),
+      2: requestRow({ epoch: 1 }),
+      3: requestRow({ status: 'Signed' }),
+      4: requestRow({ expires_at: NOW - 1 }),
+      5: requestRow({ unlock: NOW + 3000 }),
+      6: requestRow({ status: 'Signing', unlock: NOW + 281_000, epoch: 1 }),
+    },
+  });
+  const r = relayWith(world);
+  const early = await r.relay('execute', { vault: VAULT, request: 1 });
+  assert.deepEqual([early.status, early.body.code, early.body.message, early.body.retry_after_s], [422, 'would_refuse', 'that request has not unlocked', 281]);
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 2 })).body.message, 'that request was cancelled');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 3 })).body.message, 'that request is already signed');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 4 })).body.message, 'that request has expired');
+  assert.equal(world.sent.length, 0);
+  assert.equal(await spentGeneral(r), 0);
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 5 })).body.ok, true, 'a page at zero, a moment ahead of this node');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 6 })).body.ok, true, 'a sign call that died is picked up again');
+});
+
+test('attack 5: a creation its spend key did not sign, or of a vault that exists, is refused and costs nothing', async () => {
+  const world = fakeWorld();
+  const r = relayWith(world, { POW_BITS: 0 });
+  const soft = softCredentials({ secret: label('c5'), origin: 'https://site.test', rpId: 'site.test' });
+  const made = await createPasskey({ credentials: soft, rpId: 'site.test' });
+  const { buildCreateArgs, newVaultKeys, rpIdHashOf } = await import('../lib/intents.mjs');
+  const keys = newVaultKeys({ seed: label('seed5'), cold: label('cold5') });
+  const built = await buildCreateArgs({
+    contract: CONTRACT, keys, passkeyPub: made.pubkey, rpIdHash: rpIdHashOf('site.test'), km: secp256k1.getPublicKey(label('km'), true), guard: ACCOUNT, policy: POLICY, csv: 6, expiresAt: NOW + 60_000,
+    assert: async (digest) => (await getAssertion({ credentials: soft, digest, rpId: 'site.test' })).args,
+  });
+  const badPop = await r.relay('create_vault', { ...built.args, pop_s: 'ab'.repeat(64) }, { pow: 0 });
+  assert.deepEqual([badPop.status, badPop.body.message], [422, 'that creation is not signed by its spend key']);
+  assert.equal(r.ns.calls.length, 0, 'before the state store');
+  const old = await r.relay('create_vault', { ...built.args, expires_at: 1 }, { pow: 0 });
+  assert.equal(old.body.message, 'that intent has expired');
+  const taken = fakeWorld({ vaults: { [built.vaultHex]: vaultRow() } });
+  const again = relayWith(taken, { POW_BITS: 0 });
+  const replay = await again.relay('create_vault', built.args, { pow: 0 });
+  assert.equal(replay.body.message, 'that vault exists');
+  assert.equal(taken.sent.length, 0);
+  assert.equal(await spentGeneral(again), 0);
+  assert.equal((await r.relay('create_vault', built.args, { pow: 0 })).body.ok, true, 'the real one goes');
+});
+
+test('attack 5: vaults stop at their share of the general ceiling, and calls on existing vaults keep the rest', async () => {
+  const create = RELAY_METHODS.create_vault.costMicro;
+  const ceiling = Math.ceil((create * 1.5) / CREATE_SHARE);
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow() } });
+  const r = relayWith(world, { CEILING_GENERAL_MICRO: ceiling });
+  await r.state.call('charge', { key: 'general', method: 'create_vault', ipHash: 'x', vault: null, now: NOW, ceiling });
+  const s = (await r.status()).body.general;
+  assert.deepEqual([s.up, s.why, s.calls_fit], [false, 'daily_ceiling', true], 'no new vault fits, and calls do');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true);
+});
+
+test('attack 6: status says when the owner key cannot pay, and a dead RPC claims nothing', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world);
+  assert.deepEqual([(await r.status()).body.owner.up, (await r.status()).body.owner.why], [true, null]);
+  world.accessKeys[OWNER.publicKey] = { permission: { FunctionCall: { allowance: `${10n ** 22n}`, receiver_id: CONTRACT, method_names: [] } } };
+  assert.deepEqual([(await r.status()).body.owner.up, (await r.status()).body.owner.why], [false, 'owner_key_low']);
+  world.accessKeys[OWNER.publicKey] = { permission: { FunctionCall: { allowance: `${10n ** 24n}`, receiver_id: CONTRACT, method_names: [] } } };
+  assert.equal((await r.status()).body.owner.up, true);
+  world.account = { amount: `${6n * 10n ** 22n}`, storage_usage: 2000 };
+  assert.deepEqual([(await r.status()).body.owner.up, (await r.status()).body.owner.why], [false, 'owner_key_low'], '0.06 NEAR with 0.02 of it locked for storage');
+  world.account = { amount: `${10n ** 25n}`, storage_usage: 182 };
+  world.accessKeys[OWNER.publicKey] = { error: 'access key does not exist', permission: undefined };
+  assert.deepEqual([(await r.status()).body.owner.up, (await r.status()).body.owner.why], [false, 'owner_key_missing']);
+  delete world.accessKeys[OWNER.publicKey];
+  const unlimited = { permission: { FunctionCall: { allowance: null, receiver_id: CONTRACT, method_names: [] } } };
+  world.accessKeys[OWNER.publicKey] = unlimited;
+  assert.equal((await r.status()).body.owner.up, true, 'a function-call key with no allowance limit');
+  const dead = relayWith(Object.assign(fakeWorld(), { rpcDown: true }));
+  assert.deepEqual([(await dead.status()).body.owner.up, (await dead.status()).body.owner.why], [true, null], 'it does not know, so it does not say');
+});
+
+test('attack 6: a tap refused for allowance turns the status off, until a read says otherwise', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world, { KEY_CACHE_MS: 30_000 });
+  assert.equal((await r.status()).body.owner.up, true);
+  world.refuseWith = { InvalidAccessKeyError: { NotEnoughAllowance: { allowance: '1', cost: '2' } } };
+  const out = await r.relay('cancel_all_and_rotate', await rotateBody());
+  assert.deepEqual([out.status, out.body.code], [422, 'tx_refused']);
+  assert.ok(out.body.verbatim.includes('NotEnoughAllowance'));
+  assert.deepEqual([(await r.status()).body.owner.up, (await r.status()).body.owner.why], [false, 'owner_key_low']);
+  world.refuseWith = null;
+  world.now = NOW + 31_000;
+  assert.equal((await r.status()).body.owner.up, true, 'the next read clears it');
+});
+
+test('attack 7: heartbeat is off the public list. A stranger can\'t make a vault read guard online', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world);
+  for (const beat of [null, 'wrong', `${BEAT}x`]) {
+    const out = await r.relay('heartbeat', { vault: VAULT }, { beat });
+    assert.deepEqual([out.status, out.body.code], [400, 'unknown_method'], String(beat));
+  }
+  assert.equal(world.sent.length, 0);
+  assert.equal(r.ns.calls.length, 0);
+  assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true, 'the holder of the binding still can, before a take');
+  const unset = relayWith(world, { BEAT_TOKEN: undefined });
+  assert.equal((await unset.relay('heartbeat', { vault: VAULT }, { beat: 'undefined' })).body.code, 'unknown_method', 'no binding, no beat');
+});
+
+test('attack 9: with the state store down the owner key still has a limit per vault in this isolate', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const ns = localStateNamespace();
+  ns.down = true;
+  const r = relayWith(world, { UNDO_STATE: ns });
+  const good = await rotateBody();
+  const answers = [];
+  for (let i = 0; i < 12; i += 1) answers.push((await r.relay('cancel_all_and_rotate', good)).body);
+  assert.equal(answers.filter((a) => a.ok && a.degraded).length, RELAY_METHODS.cancel_all_and_rotate.perVaultMinute);
+  assert.ok(answers.slice(RELAY_METHODS.cancel_all_and_rotate.perVaultMinute).every((a) => a.code === 'rate_limited'));
+  world.now = NOW + 61_000;
+  assert.equal((await r.relay('cancel_all_and_rotate', good)).body.ok, true, 'and it clears');
+  const expired = await r.relay('cancel_all_and_rotate', { ...good, expires_at: 1 });
+  assert.equal(expired.body.code, 'assertion_refused', 'the checks run with the store down too');
+});
+
+test('attack 10: funds only for a vault this relay guards, holding no coin, with its own proof of work', async () => {
+  const { checkPow, fundsPowTarget, solvePow } = await import('../lib/pow.mjs');
+  const foreignWorld = fakeWorld({ vaults: { [VAULT]: vaultRow({ guard: 'someone.else' }) } });
+  foreignWorld.utxos = fundsWorld().utxos;
+  const foreign = relayWith(foreignWorld);
+  const wrong = await foreign.funds(VAULT);
+  assert.deepEqual([wrong.status, wrong.body.code, wrong.body.message], [422, 'would_refuse', 'this relay only funds vaults it guards']);
+  assert.equal((await foreign.state.call('status', { now: NOW })).spent.funds, 0);
+
+  const holding = fundsWorld();
+  holding.vaultCoins['vault-address'] = [{ txid: 'ab'.repeat(32), vout: 0, value: 2000 }];
+  const r = relayWith(holding);
+  const has = await r.funds(VAULT);
+  assert.deepEqual([has.body.code, has.body.message], ['would_refuse', 'that vault already holds a coin']);
+  assert.equal(holding.posts.length, 0);
+  assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 0, 'the ceiling got its sats back');
+
+  const worked = relayWith(fundsWorld(), { POW_BITS: 10 });
+  const none = await worked.post('/api/funds', { vault: VAULT });
+  assert.equal(none.body.code, 'bad_request', 'the work is not optional');
+  let bad = 0;
+  while (checkPow(fundsPowTarget(VAULT), bad, 10)) bad += 1;
+  assert.equal((await worked.post('/api/funds', { vault: VAULT, pow: bad })).body.code, 'pow_bad');
+  const createWork = await solvePow(VAULT, 10);
+  if (!checkPow(fundsPowTarget(VAULT), createWork, 10)) assert.equal((await worked.post('/api/funds', { vault: VAULT, pow: createWork })).body.code, 'pow_bad', 'the work that made the vault does not pay it');
+});
+
+test('attack 11: one /64 is one address however it is written', () => {
+  const same = ['2a01:4f8::1:1', '2a01:4f8::2:1', '2a01:4f8:0:0::3', '2a01:04f8:0000:0000:0000:0000:0000:0009', '2A01:4F8::A'];
+  assert.deepEqual([...new Set(same.map(limitAddress))], ['2a01:4f8:0:0']);
+  assert.equal(limitAddress('2a01:4f8:c17:1234::1'), '2a01:4f8:c17:1234');
+  assert.equal(limitAddress('2a01:4f8:c17:1234:aa:bb:cc:2'), '2a01:4f8:c17:1234');
+  assert.notEqual(limitAddress('2a01:4f8:0:1::1'), limitAddress('2a01:4f8:0:2::1'));
+  assert.equal(limitAddress('::1'), '0:0:0:0');
+  assert.equal(limitAddress('::ffff:1.2.3.4'), '1.2.3.4', 'a v4 address in v6 clothes counts as that v4 address');
+  assert.equal(limitAddress('::ffff:0102:0304'), '1.2.3.4');
+  assert.equal(limitAddress('1.2.3.4'), '1.2.3.4');
+  assert.equal(limitAddress('not an address'), 'not an address');
+  assert.equal(limitAddress('1:2:3'), '1:2:3', 'too few to be an address: left alone');
+  assert.equal(limitAddress(null), 'unknown');
+});
+
+test('attack 12: a chunked body is read only up to the cap', async () => {
+  const world = fakeWorld();
+  const r = relayWith(world);
+  const handler = makeRelay(r.env, { fetchFn: world.fetchFn, nowFn: () => NOW });
+  let pulled = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      pulled += 1;
+      if (pulled > 10_000) controller.close();
+      else controller.enqueue(new Uint8Array(1024));
+    },
+  });
+  const res = await handler(new Request('https://site.test/api/relay', { method: 'POST', headers: { 'content-type': 'application/json' }, body, duplex: 'half' }));
+  const out = await res.json();
+  assert.deepEqual([res.status, out.message], [400, 'the body is too large']);
+  assert.ok(pulled < 40, `read ${pulled} KB of 10,000 KB before stopping`);
+  const fits = new Request('https://site.test/api/relay', { method: 'POST', body: new ReadableStream({ start(c) { c.enqueue(utf8('{"method":"x",')); c.enqueue(utf8('"args":{}}')); c.close(); } }), duplex: 'half' });
+  assert.equal((await (await handler(fits)).json()).code, 'unknown_method', 'a body in pieces still reads whole');
+});
+
+test('attack 13: a method is a string. An array or an object is not on the list, whatever it coerces to', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world);
+  const digest = cancelDigest({ contract: CONTRACT, vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000 });
+  const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
+  for (const method of [['cancel'], ['create_vault'], [['cancel_all_and_rotate']], { toString: 1 }, 5, null]) {
+    const out = await r.post('/api/relay', { method, args: cancelArgs({ vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000, assertion: args }) });
+    assert.deepEqual([out.status, out.body.code], [400, 'unknown_method'], JSON.stringify(method));
+  }
+  assert.equal(world.sent.length, 0);
+  assert.equal(r.ns.calls.length, 0);
+});
+
+test('attack 15: execute costs per input, and an execute past the ceiling gives back what it was charged', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow({ inputs: Array(16).fill({}) }) } });
+  const cost = RELAY_METHODS.execute.costMicro;
+  const r = relayWith(world);
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true);
+  assert.equal(await spentGeneral(r), 16 * cost);
+  const tight = relayWith(fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow({ inputs: Array(16).fill({}) }) } }), { CEILING_GENERAL_MICRO: 4 * cost });
+  const over = await tight.relay('execute', { vault: VAULT, request: 1 });
+  assert.deepEqual([over.body.code, over.body.bucket], ['daily_ceiling', 'general']);
+  assert.equal(await spentGeneral(tight), 0);
+});
+
+test('state: a day limit per vault, across the key\'s methods, and it outlives the two-hour prune', async () => {
+  const ns = localStateNamespace();
+  const state = new StateClient(ns);
+  const charge = (method, now) => state.call('charge', { key: 'owner', method, vault: VAULT, now, ceiling: 1e9 });
+  let at = NOW;
+  for (let i = 0; i < 12; i += 1) {
+    assert.equal((await charge(i % 2 ? 'cancel' : 'cancel_all_and_rotate', at)).ok, true, `send ${i}`);
+    at += 11 * 60_000;
+  }
+  const over = await charge('cancel', at);
+  assert.deepEqual([over.ok, over.code], [false, 'rate_limited']);
+  assert.ok(over.retry_after_s > 0 && over.retry_after_s <= 86_400);
+});

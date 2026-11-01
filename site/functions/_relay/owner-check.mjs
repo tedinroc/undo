@@ -2,6 +2,9 @@
 // `cancel`s and use up a victim vault's per-minute limit, or the whole owner ceiling, for free, and that is
 // the one thing the owner key exists to prevent. Each check is one the contract makes too, in a subset:
 // nothing here may refuse a cancel the contract would take. A failed read lets the cancel through.
+//
+// A signature alone is not enough: anyone can sign for their own vault. So a call that is well signed and still
+// cannot work is refused as well: an expired intent, a nonce from far ahead, a request already past cancelling.
 import { COLD_TAG, argBytes, intentDigest } from '../../../tools/lib/intent.mjs';
 import { concat, fromHex } from '../../../tools/lib/bytes.mjs';
 import { secp256k1, sha256 } from '../../../tools/lib/crypto.mjs';
@@ -68,11 +71,17 @@ function coldProblem(args, contract, vault) {
   return secp256k1.verify(signature.slice(0, 64), digest, fromHex(vault.k_e_intent), { prehash: false, lowS: true }) ? null : 'cold key: bad signature';
 }
 
+// The relay's clock against the chain's. The contract is the one that decides at the edge.
+const EXPIRY_GRACE_MS = 60_000;
+// A node may be a little behind on the nonce, never a thousand rotations.
+const NONCE_AHEAD_LIMIT = 2;
+
 /**
  * Null, or why the owner key will not be spent on this. `read(method, args)` reads a view and throws when it
- * cannot. The vault's passkey is read, not taken from the caller.
+ * cannot. The vault's passkey is read, not taken from the caller. `now` is this machine's clock.
  */
-export async function ownerRefusal({ method, args, contract, read }) {
+export async function ownerRefusal({ method, args, contract, read, now }) {
+  if (args.expires_at + EXPIRY_GRACE_MS < now) return 'that intent has expired';
   const passkey = method === 'cancel_all_and_rotate' ? args.assertion : args.auth.Passkey ?? null;
   if (passkey) {
     const digest = method === 'cancel_all_and_rotate'
@@ -90,9 +99,12 @@ export async function ownerRefusal({ method, args, contract, read }) {
   if (vault === null) return 'no such vault';
   // A nonce ahead of what this node shows is a lagging node. One behind it has been used.
   if (method === 'cancel_all_and_rotate' && args.nonce < vault.passkey_nonce) return 'passkey nonce already used';
+  if (method === 'cancel_all_and_rotate' && args.nonce > vault.passkey_nonce + NONCE_AHEAD_LIMIT) return 'that passkey nonce is too far ahead';
   if (method === 'cancel') {
     try {
-      if ((await read('request', { vault: args.vault, request: args.request })) === null) return 'no such request';
+      const request = await read('request', { vault: args.vault, request: args.request });
+      if (request === null) return 'no such request';
+      if (request.status !== undefined && request.status !== 'Pending') return 'that request is past cancelling';
     } catch {
       // Let it through.
     }

@@ -49,7 +49,7 @@ const CASES = {
   'whole relay POST, heartbeat, I/O answered from memory': { path: '/relay', n: 500, body: heartbeat },
   'whole relay POST, cancel with its P-256 check, I/O from memory': { path: '/relay', n: 500, body: cancel },
   'funding transaction (noble secp256k1, 1 input)': { path: '/funding', n: 100 },
-  'whole funds POST, I/O answered from memory': { path: '/funds', n: 100, body: { body: JSON.stringify({ vault: vaultHex }), view: { active: true, script_pubkey: `0020${'07'.repeat(32)}` } } },
+  'whole funds POST, I/O answered from memory': { path: '/funds', n: 100, body: { body: JSON.stringify({ vault: vaultHex, pow: 0 }), view: { active: true, script_pubkey: `0020${'07'.repeat(32)}` } } },
 };
 
 const call = (mf, path, n, body) => mf.dispatchFetch(`http://x${path}?n=${n}`, body ? { method: 'POST', body: JSON.stringify(body) } : {});

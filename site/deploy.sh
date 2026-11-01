@@ -23,6 +23,9 @@ if [ "${1:-}" = "--check-only" ]; then
   exit 0
 fi
 node build.mjs --config config/testnet.json
+if grep -q '"h7": true' config/testnet.json; then
+  echo "deploy: note: test mode is on in this build (#h7=1). Set \"h7\": false for the final deploy." >&2
+fi
 "$REPO/scripts/outward-check.sh" --bundle "$HERE/dist"
 # What the Functions become, scanned before it goes: a bundle can carry a path that no source file does.
 scan="$(mktemp -d "${TMPDIR:-/tmp}/undo-functions.XXXXXX")"

@@ -80,7 +80,7 @@ export class RelayClient {
   }
 
   /** The vault's address comes from the contract, on the server, so nobody can name another payee. */
-  fund(vault) {
-    return this.post(this.funds, { vault });
+  fund(vault, { pow = 0 } = {}) {
+    return this.post(this.funds, { vault, pow });
   }
 }

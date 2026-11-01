@@ -18,6 +18,9 @@ function leadingZeroBits(digest) {
 
 const digestOf = (vaultHex, nonce) => sha256(encoder.encode(`undo-pow-v1:${vaultHex}:${nonce}`));
 
+/** What /api/funds' work is over, so the work that made a vault cannot also pay out a coin to it. */
+export const fundsPowTarget = (vaultHex) => `funds:${vaultHex}`;
+
 export const checkPow = (vaultHex, nonce, bits) => Number.isSafeInteger(nonce) && nonce >= 0 && leadingZeroBits(digestOf(vaultHex, nonce)) >= bits;
 
 /** Yields between batches, so a phone keeps drawing while it works. */
