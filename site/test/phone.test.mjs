@@ -1,0 +1,949 @@
+// The phone page in one headless Chrome with a virtual authenticator, against the real wasm, the local relay and
+// regtest. Labelled [mock-signer] [virtual authenticator]: nothing here says anything about a real phone or Face ID.
+// Set PHONE_SHOTS to a folder to keep 390x844 screenshots.
+import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { after, before, test } from 'node:test';
+import { fromHex, toHex } from '../../tools/lib/bytes.mjs';
+import { sha256 } from '../../tools/lib/crypto.mjs';
+import { action, failureOf, returnValue, TGAS } from '../../tools/lib/near.mjs';
+import { sendEverything } from '../lib/bitcoin.mjs';
+import { base64ToBytes } from './phone-helpers.mjs';
+import { buildCreateArgs, buildPropose, newVaultKeys, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
+import { NearReader } from '../lib/near-read.mjs';
+import { CREATE_DEPOSIT_MILLI, executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
+import { contractViews, derivedKey } from '../lib/views.mjs';
+import { chromeAvailable, startChrome } from './chrome.mjs';
+import { stageAvailable, startStage } from './stage.mjs';
+
+const skip = chromeAvailable() && stageAvailable() ? false : 'needs Chrome, NEAR_SANDBOX_BIN_PATH and UNDO_WASM_DIR';
+const label = (text) => sha256(new TextEncoder().encode(`undo-test-only:phone:${text}`));
+const SHOTS = process.env.PHONE_SHOTS ?? null;
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+let stage;
+let browser;
+let cdp;
+let reader;
+let views;
+let instance;
+let counter = 0;
+const pausedHandlers = new Set();
+let bootScripts = [];
+let authenticatorId;
+
+// Chrome's virtual authenticator holds three resident keys and then refuses, so each scenario starts it empty.
+const emptyAuthenticator = () => cdp.send('WebAuthn.clearCredentials', { authenticatorId });
+
+before(async () => {
+  if (skip) return;
+  stage = await startStage({ miner: false, softPasskey: false, relayEnv: { STATUS_CACHE_MS: 0 } });
+  reader = new NearReader({ urls: stage.config.rpc, timeoutMs: 15_000 });
+  views = contractViews(reader, stage.contract);
+  instance = await views.instance();
+  browser = await startChrome({ width: 390, height: 844, scale: 2 });
+  ({ cdp } = browser);
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  await cdp.send('WebAuthn.enable');
+  ({ authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } }));
+  cdp.ws.addEventListener('message', (event) => {
+    const data = JSON.parse(event.data);
+    if (data.method === 'Fetch.requestPaused') for (const handler of pausedHandlers) handler(data.params);
+  });
+}, { timeout: 180_000 });
+
+after(async () => {
+  await browser?.stop();
+  await stage?.stop();
+});
+
+// ---------------------------------------------------------------- driving Chrome
+
+const stateOf = () => cdp.page('return document.documentElement.dataset.state;');
+
+async function waitFor(what, fn, timeoutMs = 25_000) {
+  const end = Date.now() + timeoutMs;
+  let last;
+  while (Date.now() < end) {
+    last = await fn();
+    if (last) return last;
+    await sleep(120);
+  }
+  const text = await cdp.page('return document.body.innerText;').catch(() => '?');
+  throw new Error(`never saw ${what}. State ${await stateOf().catch(() => '?')}. Screen: ${text}`);
+}
+
+const waitState = (id, timeoutMs) => waitFor(`state ${id}`, async () => (await stateOf()) === id, timeoutMs);
+
+const textOf = (selector) => cdp.page(`return document.querySelector(${JSON.stringify(selector)})?.innerText ?? null;`);
+const exists = (selector) => cdp.page(`return Boolean(document.querySelector(${JSON.stringify(selector)}));`);
+
+async function clickOn(selector) {
+  const box = await cdp.page(`const r = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect(); return r ? { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height } : null;`);
+  assert.ok(box, `no ${selector} on the screen`);
+  assert.ok(box.y >= 0 && box.y <= 844, `${selector} is off the 844 px screen at ${box.y}`);
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: box.x, y: box.y });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 });
+  return box;
+}
+
+async function shot(name) {
+  if (!SHOTS) return;
+  mkdirSync(SHOTS, { recursive: true });
+  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
+  writeFileSync(join(SHOTS, `${name}.png`), Buffer.from(data, 'base64'));
+}
+
+/** A fresh document, so a fragment-only change cannot leave the last page running. */
+async function go(path, fields = {}, { raw = null } = {}) {
+  await cdp.send('Page.navigate', { url: 'about:blank' });
+  await sleep(50);
+  await cdp.send('Page.navigate', { url: raw ?? stage.pageUrl(path, fields) });
+  await waitFor('the page to start', () => cdp.page('return document.readyState === "complete" && document.documentElement.dataset.state !== undefined;').catch(() => false));
+}
+
+async function reload() {
+  await cdp.send('Page.reload');
+  await sleep(150);
+  await waitFor('a reload', () => cdp.page('return document.readyState === "complete" && document.documentElement.dataset.state !== "boot";').catch(() => false));
+}
+
+/** Runs in every new document until `undo` is called: what a blocked or odd browser looks like. */
+async function inject(source) {
+  const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source });
+  bootScripts.push(identifier);
+  return identifier;
+}
+
+async function clearInjected() {
+  for (const identifier of bootScripts) await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+  bootScripts = [];
+}
+
+/** While `body` runs, requests matching `pattern` go to `answer`. Returning null lets one through. */
+async function intercept(pattern, answer, body) {
+  const handler = async (params) => {
+    const out = await answer(params.request);
+    if (out === null) await cdp.send('Fetch.continueRequest', { requestId: params.requestId });
+    else if (out === 'fail') await cdp.send('Fetch.failRequest', { requestId: params.requestId, errorReason: 'ConnectionFailed' });
+    else {
+      await cdp.send('Fetch.fulfillRequest', {
+        requestId: params.requestId,
+        responseCode: out.status,
+        responseHeaders: [{ name: 'content-type', value: 'application/json' }, { name: 'access-control-allow-origin', value: '*' }],
+        body: Buffer.from(JSON.stringify(out.body)).toString('base64'),
+      });
+    }
+  };
+  pausedHandlers.add(handler);
+  await cdp.send('Fetch.enable', { patterns: [{ urlPattern: pattern }] });
+  try {
+    return await body();
+  } finally {
+    pausedHandlers.delete(handler);
+    await cdp.send('Fetch.disable');
+  }
+}
+
+// ---------------------------------------------------------------- the chain's side, as the thief tab would do it
+
+/** A vault whose passkey lives in Chrome's virtual authenticator, and whose keys Node holds, so Node can be the thief. */
+async function makeVault(name, { keepKeys = false } = {}) {
+  if (!keepKeys) await emptyAuthenticator();
+  await go('/p/', {});
+  await waitFor('a page', async () => (await stateOf()) !== 'boot');
+  const passkey = await cdp.page(`const lib = await import('/site/lib/index.mjs');
+    const p = await lib.createPasskey({ credentials: navigator.credentials, rpId: 'localhost' });
+    globalThis.made = p;
+    return { pub: lib.toBase64(p.pubkey), cred: lib.toBase64Url(p.credentialId), flags: p.flags };`);
+  const passkeyPub = base64ToBytes(passkey.pub);
+  const keys = newVaultKeys({ seed: label(`${name}-seed-${counter += 1}`), cold: label(`${name}-cold-${counter}`) });
+  const vaultHex = toHex(vaultIdOf({ contract: stage.contract, keys, passkeyPub, csv: 6 }));
+  const km = await derivedKey(reader, { signer: instance.signer, domainId: instance.domain_id, contract: stage.contract, vaultHex });
+  const chainNow = (await reader.blockTime()).blockMs;
+  const built = await buildCreateArgs({
+    contract: stage.contract, keys, passkeyPub, rpIdHash: rpIdHashOf(stage.rpId), km, guard: stage.payer.accountId, policy: instance.policy, csv: 6, expiresAt: chainNow + 30 * 60_000,
+    assert: async (digest) => cdp.page(`const lib = await import('/site/lib/index.mjs');
+      const a = await lib.getAssertion({ credentials: navigator.credentials, digest: lib.fromBase64('${Buffer.from(digest).toString('base64')}'), rpId: 'localhost', credentialId: lib.fromBase64Url('${passkey.cred}') });
+      return a.args;`),
+  });
+  const spec = RELAY_METHODS.create_vault;
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [
+    action.call('create_vault', { args: built.args }, BigInt(spec.tgas) * TGAS, stage.milliNear(CREATE_DEPOSIT_MILLI)),
+    action.call('heartbeat', { vault: vaultHex }, BigInt(spec.heartbeatTgas) * TGAS, 0n),
+  ]);
+  assert.equal(failureOf(sent.result), null);
+  return { vaultHex, keys, cred: passkey.cred, passkeyPub };
+}
+
+async function thiefProposes(v, coin = { txid: toHex(label(`coin-${counter += 1}`)), vout: 0, value: 2000 }) {
+  const vault = await views.vault(v.vaultHex);
+  const script = fromHex(await views.script(v.vaultHex));
+  const to = fromHex(`0014${toHex(label('thief')).slice(0, 40)}`);
+  const spend = sendEverything({ coins: [coin], to, script, feeRate: 2 });
+  const chainNow = (await reader.blockTime()).blockMs;
+  const args = buildPropose({ contract: stage.contract, vault, script, seed: v.keys.seed, inputs: spend.inputs, to, amount: spend.amount, nonce: vault.spend_nonce, expiresAt: chainNow + 30 * 60_000 });
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('propose_btc', args, 40n * TGAS, 0n)]);
+  assert.equal(failureOf(sent.result), null);
+  return { id: returnValue(sent.result), spend, coin };
+}
+
+async function fastForwardTo(target) {
+  for (let i = 0; i < 200; i += 1) {
+    const now = (await reader.blockTime()).blockMs;
+    if (now >= target) return;
+    await stage.near.sandboxFastForward(Math.min(Math.ceil((target - now) / 500) + 5, 5000));
+    await sleep(300);
+  }
+  throw new Error('the clock never reached the target');
+}
+
+const clockMs = (text) => {
+  const m = /^(\d+):(\d\d)\.(\d)$/.exec(text);
+  return (Number(m[1]) * 60 + Number(m[2])) * 1000 + Number(m[3]) * 100;
+};
+
+const noHorizontalScroll = () => cdp.page('return document.documentElement.scrollWidth <= window.innerWidth;');
+const noScrollAtAll = () => cdp.page('return document.documentElement.scrollHeight <= window.innerHeight;');
+
+// ---------------------------------------------------------------- the film's path
+
+test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap stamps it, the contract agrees, a reload stays stamped. [mock-signer] [virtual authenticator]', { skip, timeout: 120_000 }, async (t) => {
+  const v = await makeVault('hero');
+  // A real coin, from the relay's dispenser on regtest, so `The coin never moved` has something to check.
+  const paid = await (await fetch(`${stage.origin}/api/funds`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: v.vaultHex }) })).json();
+  t.diagnostic(`funds: ${JSON.stringify({ ok: paid.ok, value: paid.value, code: paid.code })}`);
+  const coin = paid.ok ? { txid: paid.txid, vout: paid.vout, value: paid.value } : undefined;
+  const { id } = await thiefProposes(v, coin);
+  const r = await views.request(v.vaultHex, id);
+
+  await go('/phone/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  assert.equal(await textOf('#amount'), '2,000 sats', 'the sum of inputs, not request.amount');
+  assert.match(await textOf('#to'), /^bcrt1q/);
+  assert.equal(await textOf('#chip'), 'local test coins, mock signer', 'a local run cannot read as live');
+  assert.equal(await textOf('#cancel'), 'Cancel');
+
+  const first = await cdp.page('return document.getElementById("digits").dataset.clock;');
+  const now = (await reader.blockTime()).blockMs;
+  const expected = r.unlock - now;
+  assert.ok(Math.abs(clockMs(first) - expected) < 4000, `clock reads ${first}, the contract's unlock is ${expected} ms away`);
+  await sleep(1300);
+  const second = await cdp.page('return document.getElementById("digits").dataset.clock;');
+  assert.ok(clockMs(second) < clockMs(first), `the clock falls: ${first} then ${second}`);
+
+  const layout = await cdp.page(`const b = document.getElementById('cancel').getBoundingClientRect(); const d = document.getElementById('digits').getBoundingClientRect();
+    const cs = getComputedStyle(document.getElementById('cancel')); const ds = getComputedStyle(document.getElementById('digits'));
+    return { btnW: b.width, btnH: b.height, btnBottom: b.bottom, digitsW: d.width, digitsLeft: d.left, digitsRight: d.right, bg: cs.backgroundColor, color: ds.color, tnum: ds.fontVariantNumeric };`);
+  assert.equal(layout.bg, 'rgb(255, 59, 48)');
+  assert.equal(layout.color, 'rgb(255, 59, 48)');
+  assert.match(layout.tnum, /tabular-nums/);
+  assert.ok(layout.btnH >= 116 && layout.btnW >= 350, `button ${layout.btnW}x${layout.btnH}`);
+  assert.ok(layout.btnBottom <= 844, 'Cancel is on the screen');
+  assert.ok(layout.digitsLeft >= 0 && layout.digitsRight <= 390 && layout.digitsW > 260, `digits ${layout.digitsLeft} to ${layout.digitsRight}`);
+  assert.ok(await noHorizontalScroll());
+  assert.ok(await noScrollAtAll(), 'no scroll while a clock runs');
+  await shot('01-request');
+
+  // Fixed slots: a tick must not move the digits.
+  const a = await cdp.page('return document.querySelector("#digits .col").getBoundingClientRect().x;');
+  await sleep(1100);
+  assert.equal(await cdp.page('return document.querySelector("#digits .col").getBoundingClientRect().x;'), a);
+
+  const running = await cdp.page('return document.getElementById("digits").dataset.clock;');
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  const timings = await cdp.page('return window.undoTimings;');
+  assert.ok(timings.tap && timings.assertion && timings.sent && timings.included && timings.readCancelled, JSON.stringify(timings));
+  assert.ok(['high', 'low'].includes(timings.sForm));
+  t.diagnostic(`tap to read cancelled ${Math.round(timings.readCancelled - timings.tap)} ms, S form ${timings.sForm}`);
+
+  const shown = await cdp.page(`const d = document.getElementById('digits'); return { clock: d.dataset.clock, color: getComputedStyle(d).color, stamp: document.getElementById('stamp').innerText, key: document.getElementById('key-line').innerText, hash: document.querySelector('.hash').innerText, line: document.querySelector('.hashline').innerText };`);
+  assert.equal(shown.stamp, 'CANCELLED');
+  assert.equal(shown.color, 'rgb(255, 255, 255)');
+  assert.ok(clockMs(shown.clock) < clockMs(running), 'it stopped at the reading on screen, after the tap');
+  assert.equal(shown.key, 'That key can\'t ask again.');
+  assert.equal(shown.line, 'local NEAR sandbox tx');
+  assert.match(shown.hash, /^[1-9A-HJ-NP-Za-km-z]{32,64}$/);
+  assert.equal(await exists('#cancel'), false);
+
+  // The contract is the judge, and the hash is the transaction that did it.
+  const after = await views.vault(v.vaultHex);
+  assert.equal(after.k_s_suspended, true);
+  const req = await views.request(v.vaultHex, id);
+  assert.equal(req.status, 'Pending');
+  assert.notEqual(req.epoch, after.spend_epoch);
+  const outcome = await reader.txOutcome(shown.hash, stage.relay.accountId);
+  assert.equal(outcome.known, true);
+  assert.equal(outcome.failure, null);
+
+  if (coin) {
+    await waitFor('the coin line', () => exists('#coin-line'), 30_000);
+    assert.equal(await textOf('#coin-line'), 'The coin never moved.');
+  }
+  await shot('02-cancelled');
+
+  // The digits stay where they stopped.
+  await sleep(1500);
+  assert.equal(await cdp.page('return document.getElementById("digits").dataset.clock;'), shown.clock);
+
+  // Sticky: chain plus fragment.
+  await reload();
+  await waitState('cancelled');
+  const again = await cdp.page(`return { clock: document.getElementById('digits')?.dataset.clock ?? null, hash: document.querySelector('.hash')?.innerText ?? null, stamp: document.getElementById('stamp').innerText, slam: document.getElementById('stamp').classList.contains('slam') };`);
+  assert.deepEqual(again, { clock: shown.clock, hash: shown.hash, stamp: 'CANCELLED', slam: false }, 'and it does not stamp again');
+  await shot('03-cancelled-after-reload');
+
+  // Another device with only the vault id: still cancelled, read from the chain, with no number it did not see.
+  await go('/p/', { v: v.vaultHex });
+  await waitState('cancelled');
+  assert.equal(await exists('#digits'), false);
+  assert.equal(await exists('.hash'), coin ? true : false, 'a hash only shows where this page holds one');
+  assert.equal(await cdp.page('return document.body.innerText.includes("tx ");'), false);
+});
+
+test('a request with an old epoch reads cancelled even when another device did the rotating, and the clock stops', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('other-device');
+  const { id } = await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const before = await cdp.page('return document.getElementById("digits").dataset.clock;');
+  // Same passkey, from outside this page's own code path: a second tab would look just like this.
+  const vault = await views.vault(v.vaultHex);
+  const out = await cdp.page(`const lib = await import('/site/lib/index.mjs');
+    const newKs = lib.spendKeys(crypto.getRandomValues(new Uint8Array(32))).ks.pub;
+    const expiresAt = ${(await reader.blockTime()).blockMs + 600_000};
+    const digest = lib.rotateDigest({ contract: ${JSON.stringify(stage.contract)}, vaultHex: ${JSON.stringify(v.vaultHex)}, newKs, nonce: ${vault.passkey_nonce}, expiresAt });
+    const a = await lib.getAssertion({ credentials: navigator.credentials, digest, rpId: 'localhost', credentialId: lib.fromBase64Url(${JSON.stringify(v.cred)}) });
+    return lib.rotateArgs({ vaultHex: ${JSON.stringify(v.vaultHex)}, newKs, nonce: ${vault.passkey_nonce}, expiresAt, assertion: a.args });`);
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('cancel_all_and_rotate', out, 30n * TGAS, 0n)]);
+  assert.equal(failureOf(sent.result), null);
+  await waitState('cancelled');
+  const r = await views.request(v.vaultHex, id);
+  assert.equal(r.status, 'Pending', 'status alone would say it is still going');
+  const frozen = await cdp.page('return document.getElementById("digits").dataset.clock;');
+  assert.ok(clockMs(frozen) <= clockMs(before));
+  await sleep(1300);
+  assert.equal(await cdp.page('return document.getElementById("digits").dataset.clock;'), frozen);
+  assert.equal(await exists('.hash'), false, 'no view names the cancelling transaction, so this page shows none');
+});
+
+test('at zero Cancel still works; once the contract has signed there is no stamp, and no button', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('late');
+  const { id } = await thiefProposes(v);
+  const r0 = await views.request(v.vaultHex, id);
+  await fastForwardTo(r0.unlock);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await waitFor('zero on the clock', async () => (await cdp.page('return document.getElementById("digits").dataset.clock;')) === '0:00.0');
+  assert.ok(await exists('#at-zero'));
+  assert.ok(await exists('#cancel'), 'the contract still takes a cancel at zero');
+  await shot('04-at-zero');
+
+  const gas = executeTgas(r0.inputs.length, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
+  await stage.near.send(stage.payer, stage.contract, [action.call('execute', { vault: v.vaultHex, request: id }, BigInt(gas) * TGAS, 0n)]);
+  await waitState('too_late', 30_000);
+  assert.equal(await textOf('#too-late'), 'Too late. The contract signed.');
+  assert.equal(await exists('#stamp'), false);
+  assert.equal(await exists('#cancel'), false);
+  await waitFor('the signed transaction', async () => (await cdp.page('return document.body.innerText;')).includes('local regtest txid'), 30_000);
+  await shot('05-too-late');
+  await reload();
+  await waitState('too_late');
+  await waitFor('the txid after a reload', async () => (await cdp.page('return document.body.innerText;')).includes('local regtest txid'));
+});
+
+test('a tap that lands after the signature: the contract takes the tap and the page still says too late', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('late-tap');
+  const { id } = await thiefProposes(v);
+  const r0 = await views.request(v.vaultHex, id);
+  await fastForwardTo(r0.unlock);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  // Slow the sheet so the signature lands during it.
+  await cdp.page(`const real = navigator.credentials.get.bind(navigator.credentials);
+    navigator.credentials.get = async (o) => { await new Promise((r) => setTimeout(r, 2500)); return real(o); };`);
+  await clickOn('#cancel');
+  await waitState('tapped', 3000);
+  const gas = executeTgas(r0.inputs.length, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
+  await stage.near.send(stage.payer, stage.contract, [action.call('execute', { vault: v.vaultHex, request: id }, BigInt(gas) * TGAS, 0n)]);
+  await waitState('too_late', 30_000);
+  assert.equal(await exists('#stamp'), false);
+});
+
+test('expired: says so, with no button and no stamp', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('expired');
+  const { id } = await thiefProposes(v);
+  const r0 = await views.request(v.vaultHex, id);
+  await fastForwardTo(r0.expires_at + 2000);
+  await go('/p/', { v: v.vaultHex, c: v.cred, r: id });
+  await waitState('expired');
+  assert.equal(await textOf('#expired'), 'This request expired.');
+  assert.equal(await exists('#cancel'), false);
+  assert.equal(await exists('#stamp'), false);
+  await shot('06-expired');
+});
+
+// ---------------------------------------------------------------- the relay
+
+test('relay down: no button, a plain sentence, the clock still the contract\'s, and it comes back on its own', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('down');
+  await thiefProposes(v);
+  await intercept('*/api/relay*', async () => 'fail', async () => {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('no_button');
+    assert.equal(await textOf('#why'), 'The relay is down, so this page can\'t send a cancel.');
+    assert.equal(await exists('#cancel'), false);
+    assert.match(await textOf('#tool'), /recovery file/);
+    const a = await cdp.page('return document.getElementById("digits").dataset.clock;');
+    await sleep(1200);
+    assert.ok(clockMs(await cdp.page('return document.getElementById("digits").dataset.clock;')) < clockMs(a), 'the clock keeps falling');
+    assert.ok(await noScrollAtAll(), 'and nothing has pushed it off the screen');
+    await shot('07-relay-down');
+  });
+  await waitState('request', 12_000);
+  assert.ok(await exists('#cancel'), 'the status poll brought the button back');
+});
+
+test('at its ceiling: the status says so; and a ceiling met on the send itself takes the button away, keeping the request', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('ceiling');
+  await thiefProposes(v);
+  const live = await (await fetch(`${stage.origin}/api/relay`)).json();
+  const resetsAt = Date.UTC(2030, 0, 2);
+  const capped = { ...live, owner: { up: false, why: 'daily_ceiling', resets_at: resetsAt } };
+  await intercept('*/api/relay*', async () => ({ status: 200, body: capped }), async () => {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('no_button');
+    assert.equal(await textOf('#why'), 'The relay hit today\'s limit.');
+    assert.match(await cdp.page('return document.body.innerText;'), /resets at 00:00 UTC/);
+    assert.equal(await exists('#cancel'), false);
+    await shot('08-ceiling');
+  });
+
+  await waitState('request', 12_000);
+  await intercept('*/api/relay*', async (req) => {
+    if (req.method !== 'POST') return { status: 200, body: live };
+    return { status: 429, body: { ok: false, code: 'daily_ceiling', message: 'the owner bucket is at its ceiling', bucket: 'owner', resets_at: resetsAt } };
+  }, async () => {
+    await clickOn('#cancel');
+    await waitFor('the ceiling', async () => (await textOf('#why')) === 'The relay hit today\'s limit.');
+    assert.equal(await exists('#stamp'), false);
+    const r = await views.vault(v.vaultHex);
+    assert.equal(r.k_s_suspended, false, 'nothing was cancelled, and the page does not say it was');
+  });
+});
+
+test('a node a little behind answers null for a request already on screen: no stamp, because a stamp cannot be taken back', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('lag');
+  const { id } = await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const height = (await reader.blockTime()).height;
+  let lies = 0;
+  const seenState = [];
+  await intercept(`${stage.config.rpc[0]}*`, async (req) => {
+    const body = JSON.parse(req.postData ?? '{}');
+    if (body.params?.method_name === 'request' && lies < 2) {
+      lies += 1;
+      return { status: 200, body: { jsonrpc: '2.0', id: body.id, result: { block_height: height, logs: [], result: Array.from(new TextEncoder().encode('null')) } } };
+    }
+    return null;
+  }, async () => {
+    while (lies < 2) {
+      seenState.push(await stateOf());
+      await sleep(100);
+    }
+    await sleep(1500);
+    seenState.push(await stateOf());
+  });
+  assert.ok(seenState.every((s) => s === 'request'), seenState.join());
+  assert.equal(await exists('#stamp'), false);
+  assert.equal((await views.request(v.vaultHex, id)).status, 'Pending');
+});
+
+test('a plain cancel from elsewhere: the row is gone, and after three reads the page believes it, with no key line', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('plain');
+  const { id } = await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const out = await cdp.page(`const lib = await import('/site/lib/index.mjs');
+    const expiresAt = ${(await reader.blockTime()).blockMs + 600_000};
+    const digest = lib.cancelDigest({ contract: ${JSON.stringify(stage.contract)}, vaultHex: ${JSON.stringify(v.vaultHex)}, request: ${id}, expiresAt });
+    const a = await lib.getAssertion({ credentials: navigator.credentials, digest, rpId: 'localhost', credentialId: lib.fromBase64Url(${JSON.stringify(v.cred)}) });
+    return lib.cancelArgs({ vaultHex: ${JSON.stringify(v.vaultHex)}, request: ${id}, expiresAt, assertion: a.args });`);
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('cancel', out, 30n * TGAS, 0n)]);
+  assert.equal(failureOf(sent.result), null);
+  await waitState('cancelled', 8000);
+  assert.equal(await exists('#key-line'), false, 'a plain cancel leaves the key able to ask again, so the page must not say otherwise');
+  assert.equal((await views.vault(v.vaultHex)).k_s_suspended, false);
+});
+
+test('the relay refuses, or the contract refuses: its own words, verbatim, and the button comes back', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('refuse');
+  await thiefProposes(v);
+  const live = await (await fetch(`${stage.origin}/api/relay`)).json();
+  const words = '{"ActionError":{"index":0,"kind":{"FunctionCallError":{"ExecutionError":"Smart contract panicked: words from a test"}}}}';
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await intercept('*/api/relay*', async (req) => (req.method !== 'POST' ? { status: 200, body: live } : { status: 422, body: { ok: false, code: 'tx_refused', message: 'refused', verbatim: words } }), async () => {
+    await clickOn('#cancel');
+    await waitFor('the refusal', () => exists('#verbatim'));
+    assert.equal(await textOf('#verbatim'), words);
+    assert.equal(await textOf('#notice'), 'Not cancelled.');
+    await waitState('request');
+    await shot('09-refused-verbatim');
+  });
+  // The button works after that: a real tap, a real stamp.
+  await clickOn('#cancel');
+  await waitState('cancelled');
+});
+
+// ---------------------------------------------------------------- a wrong link
+
+test('wrong vault: an id nobody made, a malformed id, and a phone whose passkey is another vault\'s', { skip, timeout: 120_000 }, async () => {
+  await go('/p/', { v: toHex(label('nobody')) });
+  await waitState('wrong_vault');
+  assert.match(await cdp.page('return document.body.innerText;'), /No vault with this id/);
+  assert.equal(await exists('#cancel'), false);
+  await shot('10-wrong-vault');
+
+  await go('/p/', {}, { raw: `${stage.origin}/p/#v=nothex` });
+  await waitState('wrong_vault');
+  assert.match(await cdp.page('return document.body.innerText;'), /can't be read/);
+
+  const a = await makeVault('mine');
+  const b = await makeVault('theirs', { keepKeys: true });
+  await thiefProposes(a);
+  await go('/p/', { v: a.vaultHex, c: b.cred });
+  await waitState('request');
+  await clickOn('#cancel');
+  await waitFor('the refusal', () => exists('#verbatim'));
+  assert.equal(await textOf('#verbatim'), 'webauthn: bad signature');
+  assert.equal(await stateOf(), 'request');
+  assert.equal((await views.vault(a.vaultHex)).k_s_suspended, false);
+});
+
+test('this page\'s origin not on the contract\'s list, and a vault made for another site: no button, and says why', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('origin');
+  await thiefProposes(v);
+  // The same request, with the contract's answer changed only in what this page's check reads.
+  const views0 = await views.instance();
+  const height = (await reader.blockTime()).height;
+  const encoded = (value) => Array.from(new TextEncoder().encode(JSON.stringify(value)));
+  await intercept(`${stage.config.rpc[0]}*`, async (req) => {
+    const body = JSON.parse(req.postData ?? '{}');
+    if (body.params?.method_name !== 'instance') return null;
+    return { status: 200, body: { jsonrpc: '2.0', id: body.id, result: { block_height: height, logs: [], result: encoded({ ...views0, origins: ['https://elsewhere.example'] }) } } };
+  }, async () => {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('no_button');
+    assert.equal(await textOf('#why'), 'This page isn\'t allowed to cancel for this vault.');
+    assert.equal(await cdp.page('return document.getElementById("why").dataset.why;'), 'origin_not_allowed');
+  });
+});
+
+// ---------------------------------------------------------------- what the browser will not do
+
+test('both S forms: a high-S and a low-S real assertion each cancel, and the page logs which. [virtual authenticator]', { skip, timeout: 240_000 }, async (t) => {
+  const seen = { high: 0, low: 0 };
+  for (let i = 0; i < 14 && (seen.high === 0 || seen.low === 0); i += 1) {
+    const v = await makeVault(`s-${i}`);
+    await thiefProposes(v);
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('request');
+    await clickOn('#cancel');
+    await waitState('cancelled');
+    const form = await cdp.page('return window.undoTimings.sForm;');
+    assert.equal(await cdp.page('return document.documentElement.dataset.sForm;'), form);
+    seen[form] += 1;
+    assert.equal((await views.vault(v.vaultHex)).k_s_suspended, true);
+  }
+  t.diagnostic(`S forms over the loop: ${JSON.stringify(seen)}`);
+  assert.ok(seen.high > 0 && seen.low > 0, `only saw ${JSON.stringify(seen)}`);
+});
+
+test('WebAuthn blocked: the sheet never appears, the page says so, and hides the red button', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('blocked');
+  await thiefProposes(v);
+  await inject(`navigator.credentials.get = () => Promise.reject(new DOMException('The operation is not allowed in this context.', 'NotAllowedError'));`);
+  try {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('request');
+    assert.ok(await exists('#cancel'), 'nothing says it is blocked until a tap shows it');
+    await clickOn('#cancel');
+    await waitState('no_button');
+    assert.match(await textOf('#why'), /sheet never appeared.*blocking passkeys.*Safari or Chrome/);
+    assert.equal(await exists('#cancel'), false);
+    assert.equal(await exists('#retry-passkey'), true);
+    assert.ok(await noHorizontalScroll());
+    await shot('11-webauthn-blocked');
+  } finally {
+    await clearInjected();
+  }
+});
+
+test('no WebAuthn at all, no platform authenticator on a phone, no secure page: each says so', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('absent');
+  await thiefProposes(v);
+  await inject(`delete window.PublicKeyCredential; Object.defineProperty(window, 'PublicKeyCredential', { value: undefined });`);
+  try {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('no_button');
+    assert.match(await textOf('#why'), /no passkeys/);
+    assert.equal(await exists('#cancel'), false);
+    await shot('12-no-webauthn');
+    await go('/p/', {});
+    await waitState('no_vault');
+    assert.match(await textOf('#why'), /no passkeys/);
+    assert.equal(await exists('#make'), false, 'no Make a test vault if it cannot work');
+  } finally {
+    await clearInjected();
+  }
+
+  await inject(`PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = async () => false;
+    Object.defineProperty(navigator, 'userAgentData', { value: { mobile: true } });`);
+  try {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('no_button');
+    assert.match(await textOf('#why'), /no Face ID, fingerprint or screen lock/);
+    await shot('13-no-platform');
+  } finally {
+    await clearInjected();
+  }
+});
+
+test('opened inside the X app: the page warns, and a sheet that hangs gets a sentence after 12 s, not silence', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('x-app');
+  await thiefProposes(v);
+  const plainUa = await cdp.page('return navigator.userAgent;');
+  await cdp.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/11.0' });
+  await inject(`navigator.credentials.get = () => new Promise(() => {});`);
+  try {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('request');
+    assert.match(await textOf('#in-app'), /inside the X app/);
+    await shot('14-x-app');
+    await clickOn('#cancel');
+    await waitState('tapped', 2000);
+    const a = await cdp.page('return document.getElementById("digits").dataset.clock;');
+    await sleep(800);
+    assert.ok(clockMs(await cdp.page('return document.getElementById("digits").dataset.clock;')) < clockMs(a), 'the clock keeps falling while the sheet is up');
+    await waitFor('the hang sentence', () => exists('#hang'), 15_000);
+    assert.match(await textOf('#hang'), /may be blocking passkeys/);
+    await shot('15-sheet-hang');
+  } finally {
+    await clearInjected();
+    await cdp.send('Emulation.setUserAgentOverride', { userAgent: plainUa });
+  }
+});
+
+test('the sheet dismissed: Not cancelled, and the button is right there. A sheet that hid the page says so afterwards', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('dismiss');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await cdp.page(`const real = navigator.credentials.get.bind(navigator.credentials); globalThis.realGet = real;
+    let first = true;
+    navigator.credentials.get = async (o) => {
+      if (first) { first = false; await new Promise((r) => setTimeout(r, 900)); throw new DOMException('dismissed', 'NotAllowedError'); }
+      // A sheet that stalls drawing for over a second, as a blanking sheet would.
+      const end = performance.now() + 1200; while (performance.now() < end) {}
+      return real(o);
+    };`);
+  await clickOn('#cancel');
+  await waitState('tapped', 2000);
+  await waitState('request', 5000);
+  assert.equal(await textOf('#notice'), 'Not cancelled. The sheet closed.');
+  assert.ok(await exists('#cancel'));
+  await shot('16-dismissed');
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  const sheet = await cdp.page('return window.undoTimings.sheet;');
+  assert.ok(sheet.stallMs >= 1000 && sheet.seen, JSON.stringify(sheet));
+});
+
+test('localStorage that throws, and none at all: the page still works from the fragment; with neither, a discoverable passkey', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('storage');
+  await thiefProposes(v);
+  await inject(`Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('denied', 'SecurityError'); } });`);
+  try {
+    await go('/p/', { v: v.vaultHex, c: v.cred });
+    await waitState('request');
+  } finally {
+    await clearInjected();
+  }
+
+  // No credential id anywhere: the sheet offers what this device holds, and the id is kept once used.
+  await go('/p/', { v: v.vaultHex });
+  await waitState('request');
+  await clickOn('#cancel');
+  await waitFor('a stamp or a refusal', async () => ['cancelled'].includes(await stateOf()) || exists('#verbatim'));
+});
+
+test('the credential id goes to localStorage and nothing else does', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('store-only');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const store = await cdp.page('return JSON.stringify(Object.entries(localStorage));');
+  const entries = JSON.parse(store);
+  assert.ok(entries.length >= 1);
+  for (const [key, value] of entries) {
+    assert.match(key, /^undo\.passkey\.[0-9a-f]{64}$/);
+    assert.match(value, /^[A-Za-z0-9_-]+$/);
+  }
+  assert.ok(entries.some(([key, value]) => key === `undo.passkey.${v.vaultHex}` && value === v.cred));
+  await go('/p/', { v: v.vaultHex });
+  await waitState('request');
+  await waitFor('the fragment to regain it', async () => (await cdp.page('return location.hash;')).includes(`c=${v.cred}`));
+});
+
+test('RPC down: three misses say so, digits freeze and dim, the Cancel stays, and reading comes back', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('rpc');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await intercept(`${stage.config.rpc[0]}*`, async () => 'fail', async () => {
+    await waitFor('the sentence', () => exists('#read-down'), 20_000);
+    assert.equal(await textOf('#read-down'), 'Can\'t read the NEAR contract right now.');
+    const a = await cdp.page('return document.getElementById("digits").dataset.clock;');
+    await sleep(1200);
+    assert.equal(await cdp.page('return document.getElementById("digits").dataset.clock;'), a, 'frozen, never free-running past what was read');
+    assert.equal(await cdp.page('return document.getElementById("digits").classList.contains("dimmed");'), true);
+    assert.ok(await exists('#cancel'), 'a cancel must not depend on reading');
+    await shot('17-rpc-down');
+  });
+  await waitFor('reading to come back', async () => !(await exists('#read-down')), 15_000);
+  assert.equal(await cdp.page('return document.getElementById("digits").classList.contains("dimmed");'), false);
+});
+
+test('a page with no config says so, and draws no controls', { skip, timeout: 30_000 }, async () => {
+  await intercept('*/undo-config.json', async () => ({ status: 404, body: {} }), async () => {
+    await go('/p/', {});
+    await waitState('no_config');
+    assert.equal(await exists('button'), false);
+    assert.match(await textOf('#chip'), /test coins/, 'the chip is drawn before any script');
+  });
+});
+
+test('nothing waiting: the vault\'s address and a plain sentence, no clock. A short screen still fits. A request appearing brings the clock', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('idle');
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('idle');
+  assert.equal(await exists('#digits'), false, 'a clock moves only for a real request');
+  assert.equal(await textOf('#nothing'), 'Nothing is waiting.');
+  await waitFor('the balance', () => exists('#balance'));
+  await shot('18-idle');
+  const { id } = await thiefProposes(v);
+  await waitState('request', 10_000);
+  assert.equal(await cdp.page('return location.hash;').then((h) => new URLSearchParams(h.slice(1)).get('r')), String(id));
+
+  // Safari's bars on screen: a 390 wide phone, then an iPhone SE. The button is still above the fold.
+  try {
+    for (const [width, height] of [[390, 664], [375, 553]]) {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 2, mobile: true });
+      await sleep(300);
+      assert.ok(await noHorizontalScroll(), `${width}x${height} scrolls sideways`);
+      assert.ok(await noScrollAtAll(), `${width}x${height} scrolls while the clock runs`);
+      const box = await cdp.page('const r = document.getElementById("cancel").getBoundingClientRect(); const d = document.getElementById("digits").getBoundingClientRect(); return { b: r.bottom, h: r.height, dr: d.right, dl: d.left };');
+      assert.ok(box.b <= height && box.h >= 100 && box.dl >= 0 && box.dr <= width, JSON.stringify(box));
+      await shot(`19-request-${width}x${height}`);
+    }
+  } finally {
+    await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
+  }
+});
+
+// ---------------------------------------------------------------- making a vault, and the test mode
+
+test('Make a test vault: two taps, each line when its step ends, then the page reads the vault it made', { skip, timeout: 120_000 }, async () => {
+  await emptyAuthenticator();
+  await go('/phone/', {});
+  await waitState('no_vault');
+  await shot('20-no-vault');
+  await clickOn('#make');
+  await waitFor('the second tap', () => exists('#confirm'), 20_000);
+  assert.equal(await stateOf(), 'creating');
+  await clickOn('#confirm');
+  await waitState('idle', 40_000);
+  const hash = await cdp.page('return location.hash;');
+  const f = new URLSearchParams(hash.slice(1));
+  assert.match(f.get('v'), /^[0-9a-f]{64}$/);
+  assert.ok(f.get('c'));
+  assert.equal(f.get('k'), null, 'the spend key stays out of the address bar');
+  const vault = await views.vault(f.get('v'));
+  assert.equal(vault.active, true);
+  assert.equal(vault.guard_online, true, 'the relay beat at creation');
+  assert.ok(await exists('#recovery'));
+  assert.ok(await exists('#thief-link'));
+  await shot('21-idle-own-vault');
+});
+
+async function h7ToReport(t) {
+  await emptyAuthenticator();
+  await inject(`const realCreate = navigator.credentials.create.bind(navigator.credentials); const realGet = navigator.credentials.get.bind(navigator.credentials);
+    globalThis.seenCreate = []; globalThis.seenGet = [];
+    navigator.credentials.create = (o) => { seenCreate.push({ name: o.publicKey.user.name, display: o.publicKey.user.displayName, uv: o.publicKey.authenticatorSelection.userVerification, resident: o.publicKey.authenticatorSelection.residentKey, alg: o.publicKey.pubKeyCredParams[0].alg }); return realCreate(o); };
+    navigator.credentials.get = (o) => { seenGet.push({ uv: o.publicKey.userVerification, allowed: o.publicKey.allowCredentials.length }); return realGet(o); };`);
+  await go('/phone', { }, { raw: `${stage.origin}/phone#h7=1` });
+  await waitState('h7_check');
+  await shot('30-h7-check');
+  await clickOn('#make');
+  await waitState('h7_confirm', 15_000);
+  await clickOn('#confirm');
+  let tapped = 0;
+  for (let i = 0; i < 9; i += 1) {
+    await waitFor('a try or the operator step', async () => ['h7_try', 'h7_rotate', 'h7_operator'].includes(await stateOf()), 40_000);
+    const state = await stateOf();
+    if (state === 'h7_operator') break;
+    if (tapped === 0) await shot('31-h7-try');
+    if (state === 'h7_rotate') await shot('32-h7-rotate');
+    await clickOn('#cancel');
+    tapped += 1;
+    await waitFor('the tap to finish', async () => !['h7_wait', 'h7_sending'].includes(await stateOf()) && (await cdp.page('return (new URLSearchParams(location.hash.slice(1)).get("log") ?? "").split("~").filter(Boolean).length;')) >= tapped, 30_000);
+  }
+  await waitState('h7_operator');
+  await shot('33-h7-operator');
+  t.diagnostic(`tapped ${tapped} times`);
+  await clickOn('#make-operator');
+  await waitState('h7_report', 15_000);
+  await clearInjected();
+  return tapped;
+}
+
+test('test mode: passkey, tries to a high-S or 8, the film\'s own call last, an operator passkey, plain words. A reload changes nothing. [virtual authenticator]', { skip, timeout: 300_000 }, async (t) => {
+  const tapped = await h7ToReport(t);
+  const report = await textOf('#report');
+  t.diagnostic(`report:\n${report}`);
+  assert.ok(tapped >= 1 && tapped <= 8);
+  assert.match(report, /Passkey "test vault": made/);
+  assert.match(report, /Try 1: cancel/);
+  assert.match(report, new RegExp(`Try ${tapped}: cancel_all_and_rotate`));
+  assert.match(report, /That is the wait to allow for when filming/);
+  assert.match(report, /Passkey "operator": made/);
+  assert.match(report, /operator_passkey for the contract's new: \{"pubkey":"0[23][0-9a-f]{64}","rp_id_hash":"[0-9a-f]{64}"\}/);
+  assert.match(report, /(A high-S signature appeared on try \d of \d|No high-S signature in 8 tries)/);
+  assert.match(report, /While the sheet was up/);
+  assert.match(report, /local NEAR sandbox tx/);
+  await shot('34-h7-report');
+
+  // What the OS sheet is told, and that the sheet asks for this one key.
+  const asked = await cdp.page('return { create: globalThis.seenCreate, get: globalThis.seenGet };');
+  assert.deepEqual(asked.create.map((c) => c.name), ['test vault', 'operator']);
+  assert.ok(asked.create.every((c) => c.display === c.name && c.uv === 'required' && c.resident === 'required' && c.alg === -7), JSON.stringify(asked.create));
+  assert.ok(asked.get.every((g) => g.uv === 'required' && g.allowed === 1), JSON.stringify(asked.get));
+  assert.equal(asked.get.length, tapped + 1, 'one assertion per tap, plus the one that made the vault');
+
+  // Nothing secret in what gets copied.
+  const seed = new URLSearchParams((await cdp.page('return location.hash;')).slice(1)).get('k');
+  assert.match(seed, /^[0-9a-f]{64}$/);
+  assert.equal(report.includes(seed), false, 'the report never holds the throwaway key');
+
+  await clickOn('#copy-report');
+  await waitFor('the copy to land or the text to be offered', () => cdp.page('return document.documentElement.dataset.copied === "yes" || Boolean(document.getElementById("report-area"));'));
+
+  // Every try is on chain: the contract took them, and the vault's key ended rotated.
+  const f = new URLSearchParams((await cdp.page('return location.hash;')).slice(1));
+  const vault = await views.vault(f.get('v'));
+  assert.equal(vault.k_s_suspended, true);
+  const operatorPub = f.get('op');
+  assert.notEqual(operatorPub, vault.passkey, 'two different keys');
+  const entries = f.get('log').split('~').filter(Boolean);
+  assert.equal(entries.length, tapped);
+  for (const entry of entries) {
+    const hash = entry.split('.').pop();
+    const outcome = await reader.txOutcome(hash, stage.relay.accountId);
+    assert.equal(outcome.failure, null);
+  }
+  assert.equal(entries[entries.length - 1][0], 'r');
+  assert.ok(entries.slice(0, -1).every((e) => e.startsWith('c.')));
+  const earlierHigh = entries.slice(0, -1).filter((e) => e.startsWith('c.h')).length;
+  assert.ok(earlierHigh <= 1, 'it stops asking once a high-S has appeared');
+
+  // The two answers only a person can give go into the report, and survive a reload with the rest.
+  await cdp.page('document.querySelector("[data-answer=\\"recording:blank\\"]").click();');
+  await cdp.page('document.querySelector("[data-answer=\\"gestures:one\\"]").click();');
+  const answered = await textOf('#report');
+  assert.match(answered, /went blank: blank/);
+  assert.match(answered, /one Cancel: one/);
+  await reload();
+  await waitState('h7_report');
+  assert.equal(await textOf('#report'), answered);
+  assert.equal(await cdp.page('return (await navigator.credentials.get ? "yes" : "no");'), 'yes');
+});
+
+test('test mode: a reload in the middle carries on from the chain and the fragment; a blocked browser says so at once', { skip, timeout: 240_000 }, async () => {
+  await emptyAuthenticator();
+  await go('/phone/', {}, { raw: `${stage.origin}/phone/#h7=1` });
+  await waitState('h7_check');
+  await clickOn('#make');
+  await waitState('h7_confirm', 15_000);
+  await clickOn('#confirm');
+  await waitFor('the first try', async () => ['h7_try', 'h7_rotate'].includes(await stateOf()), 40_000);
+  const before = await cdp.page('return document.getElementById("digits")?.dataset.clock ?? null;');
+  await reload();
+  await waitFor('the try to come back', async () => ['h7_try', 'h7_rotate'].includes(await stateOf()), 20_000);
+  assert.ok(await exists('#cancel'));
+  const f = new URLSearchParams((await cdp.page('return location.hash;')).slice(1));
+  const vault = await views.vault(f.get('v'));
+  assert.equal(vault.pending.length, 1, 'the same request, not a second one');
+  assert.ok(before === null || clockMs(await cdp.page('return document.getElementById("digits").dataset.clock;')) <= clockMs(before));
+
+  await inject(`navigator.credentials.create = () => Promise.reject(new DOMException('The operation is not allowed in this context.', 'NotAllowedError'));`);
+  try {
+    await go('/phone/', {}, { raw: `${stage.origin}/phone/#h7=1` });
+    await waitState('h7_check');
+    await clickOn('#make');
+    await waitState('h7_stopped');
+    assert.match(await textOf('#why'), /sheet never appeared/);
+    assert.ok(await exists('#retry'));
+    await shot('35-h7-blocked');
+  } finally {
+    await clearInjected();
+  }
+});
+
+test('the fragment and report functions, in the page that ships them', { skip, timeout: 30_000 }, async () => {
+  await go('/p/', {});
+  const out = await cdp.page(`const f = await import('/p/phone-fragment.mjs'); const r = await import('/p/h7-report.mjs');
+    const parsed = f.parsePhoneFragment('#v=${'a'.repeat(64)}&tx=8gZ1dzfAhVn1jZ1dzfAhVn1jZ1dzfAhVn1jZ&f=0:07.9&h7=1&log=c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x&junk=1&q=blank.one');
+    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz');
+    const tries = r.decodeTries(parsed.log);
+    const again = tries.map(r.encodeTry).join('~');
+    return { parsed, bad, tries, again, built: f.buildPhoneFragment({ v: 'b', tx: null, f: '0:01.0' }), s0: r.sFormSentence([]), s8: r.sFormSentence(Array(8).fill({ s: 'l' })), s3: r.sFormSentence([{ s: 'l' }, { s: 'l' }, { s: 'h' }]) };`);
+  assert.equal(out.parsed.f, '0:07.9');
+  assert.equal(out.parsed.junk, undefined);
+  assert.deepEqual(out.bad.refused.sort(), ['f', 'op', 'tx']);
+  assert.equal(out.bad.tx, undefined);
+  assert.equal(out.again, 'c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x');
+  assert.equal(out.tries[0].blurred, true);
+  assert.equal(out.tries[1].hash, null);
+  assert.equal(out.built, '#v=b&f=0:01.0');
+  assert.match(out.s0, /0 of 8/);
+  assert.match(out.s8, /No high-S signature in 8 tries/);
+  assert.match(out.s3, /try 3 of 3/);
+});
+
+test('no CSP violation on any screen a phone reaches', { skip, timeout: 60_000 }, async () => {
+  const seen = [];
+  const listener = (event) => {
+    const data = JSON.parse(event.data);
+    if (data.method === 'Runtime.exceptionThrown') seen.push(data.params.exceptionDetails.text);
+    if (data.method === 'Runtime.consoleAPICalled' && data.params.type === 'error') seen.push(JSON.stringify(data.params.args.map((a) => a.value)));
+    if (data.method === 'Log.entryAdded' && /Content Security Policy|Refused/.test(data.params.entry.text)) seen.push(data.params.entry.text);
+  };
+  cdp.ws.addEventListener('message', listener);
+  await cdp.send('Log.enable');
+  const v = await makeVault('csp');
+  await thiefProposes(v);
+  await go('/phone/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  await sleep(500);
+  cdp.ws.removeEventListener('message', listener);
+  await cdp.send('Log.disable');
+  assert.deepEqual(seen, []);
+});
