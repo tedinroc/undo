@@ -1046,6 +1046,29 @@ async fn code_without_a_migrate_does_not_land() -> Result<()> {
     Ok(())
 }
 
+/// Anyone may call `upgrade_apply`, and the attempt uses the approval up, so a caller who attaches too
+/// little must not be able to burn an approval without landing the code. The deploy's gas and the
+/// migration's are prepaid in the first receipt, so too little fails there and nothing changes.
+#[tokio::test]
+async fn upgrade_apply_with_too_little_gas_uses_nothing_up() -> Result<()> {
+    let h = Harness::new().await?;
+    let code = new_code();
+    propose_upgrade(&h, &code).await?.into_result()?;
+    let unlock = pending_upgrade(&h).await?["unlock_at"].as_u64().unwrap();
+    h.advance_to(unlock).await?;
+    let griefer = h.worker.dev_create_account().await?;
+    let old = sha256(&h.worker.view_code(h.undo.id()).await?);
+    for tgas_attached in [15, 30, 45] {
+        let res = griefer.call(h.undo.id(), "upgrade_apply").args(code.clone()).gas(gas(tgas_attached)).transact().await;
+        assert!(res.map_or(true, |r| r.is_failure()), "{tgas_attached} Tgas");
+        assert_ne!(pending_upgrade(&h).await?, Value::Null, "{tgas_attached} Tgas burned the approval");
+        assert_eq!(sha256(&h.worker.view_code(h.undo.id()).await?), old);
+    }
+    apply_upgrade(&h, &griefer, code.clone()).await?.into_result()?;
+    assert_eq!(sha256(&h.worker.view_code(h.undo.id()).await?), sha256(&code));
+    Ok(())
+}
+
 /// Only the contract itself can run `migrate`.
 #[tokio::test]
 async fn migrate_is_private() -> Result<()> {

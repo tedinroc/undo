@@ -7,17 +7,17 @@ scripts/build.sh
 scripts/protocol-check.sh --measure    # <target>/measure-<version>.txt
 ```
 
-The two protocols agreed to within 0.03 Tgas per method and 0.08 Tgas per transaction.
+The two protocols agreed to within 0.04 Tgas per method and 0.16 Tgas per transaction, both at `execute` with 16 inputs.
 
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |
 |---|---:|---:|
-| `undo_vault.wasm` after wasm-opt | 288,759 | |
-| Contract account storage, with state | 289,346 | 2.89 |
-| `mock_signer.wasm`, tests only | 140,499 | |
+| `undo_vault.wasm` after wasm-opt, sha256 `1f0f7860…` | 371,025 | |
+| Contract account storage, with state | 371,734 | 3.72 |
+| `mock_signer.wasm`, tests only | 151,856 | |
 
-The contract does not yet hold `bump`, `assess`, `heartbeat`, `set_policy`, destinations or the upgrade queue, so the deployed size will be larger.
+This is the whole method list. `bump` was cut by decision, from the crate as well as the contract: `reclaim` after `T_stuck` covers a stuck coin. An upgrade needs a smaller deposit than this only if the code shrinks: the contract account holds the storage for its own code, so a larger wasm has to find the difference in its balance first.
 
 ## Gas, Tgas burnt
 
@@ -25,31 +25,61 @@ Signer attach 30 Tgas, callback attach 10 Tgas. "Method" is the contract's own r
 
 | Method | Inputs | Method | Each `on_signed`, max | Tx |
 |---|---:|---:|---:|---:|
-| `create_vault` | | 5.41 | `on_derived` 1.85 | 13.15 |
-| `propose_btc` | 1 | 2.81 | | 3.15 |
-| `propose_btc` | 3 | 3.90 | | 4.26 |
-| `propose_btc` | 8 | 6.64 | | 7.06 |
-| `propose_btc` | 16 | 11.03 | | 11.53 |
-| `execute` | 1 | 3.28 | 2.66 | 10.08 |
-| `execute` | 3 | 5.33 | 3.17 | 25.57 |
-| `execute` | 8 | 10.42 | 4.45 | 67.06 |
-| `execute` | 16 | 18.56 | 6.50 | 141.75 |
-| `cancel`, passkey | | 3.57 | | 3.90 |
-| `cancel`, cold key | | 2.45 | | 2.77 |
-| `cancel_all_and_rotate` | | 3.35 | | 3.69 |
-| `reclaim` | | 3.01 | | 3.34 |
-| `veto_grant` | | 2.47 | | 2.79 |
-| `freeze` | | 2.11 | | 2.43 |
-| `unfreeze` | | 2.10 | | 2.42 |
-| `recover_begin` | | 3.57 | | 3.93 |
-| `recover_cancel` | | 3.23 | | 3.57 |
-| `recover_finish` | | 1.73 | | 2.05 |
-| `prune_signed` | 1 | 2.20 | | 2.52 |
-| `deposit_storage` | | | | 2.02 |
+| `create_vault` | | 5.56 | `on_derived` 2.00 | 13.46 |
+| `create_vault` and `heartbeat` in one transaction | | | | 15.45 |
+| `propose_btc` | 1 | 2.97 | | 3.31 |
+| `propose_btc` | 3 | 4.06 | | 4.42 |
+| `propose_btc` | 8 | 6.80 | | 7.22 |
+| `propose_btc` | 16 | 11.19 | | 11.70 |
+| `execute` | 1 | 3.44 | 2.99 | 10.59 |
+| `execute` | 3 | 5.49 | 3.50 | 26.45 |
+| `execute` | 8 | 10.58 | 4.77 | 68.85 |
+| `execute` | 16 | 18.72 | 6.82 | 144.98 |
+| `cancel`, passkey | | 3.89 | | 4.23 |
+| `cancel`, cold key | | 2.60 | | 2.92 |
+| `cancel_all_and_rotate` | | 3.51 | | 3.85 |
+| `reclaim` | | 3.17 | | 3.51 |
+| `veto_grant` | | 2.63 | | 2.95 |
+| `freeze` | | 2.26 | | 2.59 |
+| `unfreeze` | | 2.26 | | 2.58 |
+| `recover_begin` | | 3.73 | | 4.08 |
+| `recover_cancel` | | 3.39 | | 3.72 |
+| `recover_finish` | | 1.89 | | 2.20 |
+| `prune_signed` | 1 | 2.35 | | 2.67 |
+| `deposit_storage` | | | | 2.17 |
+| `heartbeat` | | 1.90 | | 2.21 |
+| `add_destination` | | 3.42 | | 3.77 |
+| `remove_destination` | | 3.44 | | 3.78 |
+| `set_policy` | | 3.43 | | 3.77 |
+| `set_guard` | | 3.42 | | 3.76 |
+| `clear_hold` | | 3.66 | | 4.00 |
+| `assess`, a 1 KB answer | | 2.60 | | 2.95 |
+| `assess`, the largest answer it reads, 16 KB | | 8.25 | | 10.13 |
+| `upgrade_propose` | | 1.63 | | 1.94 |
+| `upgrade_cancel` | | | | 3.42 |
+| `upgrade_apply`, 371 KB of code as raw input, with its deploy and `migrate` | | 25.57 | | 62.12 |
 
-The `on_signed` figure grows with the request's own inputs, because the answer that completes a request reads their ledger entries, and every answer rebuilds the digests. At the 16-input maximum it leaves 3.5 of the 10 Tgas attach. `execute` also computes the transaction's id and reads its child entries at first execute, about 0.2 Tgas here.
+The request body `guard_prompt` returns is 1,179 bytes with no memo.
 
-The mock's `derived_public_key` burned 5.05 Tgas, which says nothing about the real signer's view.
+## Griefed queue, and what a relay attaches
+
+The rows above are best case. Here a thief has filled the queue with the largest requests the rules allow, 16 inputs and two of 8, and a stolen passkey has filled the grant list, so every owner method has them to load. The row is 1,372 bytes. `tests/tests/measure.rs: gas_of_owner_methods_on_a_griefed_queue`.
+
+| Method | Tx, griefed | Best case |
+|---:|---:|---:|
+| `cancel`, passkey, 32 inputs waiting | 5.85 | 4.23 |
+| `cancel`, cold key | 4.54 | 2.92 |
+| `cancel_all_and_rotate`, live queue | 4.30 | 3.85 |
+| `cancel_all_and_rotate`, sweeping the dead queue, full grant list | 10.12 | 3.85 |
+| `freeze`, sweeping the dead queue | 7.48 | 2.59 |
+
+**A relay attaches 30 Tgas to every `K_p` and `K_e` method**, `OWNER_ATTACH_TGAS` in `tools/lib/vault-client.mjs`: three times the worst row. The test runs each rotation at exactly that, and `tools/test/sandbox-intents.mjs` runs the passkey methods at it. Unused gas comes back, and a function-call key has the whole attach held against its allowance until it does. Not measured with 32 known destinations in the row, which would add about 700 bytes to read. A guard's key: 10 Tgas for `heartbeat`, and 20 Tgas clears the largest `assess`.
+
+`upgrade_apply` burns 62 Tgas in all for this size of code, so attach well above that. A call with too little fails in its first receipt and leaves the approval standing, tried at 15, 30 and 45 Tgas (`surface: upgrade_apply_with_too_little_gas_*`).
+
+The `on_signed` figure grows with the request's own inputs, because the answer that completes a request reads their ledger entries, and every answer rebuilds the digests. At the 16-input maximum it leaves 3.2 of the 10 Tgas attach. `execute` also computes the transaction's id and reads its child entries at first execute, about 0.2 Tgas here.
+
+The mock's `derived_public_key` burned 5.07 Tgas, which says nothing about the real signer's view.
 
 ## Smallest prepaid gas for `execute`
 
@@ -70,14 +100,16 @@ The vault row holds neither requests nor ledger entries. Each request and each l
 
 | State | Row bytes | Reserved bytes |
 |---|---:|---:|
-| Empty vault | 666 | 152 |
-| Pending request, 1 input, with change | 690 | 405 |
-| Pending request, 16 inputs, with change | 690 | 1,785 |
-| Signed request, any size | 690 | 152 |
+| Empty vault | 958 | 226 |
+| Pending request, 1 input, no change | 982 | 479 |
+| Pending request, 16 inputs, no change | 982 | 1,859 |
+| Signed request, any size | 982 | 152 |
 
-A pending request reserves everything its execute and answers can add: 92 bytes per input, 40 for the request, and 121 for each coin it pays back to the vault, which gets a ledger entry at first execute. `review2` runs a whole life with the credit at zero, and the only bytes it finds over the growth are the ones that were transient: an in-flight entry per input, the pending entry and the slot's holder, plus an override if nobody asked for one.
+An empty vault costs at least 0.01257 NEAR of attached deposit. A first `heartbeat` adds 8 bytes. The row is 292 bytes larger than before the last methods: the snapshot's three fixed rings, the four times it and `status` read, and one flag. A request grew by its snapshot, with its memo on top. The reservation's extra 74 bytes before a vault's first completed cancel or spend are the public count's entry.
 
-A `prune_signed` of a signed 2-input request gave back 605 bytes.
+A pending request reserves everything its execute and answers can add: 92 bytes per input, 40 for the request, and 121 for each coin it pays back to the vault, which gets a ledger entry at first execute. These rows were measured on self-spends with no change, one coin paid back. `review2` runs a whole life with the credit at zero, and the only bytes it finds over the growth are the ones that were transient: an in-flight entry per input, the pending entry and the slot's holder, plus an override if nobody asked for one.
+
+A `prune_signed` of a signed 2-input request gave back 631 bytes.
 
 ## History does not weigh on the callback
 
@@ -85,21 +117,21 @@ A `prune_signed` of a signed 2-input request gave back 605 bytes.
 
 | Spends | Row bytes | `on_signed` |
 |---:|---:|---:|
-| 25 | 1,082 | 2.77 |
-| 50 | 1,482 | 2.82 |
-| 100 | 2,282 | 2.93 |
-| 150 | 3,082 | 3.04 |
+| 25 | 1,374 | 2.89 |
+| 50 | 1,774 | 2.94 |
+| 100 | 2,574 | 3.05 |
+| 150 | 3,374 | 3.16 |
 
 The row still grows 16 bytes per spend in this run, which is the 24 h fee window. Entries leave after a day, and `first_execute` sweeps them, so this is bounded by spends per day. Without a passkey override the fee budget limits that to about 26 a day on the test-coin values. With an override, the slot limits a change-bearing or self-spend to one per `T_new`. This run's clock covered less than a day, so the shrink was not observed on the wasm. `crates/undo-core/props: the_fee_window_leaves_the_row_after_a_day` covers it in the core.
 
-Credit per spend in that run, one input each: 0.00709 NEAR before pruning and 0.00274 NEAR after. What stays is the ledger entry with its pin, which the fee rules need forever, and the entry for the coin it paid back to the vault, which the chain wait needs.
+Credit per spend in that run, one input each: 0.00739 NEAR before pruning and 0.00274 NEAR after. What stays is the ledger entry with its pin, which the fee rules need forever, and the entry for the coin it paid back to the vault, which the chain wait needs.
 
 Pins in their own entries do not move the other methods either, on a vault with 40 pins:
 
 | Pins | Row bytes | `on_signed`, 8 inputs | `propose_btc`, 1 input | `cancel`, passkey |
 |---:|---:|---:|---:|---:|
-| 8 | 706 | 4.46 | | |
-| 40 | 866 | 4.50 | 2.87 | 3.62 |
+| 8 | 998 | 4.84 | | |
+| 40 | 1,158 | 4.71 | 3.04 | 4.13 |
 
 ## A pre-signed chain of CSV restarts
 
@@ -125,7 +157,7 @@ Over a day the fee budget stops the test-coin chain first: 31 links at the lowes
 
 | What | Measured |
 |---|---|
-| One failing 30 Tgas call, after refund | 0.000180 NEAR of allowance |
+| One failing 30 Tgas call, after refund | 0.000192 NEAR of allowance |
 | Same, held until the refund lands | 0.0309 NEAR at 30 Tgas, 0.1009 at 100, 0.2009 at 200 |
 | Smallest allowance tried that ran `execute`, 1 input at 70 Tgas prepaid | 0.1 NEAR |
 | Smallest allowance tried that ran `execute`, 8 inputs at 350 Tgas prepaid | 0.5 NEAR |
@@ -134,7 +166,7 @@ Tried values were 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1 and 2 NEAR. These are san
 
 ## Live on the testnet signer (11/1, Taipei)
 
-`tools/g1.mjs --live` against `v1.signer-prod.testnet` 3.18.0 on protocol 88. Proof: `proofs/g1.json`. Coins were made up: `execute` does not read Bitcoin, so nothing here moved a coin. `K_p` was a software authenticator.
+This section and the next are the build before the last methods. The contract has changed since, and nothing below has been repeated on it. `tools/g1.mjs --live` against `v1.signer-prod.testnet` 3.18.0 on protocol 88. Proof: `proofs/g1.json`. Coins were made up: `execute` does not read Bitcoin, so nothing here moved a coin. `K_p` was a software authenticator.
 
 | Stage | Result |
 |---|---|

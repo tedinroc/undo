@@ -141,7 +141,7 @@ Every method is on both protocols through `scripts/protocol-check.sh`, with a po
 | `assess`, `add_model_signer`, `set_guard_model` | `assess_checks_*`, `assess_refuses_*`, `assess_needs_no_credit`, `model_signers_*` |
 | `status` | `status_is_plain_*`, `status_says_*` |
 | `stats`, `stats_exclude` | `stats_counts_*`, `cancel_at_zero_credit_*` |
-| `upgrade_propose`, `upgrade_cancel`, `upgrade_apply`, `migrate` | `an_upgrade_lands_*`, `upgrade_authority_*`, `code_without_a_migrate_*`, `migrate_is_private` |
+| `upgrade_propose`, `upgrade_cancel`, `upgrade_apply`, `migrate` | `an_upgrade_lands_*`, `upgrade_authority_*`, `code_without_a_migrate_*`, `upgrade_apply_with_too_little_gas_*`, `migrate_is_private` |
 
 What the film and the page read, each with its own test in `tests/tests/surface.rs`:
 

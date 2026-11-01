@@ -277,6 +277,16 @@ async fn gas_of_the_last_methods() -> Result<()> {
     let view = h.vault_view(&v).await?;
     println!("MEASURE storage surface row_bytes={} reserved_bytes={}", view["row_bytes"], view["reserved_bytes"]);
 
+    // What the page's relay must attach at least, and what a fresh vault's row holds.
+    let k = keys("measure-fresh");
+    let call = h.create_call(&k, 6);
+    let args = h.create_args(&k, &call).await?;
+    let refused = h.relayer.call(h.undo.id(), "create_vault").args_json(args).deposit(near_token::NearToken::from_yoctonear(1)).gas(gas(300)).transact().await?;
+    let need = yocto_after(&err_text(&refused), "attach at least ");
+    let fresh = h.create_vault_no_credit("measure-fresh", 6).await?;
+    let view = h.vault_view(&fresh).await?;
+    println!("MEASURE storage empty_vault row_bytes={} reserved_bytes={} deposit_needed_near={:.5}", view["row_bytes"], view["reserved_bytes"], need as f64 / 1e24);
+
     // The upgrade queue. The code travels as the call's raw input, and it is a contract's size.
     let mut code = wasm("undo_vault");
     code.extend_from_slice(&[0, 2, 1, b'x']);

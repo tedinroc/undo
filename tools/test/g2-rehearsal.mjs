@@ -20,6 +20,9 @@ const TOOLS = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = resolve(TOOLS, '..');
 const ROOT = join(REPO, 'target', 'g2-rehearsal');
 const REAL_PROOF = join(REPO, 'proofs', 'g2.json');
+// The live gate has passed, so the real proof is there. A rehearsal must leave it exactly as it found it.
+const realProofBytes = () => (existsSync(REAL_PROOF) ? readFileSync(REAL_PROOF, 'latin1') : null);
+const REAL_PROOF_AT_START = realProofBytes();
 const only = process.argv[2];
 
 let failed = 0;
@@ -146,7 +149,7 @@ async function main() {
     check('finished, but the gate is not complete', proof.summary.finished === true && proof.summary.gate_complete === false && proof.summary.gate_missing.join() === 'a browser POST');
     check('the run says so out loud', /G2 IS NOT COMPLETE/.test(r.out), r.out);
     check('no secret in state, proof or output', checkSecrets('clean', r.out));
-    check('proofs/g2.json was not written', !existsSync(REAL_PROOF));
+    check('proofs/g2.json was not written', realProofBytes() === REAL_PROOF_AT_START);
     for (const script of ['check-identity.sh', 'secret-scan.sh']) {
       const scan = spawnSync(join(REPO, 'scripts', script), ['--files', paths('clean').proof, paths('clean').state], { encoding: 'utf8' });
       check(`${script} passes on the proof and the state file`, scan.status === 0, scan.stdout);
@@ -783,7 +786,7 @@ async function main() {
     check('a rehearsal aimed at proofs/g2.json: exit 2', writes.code === 2, writes.out);
     const inside = await driver('never', ['--out', join(REPO, 'proofs', 'history', 'x.json')]);
     check('or anywhere under proofs/: exit 2', inside.code === 2, inside.out);
-    check('proofs/g2.json does not exist', !existsSync(REAL_PROOF));
+    check('proofs/g2.json was not touched', realProofBytes() === REAL_PROOF_AT_START);
     // These never pass --live: an allow-list refusal has to come before any request, and plan mode writes nothing either way.
     const esplora = await node(['--esplora', 'https://blockstream.info/api']);
     check('plan with an Esplora off the list: exit 3', esplora.code === 3 && /allow list/.test(esplora.out), esplora.out);
@@ -807,7 +810,7 @@ async function main() {
     check('through a link: exit 2', linked.code === 2, linked.out);
     const linkedNew = await driver('never', ['--out', join(link, 'newdir', 'g2.json')]);
     check('through a link and a new folder: exit 2', linkedNew.code === 2, linkedNew.out);
-    check('no such file or folder appeared', !existsSync(REAL_PROOF) && !existsSync(join(REPO, 'proofs', 'newdir')));
+    check('no such file or folder appeared', realProofBytes() === REAL_PROOF_AT_START && !existsSync(join(REPO, 'proofs', 'newdir')));
 
     // A rehearsal's state folder. Names that do not exist, so a slip here could delete nothing that matters.
     const inProofs = await node(['--regtest', '--state-dir', join(REPO, 'proofs', 'never-here')]);

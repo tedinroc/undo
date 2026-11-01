@@ -145,6 +145,7 @@ MUTANTS = [
     ("upgrade_cancel does not name the proposal", LIB, 'let args = (pending.code_hash, pending.proposed_at);', 'let args = pending.code_hash;', "surface", "upgrade_authority"),
     ("upgrade_apply takes any code", LIB, 'self.upgrade.take_for_apply(env::sha256_array(&code), now())', 'self.upgrade.take_for_apply(self.upgrade.pending.map_or([0; 32], |p| p.code_hash), now())', "surface", "lands_after_the_wait"),
     ("upgrade_apply deploys nothing", LIB, 'env::promise_batch_action_deploy_contract(promise, &code);\n', '', "surface", "lands_after_the_wait"),
+    ("upgrade_apply hides how it went", LIB, '        env::promise_return(promise);\n', '', "surface", "without_a_migrate"),
     ("upgrade_apply runs no migrate", LIB, 'env::promise_batch_action_function_call(promise, "migrate", &[], NearToken::from_yoctonear(0), Gas::from_tgas(MIGRATE_TGAS));\n', '', "surface", "without_a_migrate"),
     ("migrate is public", LIB, '#[private]\n    pub fn migrate', 'pub fn migrate', "surface", "migrate_is_private"),
     ("the operator passkey need not be a key", LIB, 'require!(operator_passkey.pubkey.0.len() == 33, "the operator passkey must be a compressed P-256 key");', '', "review3", "instance_rules"),

@@ -13,6 +13,7 @@ import { base58Encode, concat, fromHex, toHex } from '../lib/bytes.mjs';
 import { randomBytes, secp256k1, sha256 } from '../lib/crypto.mjs';
 import { publicSecp } from '../lib/keys.mjs';
 import { action, failureOf, keyFromSecret, loadKeyFile, NEAR, Near, TGAS } from '../lib/near.mjs';
+import { throwawayOperatorPasskey } from '../lib/vault-client.mjs';
 import { answer, startMockNode } from './mock-node.mjs';
 
 const TOOLS = resolve(dirname(fileURLToPath(import.meta.url)), '..');
