@@ -84,6 +84,9 @@ pub struct Fixed {
     pub bump_wait_ms: Ms,
     /// Bitcoin block interval of the network, used to turn CSV blocks into the longest freeze.
     pub block_ms: Ms,
+    /// CSV blocks a vault on this instance may choose.
+    pub csv_min: u32,
+    pub csv_max: u32,
 }
 
 impl Fixed {
@@ -94,6 +97,10 @@ impl Fixed {
             expiry_window_ms: HOUR,
             bump_wait_ms: 5 * MINUTE,
             block_ms: 30_000,
+            // Six is the delay table's value. A day of Mutinynet blocks is far more than a test coin
+            // needs, and keeps the longest freeze to a day.
+            csv_min: 6,
+            csv_max: 2_880,
         }
     }
 
@@ -104,6 +111,9 @@ impl Fixed {
             expiry_window_ms: DAY,
             bump_wait_ms: 30 * MINUTE,
             block_ms: 10 * MINUTE,
+            // From the proof vault's six to the documented default's six months.
+            csv_min: 6,
+            csv_max: 26_280,
         }
     }
 }

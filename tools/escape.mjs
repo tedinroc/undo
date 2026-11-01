@@ -20,8 +20,13 @@ import { fromHex, toHex } from './lib/bytes.mjs';
 import { buildEscape, parseRecovery, parseUtxos, RecoveryError } from './lib/recovery.mjs';
 
 const USAGE = 'usage: escape.mjs --recovery FILE --utxos FILE (--to ADDRESS | --to-script HEX) --fee SATS [--out FILE] [--allow-high-fee]';
-// A typo in --fee is the likeliest way to lose coins here, so a large one must be asked for.
+// A typo in --fee is the likeliest way to lose coins here, so a large one must be asked for. Large
+// means both a share of the coins and a real amount: an escape has to out-pay every link a thief
+// holds, in absolute fee, so a small coin may need a high share of itself to get out. 5,000 sats is
+// the most fee the contract will sign in a day on the test-coin preset, and more than the proof
+// vault's 3,000, so a fee under it can never need the flag.
 const HIGH_FEE_PERCENT = 5;
+const HIGH_FEE_FLOOR_SATS = 5_000;
 
 function run() {
   const a = parseArgs(process.argv.slice(2), { recovery: 'text', utxos: 'text', to: 'text', 'to-script': 'text', fee: 'int', out: 'text', 'allow-high-fee': 'flag' });
@@ -37,8 +42,8 @@ function run() {
   }
 
   const total = coins.reduce((sum, c) => sum + c.value, 0);
-  if (a.fee * 100 > total * HIGH_FEE_PERCENT && !a['allow-high-fee']) {
-    throw new Error(`fee is above ${HIGH_FEE_PERCENT}% of the coins. Check it, then pass --allow-high-fee if you mean it`);
+  if (a.fee > HIGH_FEE_FLOOR_SATS && a.fee * 100 > total * HIGH_FEE_PERCENT && !a['allow-high-fee']) {
+    throw new Error(`fee is above ${HIGH_FEE_PERCENT}% of the coins and above ${HIGH_FEE_FLOOR_SATS} sats. Check it, then pass --allow-high-fee if you mean it`);
   }
 
   const tx = buildEscape(file, coins, destination, a.fee);
@@ -59,7 +64,8 @@ function run() {
     }
   }
   if (a.fee < size) console.log('low fee      under 1 sat/vB. Nodes may not relay this.');
-  console.log('not checked  coin existence, coin age, real values. Those need a node.');
+  console.log('fee race     This is a race if a thief holds a signed link on this coin. To replace it, this escape must pay more in absolute fee than that link, summed over every link stacked on it in the mempool. A higher fee rate alone does not win. If a link confirms first, the coin restarts its CSV and this transaction is void.');
+  console.log('not checked  coin existence, coin age, real values, any link in the mempool. Those need a node.');
   console.log(a.out ? 'written      to --out' : `hex          ${raw}`);
 }
 

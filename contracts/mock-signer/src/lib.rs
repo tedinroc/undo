@@ -27,6 +27,8 @@ pub enum Mode {
     Yield,
     /// Return JSON that is not a signature.
     Garbage,
+    /// Sign inside `sign`, with far more bytes around the signature than a real answer has.
+    Padded,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -118,6 +120,12 @@ impl MockSigner {
             Mode::Instant => {
                 let response = sign_payload(&self.secret, &tweak, payload);
                 env::value_return(&near_sdk::serde_json::to_vec(&response).unwrap());
+            }
+            Mode::Padded => {
+                let response = near_sdk::serde_json::to_value(sign_payload(&self.secret, &tweak, payload)).unwrap();
+                let mut object = response.as_object().unwrap().clone();
+                object.insert("padding".to_string(), "x".repeat(4_096).into());
+                env::value_return(&near_sdk::serde_json::to_vec(&object).unwrap());
             }
             Mode::Yield => {
                 let stored = SignatureRequest {

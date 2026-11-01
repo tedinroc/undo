@@ -201,3 +201,55 @@ async fn gas_with_a_grown_row() -> Result<()> {
     line(&format!("cancel passkey pins={pins}"), &res, &c, Some("undo:cancelled"));
     Ok(())
 }
+
+/// What a griefed panic button costs. A thief fills the queue with the largest requests the rules
+/// allow, each carrying half-signatures, so every owner method has them to load. These sizes are what
+/// the relay's owner key has to attach.
+#[tokio::test]
+async fn gas_of_owner_methods_on_a_griefed_queue() -> Result<()> {
+    let h = Harness::new().await?;
+    let burn = |r: &ExecutionFinalResult| tgas(r.total_gas_burnt.as_gas());
+    let mut v = h.create_vault("griefed").await?;
+    h.relayer.call(h.undo.id(), "deposit_storage").args_json(json!({"vault": v.hex()})).deposit(near_token::NearToken::from_near(2)).transact().await?.into_result()?;
+    let dest = p2wpkh("griefed-d");
+    // The fee cap refuses a new-address spend past 8 inputs at the rate floor. A self-spend may carry
+    // 16, up to a twentieth at propose, and the slot lets one through. The others are the largest that
+    // pass.
+    let own = v.spk.to_bytes();
+    let big = coins("griefed-a", 16, 1_000_000);
+    h.propose(&mut v, &big, &own, 16_000_000 - 2_000, None).await?;
+    for label in ["griefed-b", "griefed-c"] {
+        h.propose(&mut v, &coins(label, 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
+    }
+    let queue = h.vault_view(&v).await?["pending"].as_array().unwrap().clone();
+    assert_eq!(queue.len(), 3);
+    let third = queue[2].as_u64().unwrap();
+
+    let r = h.cancel_passkey(&v, third).await?;
+    println!("MEASURE griefed cancel_passkey tx={:.2}T", burn(&r));
+    r.into_result()?;
+    h.propose(&mut v, &coins("griefed-d", 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
+    let third = h.vault_view(&v).await?["pending"].as_array().unwrap()[2].as_u64().unwrap();
+    let args = h.cold_cancel_args(&v, &v.k_e_intent, third);
+    let r = h.relayer.call(h.undo.id(), "cancel").args_json(args).gas(gas(100)).transact().await?;
+    println!("MEASURE griefed cancel_cold tx={:.2}T", burn(&r));
+    r.into_result()?;
+    h.propose(&mut v, &coins("griefed-e", 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
+
+    let expires_at = u64::MAX / 2;
+    let new = test_key("griefed-new");
+    let digest = h.passkey_digest(&v, "cancel_all_and_rotate", &new, expires_at, Some(v.passkey_nonce));
+    let r = h.relayer.call(h.undo.id(), "cancel_all_and_rotate")
+        .args_json(json!({"vault": v.hex(), "new_k_s": hex::encode(new), "nonce": v.passkey_nonce, "expires_at": expires_at, "assertion": assertion(&v.passkey, &digest, &Bend::default())}))
+        .gas(gas(100)).transact().await?;
+    println!("MEASURE griefed cancel_all_and_rotate tx={:.2}T", burn(&r));
+    r.into_result()?;
+
+    // The first state change after that sweeps the dead queue: 32 outpoints freed in one call.
+    let until = h.now_ms().await? + 60_000;
+    let n = h.nonce_of(&v, "cold_nonce").await?;
+    let r = h.cold_call(&v, &v.k_e_intent, "freeze", &until, json!({"until": until}), n, expires_at).await?;
+    println!("MEASURE griefed freeze_sweeping_three tx={:.2}T", burn(&r));
+    r.into_result()?;
+    Ok(())
+}

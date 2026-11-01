@@ -497,3 +497,82 @@ fn standard_policy_is_on(node: &Node, coin: Coin) {
     assert!(reason.contains("scriptpubkey"), "{reason}");
     node.block(&tx).expect("the same transaction is valid by consensus");
 }
+
+/// The cold-key exit against a thief's held links, on a node. The escape and a link spend the same
+/// coin, so this is a replacement race, and the node judges it by absolute fee: the replacement has to
+/// beat the sum of everything it evicts, with stacked children counted. So an escape's fee has to be
+/// sized against the links a thief may hold, not by rate alone. `tools/escape.mjs` says this when it
+/// prints a transaction.
+#[test]
+#[ignore = "needs bitcoind: see the file header"]
+fn the_escape_is_a_fee_race_against_held_links() {
+    let node = Node::start();
+    let v = vault(6);
+    let script = v.script.as_bytes();
+    let file = RecoveryFile::new(Network::Regtest, "race", v.script.clone(), &v.e.secret.secret_bytes()).unwrap();
+    let coins = node.mine_to(6, &file.address(), &v.spk);
+    node.generate(120);
+    let link = |coin: Coin, fee: u64| {
+        let outs = vec![TxOut { value: coin.value - fee, script_pubkey: v.spk.clone() }];
+        let mut tx = Tx::cosigned(&[coin.outpoint], outs);
+        let (m, u) = (sign_der(&tx, 0, script, coin.value, &v.m), sign_der(&tx, 0, script, coin.value, &v.u));
+        tx.set_cosigned_witness(0, &m, &u, &v.script).unwrap();
+        tx
+    };
+    let child_of = |tx: &Tx, coin: Coin, fee: u64| Coin { outpoint: OutPoint { txid: tx.txid::<Sha2>(), vout: 0 }, value: coin.value - fee };
+    let send = |tx: &Tx| node.raw(&["sendrawtransaction", &hex_encode(&tx.serialize())]);
+    let in_pool = |tx: &Tx| node.raw(&["getmempoolentry", &tx.txid::<Sha2>().to_display_hex()]).is_ok();
+
+    // The owner escapes first with a small fee. A held link that pays more takes its place, and once
+    // that link is mined the escape is void and the coin's age starts over.
+    let escape = file.build_escape(&[coins[0]], &destination(), 500).unwrap();
+    send(&escape).unwrap();
+    let held = link(coins[0], 1_000);
+    send(&held).unwrap();
+    assert!(!in_pool(&escape) && in_pool(&held), "the higher absolute fee won");
+    node.generate(1);
+    let restarted = child_of(&held, coins[0], 1_000);
+    let again = file.build_escape(&[restarted], &destination(), 500).unwrap();
+    assert!(node.mempool(&again).unwrap_err().contains("non-BIP68-final"), "the new coin is young");
+
+    // The thief goes first. An equal fee does not replace it, and a higher one does.
+    let held = link(coins[1], 1_000);
+    send(&held).unwrap();
+    let equal = file.build_escape(&[coins[1]], &destination(), 1_000).unwrap();
+    assert!(send(&equal).is_err(), "an equal fee does not replace");
+    let higher = file.build_escape(&[coins[1]], &destination(), 1_200).unwrap();
+    send(&higher).unwrap();
+    assert!(in_pool(&higher) && !in_pool(&held));
+    node.generate(1);
+    assert_eq!(node.confirmations(&higher, 0), Some(1), "the owner is out");
+
+    // A stacked chain in the mempool: the escape has to beat the sum of all three.
+    let l1 = link(coins[2], 1_000);
+    let c1 = child_of(&l1, coins[2], 1_000);
+    let l2 = link(c1, 1_000);
+    let c2 = child_of(&l2, c1, 1_000);
+    let l3 = link(c2, 1_000);
+    for tx in [&l1, &l2, &l3] {
+        send(tx).unwrap();
+    }
+    let short = file.build_escape(&[coins[2]], &destination(), 2_500).unwrap();
+    assert!(send(&short).is_err(), "2,500 sats does not beat 3,000 of stacked fees, at any rate");
+    let enough = file.build_escape(&[coins[2]], &destination(), 3_500).unwrap();
+    send(&enough).unwrap();
+    assert!(in_pool(&enough) && !in_pool(&l1) && !in_pool(&l3));
+
+    // Links mined in one block restart the coin once: the last one is as old as the block.
+    let l1 = link(coins[3], 500);
+    let c1 = child_of(&l1, coins[3], 500);
+    let l2 = link(c1, 500);
+    send(&l1).unwrap();
+    send(&l2).unwrap();
+    node.generate(1);
+    let last = child_of(&l2, c1, 500);
+    let exit = file.build_escape(&[last], &destination(), 500).unwrap();
+    assert!(node.mempool(&exit).unwrap_err().contains("non-BIP68-final"));
+    node.generate(4);
+    assert!(node.mempool(&exit).unwrap_err().contains("non-BIP68-final"), "at five confirmations");
+    node.generate(1);
+    node.mempool(&exit).expect("at six confirmations");
+}

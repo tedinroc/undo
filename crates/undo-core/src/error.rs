@@ -5,6 +5,7 @@ use crate::types::{Ms, Outpoint, Sats};
 pub enum Error {
     // Creation.
     BadCsv,
+    CsvOutOfRange { min: u32, max: u32 },
     BadKey,
     DuplicateKeys,
     BadVaultScript,

@@ -11,6 +11,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CRATE = os.path.dirname(HERE)
 V = "src/vault.rs"
 W = "props/tests/common/world.rs"
+P = "src/policy.rs"
+T = "src/types.rs"
 PIN_RULE = ("inputs.len() > 1 && self.pinned_value(&input.outpoint).is_some()", "false")
 
 MUTANTS = [
@@ -93,6 +95,32 @@ MUTANTS = [
     ("chain: change is not a coin of the vault", [("src/request.rs", "if self.outputs.change_value.is_some() {\n            vouts.push(1);", "if false {\n            vouts.push(1);")]),
     ("chain: change at the wrong index", [("src/request.rs", "vouts.push(1);", "vouts.push(0);")]),
     ("chain: a self-spend's output is not a coin of the vault", [("src/request.rs", "if self.is_self_spend() {\n            vouts.push(0);", "if false {\n            vouts.push(0);")]),
+    # The review of 10/31: each of these lived through the whole suite then.
+    ("a rotation keeps the fee window", [(V, "self.fee_window.clear();\n", "")]),
+    ("raise_fee_cap ignores a freeze", [(V, "self.require_not_frozen(now)?;\n        self.auth_passkey(caller, intent, now)?;\n        let request = self.requests.get_mut(&id).ok_or(Error::RequestNotFound)?;\n        if request.status != RequestStatus::Pending {\n            return Err(Error::NotPending);\n        }\n        if !request.is_self_spend()", "self.auth_passkey(caller, intent, now)?;\n        let request = self.requests.get_mut(&id).ok_or(Error::RequestNotFound)?;\n        if request.status != RequestStatus::Pending {\n            return Err(Error::NotPending);\n        }\n        if !request.is_self_spend()")]),
+    ("cancel ignores its expiry", [(V, "if now > expires_at {\n            return Err(Error::IntentExpired);\n        }", "")]),
+    ("recover_begin overwrites a running recovery", [(V, "if self.recovery.is_some() {\n            return Err(Error::RecoveryInProgress);\n        }", "")]),
+    ("reclaim has no fee ceiling", [(V, "self.check_fee_ceiling(Tier::SelfSpend, fee, &outputs)?;\n", "")]),
+    ("reclaim ignores the pending cap", [(V, "if self.pending.len() >= MAX_PENDING {\n            return Err(Error::PendingCap);\n        }\n\n        self.supersede(owner);", "self.supersede(owner);")]),
+    ("reclaim dust check off", [(V, "if dest_value < dust_limit(ScriptKind::P2wsh) {\n            return Err(Error::DustOutput);\n        }\n        let floor", "let floor")]),
+    ("reclaim value check off", [(V, "if value == 0 || value > MAX_MONEY {\n            return Err(Error::BadValue);\n        }\n        let dest_value", "let dest_value")]),
+    ("a freeze may end now", [(V, "if until > max_until || until <= now {", "if until > max_until {")]),
+    ("sweep keeps old outflow", [(V, "self.outflow_window.retain(|e| now < e.at.saturating_add(DAY));\n", "")]),
+    ("retry window is one block", [(P, "RETRY_AFTER_BLOCKS: u64 = 250;", "RETRY_AFTER_BLOCKS: u64 = 1;")]),
+    ("bounds: the fee cap may pass the budget", [(P, "            && p.fee_cap_tx <= p.fee_budget_24h\n", "")]),
+    ("loosens ignores t_known", [(P, "self.t_known_ms < old.t_known_ms\n            || ", "")]),
+    ("loosens ignores t_new", [(P, "            || self.t_new_ms < old.t_new_ms\n", "")]),
+    ("loosens ignores t_new_unguarded", [(P, "            || self.t_new_unguarded_ms < old.t_new_unguarded_ms\n", "")]),
+    ("loosens ignores hold", [(P, "            || self.hold_ms < old.hold_ms\n", "")]),
+    ("loosens ignores t_stuck", [(P, "            || self.t_stuck_ms < old.t_stuck_ms\n", "")]),
+    ("loosens ignores the fee cap", [(P, "            || self.fee_cap_tx > old.fee_cap_tx\n", "")]),
+    ("loosens ignores the fee budget", [(P, "            || self.fee_budget_24h > old.fee_budget_24h\n", "")]),
+    ("loosens ignores outflow", [(P, "            || self.outflow_cap_24h > old.outflow_cap_24h\n", "")]),
+    ("max money off", [(T, "MAX_MONEY: Sats = 2_100_000_000_000_000;", "MAX_MONEY: Sats = 9_000_000_000_000_000_000;")]),
+    ("csv ignores the instance's floor", [(V, "args.csv_blocks < args.fixed.csv_min || ", "")]),
+    ("csv ignores the instance's ceiling", [(V, " || args.csv_blocks > args.fixed.csv_max", "")]),
+    ("test coin csv ceiling is the whole range", [(P, "csv_max: 2_880,", "csv_max: 65_535,")]),
+    ("proof vault csv ceiling is the whole range", [(P, "csv_max: 26_280,", "csv_max: 65_535,")]),
 ]
 
 ROOT = """[workspace]
@@ -120,6 +148,15 @@ def main():
     for name in ("src", "tests"):
         shutil.copytree(os.path.join(HERE, name), os.path.join(crate, "props", name))
     env = dict(os.environ, PROPTEST_CASES="2000", RUST_BACKTRACE="0")
+    # A control first. A suite that is already red would read every mutant as killed.
+    tests = ["cargo", "test", "--no-fail-fast", "--test", "scenarios", "--test", "no_unlock_before_base", "--test", "no_fee_combination", "--test", "chain_bound"]
+    baseline = subprocess.run(tests, cwd=os.path.join(crate, "props"), env=env, capture_output=True, text=True)
+    if baseline.returncode != 0:
+        print("BASELINE FAILED: the unmutated suite is not green, so no mutant result means anything")
+        print((baseline.stdout + baseline.stderr)[-2000:])
+        shutil.rmtree(tmp, ignore_errors=True)
+        return 2
+    print("baseline green", flush=True)
     survived, broken = [], []
     for name, edits in MUTANTS:
         if only and only not in name:
@@ -138,9 +175,7 @@ def main():
         killers = []
         reason = ""
         if applied:
-            run = subprocess.run(
-                ["cargo", "test", "--no-fail-fast", "--test", "scenarios", "--test", "no_unlock_before_base", "--test", "no_fee_combination", "--test", "chain_bound"],
-                cwd=os.path.join(crate, "props"), env=env, capture_output=True, text=True)
+            run = subprocess.run(tests, cwd=os.path.join(crate, "props"), env=env, capture_output=True, text=True)
             output = run.stdout + run.stderr
             if "could not compile" in output:
                 applied = False

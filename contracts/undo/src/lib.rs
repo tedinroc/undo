@@ -105,9 +105,11 @@ impl Undo {
         origins: Vec<String>,
         outflow_cap_24h: u64,
     ) -> Self {
-        if undo_btc::Network::from_name(&network).is_err() {
-            env::panic_str("unknown network");
-        }
+        let chain = undo_btc::Network::from_name(&network).unwrap_or_else(|_| env::panic_str("unknown network"));
+        // Real coins go only through the proof preset, and nobody but the operator makes a vault there:
+        // the contract cannot limit deposits to an address, so an open door would invite real money.
+        require!((preset == Preset::MainnetProof) == (chain == undo_btc::Network::Mainnet), "preset and network do not match");
+        require!(preset != Preset::MainnetProof || restrict_create, "the mainnet preset needs restrict_create");
         let (policy, bounds) = match preset {
             Preset::TestCoin => (Policy::test_coin(outflow_cap_24h), Bounds::test_coin(outflow_cap_24h)),
             Preset::MainnetProof => (Policy::mainnet_proof(outflow_cap_24h), Bounds::mainnet(outflow_cap_24h)),

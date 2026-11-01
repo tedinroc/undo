@@ -295,7 +295,7 @@ async fn f15_create_vault_refuses_csv_abuse() -> Result<()> {
         let args = h.create_args(&k, &call).await?;
         assert_refused(&h.create_raw(args, 100).await?, "CsvOutOfRange");
     }
-    for csv in [1u32, 65_535] {
+    for csv in [6u32, 2_880] {
         h.create_vault_csv(&format!("f15-ok-{csv}"), csv).await?;
     }
     Ok(())

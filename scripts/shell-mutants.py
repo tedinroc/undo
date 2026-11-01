@@ -110,6 +110,10 @@ MUTANTS = [
     ("a refund skips the credit", STORE, 'loaded.row.credit.saturating_add(cost(freed))', 'cost(freed)', "review2", "whole_deposit"),
     ("a refused vault keeps its deposit", LIB, 'if refund > 0 {\n                let promise', 'if false {\n                let promise', "review_contract", "f1_create"),
     ("a top-up is lost", LIB, 'loaded.row.credit = loaded.row.credit.saturating_add(env::attached_deposit().as_yoctonear());', '', "shell", "rotation_needs"),
+    # The review of 10/31: instance rules.
+    ("the mainnet preset may stay open", LIB, 'require!(preset != Preset::MainnetProof || restrict_create, "the mainnet preset needs restrict_create");', '', "review3", "instance_rules"),
+    ("preset and network need not match", LIB, 'require!((preset == Preset::MainnetProof) == (chain == undo_btc::Network::Mainnet), "preset and network do not match");', 'let _ = chain;', "review3", "instance_rules"),
+    ("the signer's answer may be any size", LIB, 'const MAX_SIGNER_RESPONSE: usize = 1024;', 'const MAX_SIGNER_RESPONSE: usize = 1_000_000;', "review3", "oversized_signer"),
     # The third review: creation.
     ("creation does not bind K_m", AUTH, 'let bytes = (CREATE_TAG, env::current_account_id(), vault, k_m, rp_id_hash, guard, policy, expires_at);', 'let _ = k_m; let bytes = (CREATE_TAG, env::current_account_id(), vault, rp_id_hash, guard, policy, expires_at);', "shell", "create_vault_matches"),
     ("the vault id can be recreated", LIB, 'require!(!storage::exists(&id), "vault exists");', '', "review_contract", "f22"),
@@ -171,9 +175,24 @@ def main():
     base = tempfile.mkdtemp(prefix="undo-mutants-")
     tree = os.path.join(base, "undo")
     shutil.copytree(REPO, tree, ignore=shutil.ignore_patterns("target", ".git", ".tools", "props"))
-    env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(base, "target"), CARGO_BUILD_JOBS="3")
+    env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(base, "target"), CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "3"))
     survived, wrong = [], []
     try:
+        # A control first: the unmutated tree, on exactly the tests that will judge these mutants. A red
+        # or empty one would read as a kill for every mutant that names it.
+        build = subprocess.run([os.path.join(tree, "scripts/build.sh")], cwd=tree, env=env, capture_output=True, text=True)
+        if build.returncode != 0:
+            print(f"BASELINE FAILED: the unmutated tree does not build: {build.stderr[-400:]}", flush=True)
+            return 2
+        for test, filt in sorted({(m[4], m[5]) for m in mutants}):
+            run = subprocess.run(
+                [os.path.join(tree, "scripts/protocol-check.sh"), "--test", test, protocol],
+                cwd=tree, env=dict(env, UNDO_TEST_FILTER=filt), capture_output=True, text=True,
+            )
+            if run.returncode != 0 or "0 passed, 0 failed" in run.stdout or "protocol" not in run.stdout:
+                print(f"BASELINE FAILED: {test}: {filt} is not green or names no test\n{run.stdout[-400:]}", flush=True)
+                return 2
+        print("baseline green", flush=True)
         for name, path, old, new, test, filt in mutants:
             full = os.path.join(tree, path)
             with open(full) as f:

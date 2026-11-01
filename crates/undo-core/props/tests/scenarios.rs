@@ -799,10 +799,11 @@ fn fee_budget_refuses_when_exhausted_and_recovers_after_24_h() {
     h.execute(r.id, 16).unwrap();
 }
 
-/// The spec says charging at execute means fake proposals cannot use up the owner's budget. That
-/// holds only for proposals that never reach execute. A K_s holder who waits out the delay can
-/// execute a fake request, and execute is open to anyone. So this griefing is bounded, not gone:
-/// a slot of the budget per delay, ended by rotation, and the passkey override gets the owner out.
+/// Charging at execute means a proposal that never survives its delay cannot use up the budget. A
+/// K_s holder who waits out the delay can execute a fake request, and execute is open to anyone, so
+/// this griefing is bounded, not gone: a slot of the budget per delay, ended by rotation. Until the
+/// rotation lands the passkey override gets a self-spend out, and once it lands the window is clear
+/// for an exit to a new vault as well, which is not a self-spend.
 #[test]
 fn executed_fake_requests_do_charge_the_budget_and_rotation_ends_it() {
     let mut h = H::mainnet();
@@ -1166,9 +1167,28 @@ fn csv_is_block_based_and_bounded() {
         let got = Vault::create(CreateArgs { csv_blocks: bad, ..args() });
         assert_eq!(got.unwrap_err(), Error::BadCsv, "csv={bad}");
     }
-    for good in [1u32, 6, 26_280, 65_535] {
+    for good in [6u32, 144, 2_880] {
         Vault::create(CreateArgs { csv_blocks: good, ..args() }).unwrap();
     }
+    // Past a range that allows anything, the rule underneath still holds.
+    let open = Fixed { csv_min: 0, csv_max: u32::MAX, ..Fixed::test_coin() };
+    for bad in [0u32, 65_536, 1 << 22 | 1, 1 << 31] {
+        assert_eq!(Vault::create(CreateArgs { csv_blocks: bad, fixed: open, ..args() }).unwrap_err(), Error::BadCsv, "csv={bad}");
+    }
+    Vault::create(CreateArgs { csv_blocks: 65_535, fixed: open, ..args() }).unwrap();
+}
+
+#[test]
+fn csv_stays_in_the_instance_range() {
+    let test_coin = Error::CsvOutOfRange { min: 6, max: 2_880 };
+    assert_eq!(Vault::create(CreateArgs { csv_blocks: 5, ..args() }).unwrap_err(), test_coin);
+    assert_eq!(Vault::create(CreateArgs { csv_blocks: 2_881, ..args() }).unwrap_err(), test_coin);
+    let proof = || CreateArgs { fixed: Fixed::mainnet_proof(), policy: Policy::mainnet_proof(OUTFLOW_CAP), bounds: Bounds::mainnet(OUTFLOW_CAP), ..args() };
+    let proof_range = Error::CsvOutOfRange { min: 6, max: 26_280 };
+    assert_eq!(Vault::create(CreateArgs { csv_blocks: 5, ..proof() }).unwrap_err(), proof_range);
+    assert_eq!(Vault::create(CreateArgs { csv_blocks: 26_281, ..proof() }).unwrap_err(), proof_range);
+    Vault::create(CreateArgs { csv_blocks: 6, ..proof() }).unwrap();
+    Vault::create(CreateArgs { csv_blocks: 26_280, ..proof() }).unwrap();
 }
 
 #[test]
@@ -1698,4 +1718,209 @@ fn an_inactive_vault_refuses_spend_key_methods_and_execute() {
     assert_eq!(h.reclaim(op(1), COIN, 500).unwrap_err(), Error::Inactive);
     assert_eq!(h.execute(0, 16).unwrap_err(), Error::Inactive);
     assert_eq!(h.bump(0, 900).unwrap_err(), Error::Inactive);
+}
+
+// ------------------------------------------------------------------ rules with a mutant that once lived
+
+/// The griefing above, to its end: a thief burns the budget, the owner rotates, and the exit to a new
+/// vault goes out at the new key's first try. It is not a self-spend, so no override could reach it.
+#[test]
+fn a_rotation_landing_clears_the_fee_window_for_the_exit_to_a_new_vault() {
+    let mut h = H::mainnet();
+    let thief_dest = p2wpkh(0x88);
+    for i in 10..=12 {
+        let fake = h.propose(&[(op(i), COIN)], &thief_dest, COIN - 1_000, None).unwrap();
+        h.advance(h.v.delay_now(h.now));
+        h.execute(fake.id, 16).unwrap();
+    }
+    assert_eq!(h.v.fee_used_24h(h.now), h.v.policy.fee_budget_24h);
+
+    let grant = h.rotate(SPEND_2).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), h.v.policy.fee_budget_24h, "the panic button alone clears nothing");
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(grant).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 0, "the thief's spending stopped counting when its key went");
+    assert_eq!(h.v.fee_window_entries(), 0, "and it left the row");
+
+    let new_vault = p2wsh(0x99);
+    let exit = h.propose(&[(op(1), COIN)], &new_vault, COIN - 1_000, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(exit.id, 16).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 1_000, "the exit is charged like any spend");
+
+    // The per-tx cap did not move, and an exit that wants more still has no way past it.
+    let over = h.propose(&[(op(2), COIN)], &new_vault, COIN - 1_001, None).unwrap_err();
+    assert!(matches!(over, Error::FeeOverCap { .. }), "{over:?}");
+}
+
+/// A vetoed rotation leaves the window as it is, so the clearing cannot be had without the wait.
+#[test]
+fn a_vetoed_rotation_clears_nothing() {
+    let mut h = H::test_coin();
+    let fake = h.propose(&[(op(1), COIN)], &p2wpkh(0x88), COIN - 1_000, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(fake.id, 16).unwrap();
+    let grant = h.rotate(SPEND_2).unwrap();
+    h.veto(grant).unwrap();
+    assert_eq!(h.v.fee_used_24h(h.now), 1_000);
+}
+
+#[test]
+fn cancel_past_its_own_expiry_is_refused() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wsh(0x88), COIN - 500, None).unwrap();
+    let (caller, past) = (h.pass_caller(), h.now - 1);
+    assert_eq!(h.tx(|v, now| v.cancel(&caller, past, r.id, now)).unwrap_err(), Error::IntentExpired);
+    let exact = h.now;
+    h.tx(|v, now| v.cancel(&caller, exact, r.id, now)).unwrap();
+}
+
+#[test]
+fn raise_fee_cap_is_refused_during_a_freeze_with_the_freeze_named() {
+    let mut h = H::test_coin();
+    let r = h.self_spend(&[(op(1), COIN)], 1_000).unwrap();
+    let until = h.now + MINUTE;
+    h.freeze(until).unwrap();
+    assert_eq!(h.raise_fee_cap(r.id, 1_000).unwrap_err(), Error::Frozen { until });
+}
+
+#[test]
+fn a_running_recovery_cannot_be_overwritten() {
+    let mut h = H::test_coin();
+    h.recover_begin(passkey(0x41)).unwrap();
+    let ready_at = h.v.recovery.as_ref().unwrap().ready_at;
+    h.advance(MINUTE);
+    assert_eq!(h.recover_begin(passkey(0x42)).unwrap_err(), Error::RecoveryInProgress);
+    let running = h.v.recovery.as_ref().unwrap();
+    assert_eq!((running.ready_at, running.new_passkey.pubkey.clone()), (ready_at, passkey(0x41).pubkey));
+}
+
+/// A stuck request, past `T_stuck`, with the slot free.
+fn stuck(h: &mut H, coin: Outpoint) {
+    let r = h.propose(&[(coin, COIN)], &p2wsh(0x88), COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(r.id, 16).unwrap();
+    h.advance(h.v.policy.t_stuck_ms);
+}
+
+#[test]
+fn reclaim_has_the_fee_ceiling_of_a_self_spend() {
+    let mut h = H::test_coin();
+    stuck(&mut h, op(1));
+    // Both sides of what a twentieth of the coin allows.
+    let ceiling = COIN.saturating_sub(COIN / 21);
+    let over = COIN - ceiling + 1;
+    assert!(matches!(h.reclaim(op(1), COIN, over).unwrap_err(), Error::FeeOverCap { .. }));
+    h.reclaim(op(1), COIN, 1_000).unwrap();
+}
+
+#[test]
+fn reclaim_respects_the_pending_cap() {
+    let mut h = H::test_coin();
+    stuck(&mut h, op(1));
+    for i in 2..=(1 + MAX_PENDING as u8) {
+        h.propose(&[(op(i), COIN)], &p2wsh(0x88), COIN - 500, None).unwrap();
+    }
+    assert_eq!(h.reclaim(op(1), COIN, 1_000).unwrap_err(), Error::PendingCap);
+    h.cancel(h.v.pending[0]).unwrap();
+    h.reclaim(op(1), COIN, 1_000).unwrap();
+}
+
+#[test]
+fn reclaim_refuses_dust_and_impossible_values() {
+    let mut h = H::test_coin();
+    stuck(&mut h, op(1));
+    let floor = estimate_vsize(1, &Outputs { dest_script: h.v.vault_spk.clone(), dest_value: 1, change_value: None }) * MIN_FEE_RATE;
+    let dust = dust_limit(ScriptKind::P2wsh);
+    assert_eq!(h.reclaim(op(1), dust + floor - 1, floor).unwrap_err(), Error::DustOutput);
+    assert_eq!(h.reclaim(op(1), 0, 0).unwrap_err(), Error::BadValue);
+    assert_eq!(h.reclaim(op(1), MAX_MONEY + 1, 1_000).unwrap_err(), Error::BadValue);
+    h.reclaim(op(1), dust + floor, floor).unwrap();
+}
+
+#[test]
+fn a_declared_value_above_all_bitcoin_is_refused() {
+    let mut h = H::test_coin();
+    let dest = p2wsh(0x88);
+    assert_eq!(h.propose(&[(op(1), MAX_MONEY + 1)], &dest, MAX_MONEY, None).unwrap_err(), Error::BadValue);
+    h.propose(&[(op(1), MAX_MONEY)], &dest, MAX_MONEY - 500, None).unwrap();
+    assert_eq!(MAX_MONEY, 2_100_000_000_000_000);
+}
+
+#[test]
+fn a_freeze_must_end_in_the_future() {
+    let mut h = H::test_coin();
+    let max_until = h.now + h.v.csv_period_ms();
+    assert_eq!(h.freeze(h.now).unwrap_err(), Error::FreezeTooLong { max_until });
+    assert_eq!(h.freeze(h.now - 1).unwrap_err(), Error::FreezeTooLong { max_until });
+    assert_eq!(h.v.spend_epoch, 0, "a refused freeze kills nothing");
+    h.freeze(h.now + 1).unwrap();
+}
+
+#[test]
+fn the_outflow_window_leaves_the_row_after_a_day() {
+    let mut h = H::test_coin();
+    let r = h.propose(&[(op(1), COIN)], &p2wsh(0x88), COIN - 500, None).unwrap();
+    h.advance(h.v.delay_now(h.now));
+    h.execute(r.id, 16).unwrap();
+    assert_eq!(h.v.outflow_window_entries(), 1, "an executed spend stays counted");
+    h.advance(DAY - h.v.delay_now(h.now) - 1);
+    let (caller, intent) = (h.pass_caller(), h.pk());
+    h.tx(|v, now| v.remove_destination(&caller, intent, &[0x00], now)).unwrap();
+    assert_eq!(h.v.outflow_window_entries(), 1, "one millisecond short of a day");
+    h.advance(1);
+    let (caller, intent) = (h.pass_caller(), h.pk());
+    h.tx(|v, now| v.remove_destination(&caller, intent, &[0x00], now)).unwrap();
+    assert_eq!(h.v.outflow_window_entries(), 0, "it does not sit in the row after its day");
+}
+
+#[test]
+fn the_retry_window_is_the_stated_250_blocks() {
+    assert_eq!(RETRY_AFTER_BLOCKS, 250);
+}
+
+/// One field at a time, each way. A change that gives `K_s` more reach in any field waits.
+#[test]
+fn every_field_of_a_policy_can_loosen_it_and_tighten_it() {
+    let base = Policy {
+        t_known_ms: 30 * MINUTE,
+        t_new_ms: 2 * HOUR,
+        t_new_unguarded_ms: 4 * HOUR,
+        hold_ms: 2 * HOUR,
+        t_stuck_ms: 3 * HOUR,
+        fee_cap_tx: 800,
+        fee_budget_24h: 2_000,
+        outflow_cap_24h: 500_000,
+    };
+    assert!(!base.loosens(&base));
+    type Set = fn(&mut Policy);
+    // (name, the change that loosens, the change that tightens)
+    let cases: [(&str, Set, Set); 8] = [
+        ("t_known", |p| p.t_known_ms -= 1, |p| p.t_known_ms += 1),
+        ("t_new", |p| p.t_new_ms -= 1, |p| p.t_new_ms += 1),
+        ("t_new_unguarded", |p| p.t_new_unguarded_ms -= 1, |p| p.t_new_unguarded_ms += 1),
+        ("hold", |p| p.hold_ms -= 1, |p| p.hold_ms += 1),
+        ("t_stuck", |p| p.t_stuck_ms -= 1, |p| p.t_stuck_ms += 1),
+        ("fee_cap", |p| p.fee_cap_tx += 1, |p| p.fee_cap_tx -= 1),
+        ("fee_budget", |p| p.fee_budget_24h += 1, |p| p.fee_budget_24h -= 1),
+        ("outflow_cap", |p| p.outflow_cap_24h += 1, |p| p.outflow_cap_24h -= 1),
+    ];
+    for (name, loosen, tighten) in cases {
+        let (mut wide, mut tight) = (base, base);
+        loosen(&mut wide);
+        tighten(&mut tight);
+        assert!(wide.loosens(&base), "{name} loosens");
+        assert!(!tight.loosens(&base), "{name} tightens");
+    }
+}
+
+/// The instance bounds never let a cap pass the budget, so this builds bounds that would.
+#[test]
+fn the_fee_cap_may_not_pass_the_day_budget() {
+    let mut bounds = Bounds::test_coin(OUTFLOW_CAP);
+    bounds.max.fee_cap_tx = 5_000;
+    let good = Policy { fee_cap_tx: 2_000, fee_budget_24h: 2_000, ..bounds.max };
+    assert!(bounds.allows(&good));
+    let bad = Policy { fee_cap_tx: 2_001, fee_budget_24h: 2_000, ..bounds.max };
+    assert!(!bounds.allows(&bad));
 }

@@ -26,6 +26,15 @@ SECRET_PATTERNS=(
   # dispenser file secret, and a seed file holds it alone on a line.
   "(cold_key|cold_secret|leaf_key|leaf_secret|intent_key|intent_secret|secret|seed)[\"' :=]+[\"']?[0-9a-fA-F]{64}([^0-9a-fA-F]|\$)"
   "^[[:space:]]*[0-9a-fA-F]{64}[[:space:]]*\$"
+  # The same bytes under a generic name. The name has to stand alone, so txid, digest, vault_key and
+  # a checksum stay out of it.
+  "(^|[^0-9A-Za-z_])(key|sk|privkey|priv_key|privatekey|private_key|secret_key|prv)[\"' :=(]+[\"']?(0x)?[0-9a-fA-F]{64}([^0-9a-fA-F]|\$)"
+  # A Rust literal holds key material as readily as a named field, whatever it is bound to, so these
+  # two ask for the name on the same line.
+  "([Kk][Ee][Yy]|[Ss][Kk]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Ss][Ee][Ee][Dd]|[Pp][Rr][Vv])[A-Za-z0-9_]*[\"' :=&]*(\\[u8; 32\\][ =]*)?hex!\\(?[\"'][0-9a-fA-F]{64}"
+  # NEAR's secp256k1 secret: 32 bytes in base58, so 43 or 44 characters. A public key, x and y, is
+  # about 88, and tests print those.
+  "secp256k1:${B58}{43,44}([^1-9A-HJ-NP-Za-km-z]|\$)"
   # Service tokens.
   "gh[opsu]_[A-Za-z0-9]{30,}"
   "github_pat_[A-Za-z0-9_]{30,}"

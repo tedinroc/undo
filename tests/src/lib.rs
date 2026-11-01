@@ -383,9 +383,10 @@ impl Harness {
         let relayer = worker.dev_create_account().await?;
         undo.call("new")
             .args_json(json!({
-                "preset": o.preset, "operator": relayer.id(), "restrict_create": o.restrict_create,
+                "preset": o.preset, "operator": relayer.id(), "restrict_create": o.restrict_create || o.preset == "MainnetProof",
                 "signer": mock.id(), "domain_id": 0, "sign_tgas": SIGN_TGAS, "callback_tgas": o.callback_tgas,
-                "derive_tgas": DERIVE_TGAS, "network": "mutinynet", "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP,
+                "derive_tgas": DERIVE_TGAS, "network": if o.preset == "MainnetProof" { "mainnet" } else { "mutinynet" },
+                "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP,
             }))
             .transact()
             .await?

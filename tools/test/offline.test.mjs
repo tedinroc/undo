@@ -182,6 +182,18 @@ test('escape output carries no secret, and every refusal is clean', () => {
   };
   refuse(['--recovery', rec, '--utxos', utxos, '--to', 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', '--fee', '1000'], 'mainnet address on a test file');
   refuse(['--recovery', rec, '--utxos', utxos, '--to', dest, '--fee', '50000'], 'fee above 5 percent');
+  const race = tool('escape.mjs', ['--recovery', rec, '--utxos', utxos, '--to', dest, '--fee', '1000']);
+  assert.match(race.stdout, /must pay more in absolute fee than that link, summed over every link stacked on it in the mempool/);
+  // A small coin must be able to out-pay a held link without asking for an override.
+  const small = file('small.json', JSON.stringify([{ ...coinsOf(1)[0], value: 6_000 }]));
+  for (const [fee, ok] of [[1_200, true], [5_000, true]]) {
+    assert.equal(tool('escape.mjs', ['--recovery', rec, '--utxos', small, '--to', dest, '--fee', String(fee)]).status, ok ? 0 : 1, `small coin, fee ${fee}`);
+  }
+  // Above the floor the percentage still asks, and under the percentage nothing does.
+  const mid = file('mid.json', JSON.stringify([{ ...coinsOf(1)[0], value: 100_000 }]));
+  refuse(['--recovery', rec, '--utxos', mid, '--to', dest, '--fee', '5001'], 'over both limits');
+  const big100 = file('big.json', JSON.stringify([{ ...coinsOf(1)[0], value: 1_000_000 }]));
+  assert.equal(tool('escape.mjs', ['--recovery', rec, '--utxos', big100, '--to', dest, '--fee', '50000']).status, 0, 'exactly 5 percent of a large coin');
   refuse(['--recovery', rec, '--utxos', utxos, '--to', dest, '--fee', '199999', '--allow-high-fee'], 'dust');
   refuse(['--recovery', rec, '--utxos', utxos, '--to-script', '6a0100', '--fee', '1000'], 'OP_RETURN');
   refuse(['--recovery', rec, '--utxos', utxos, '--to', dest, '--fee', '1000', '--oops'], 'unknown flag', 2);

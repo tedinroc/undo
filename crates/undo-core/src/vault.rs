@@ -199,6 +199,11 @@ impl Vault {
         if args.csv_blocks == 0 || args.csv_blocks > 65_535 {
             return Err(Error::BadCsv);
         }
+        // The instance's own range. The longest freeze is one CSV period, so a CSV far past what the
+        // instance documents would let one signature freeze a vault for over a year.
+        if args.csv_blocks < args.fixed.csv_min || args.csv_blocks > args.fixed.csv_max {
+            return Err(Error::CsvOutOfRange { min: args.fixed.csv_min, max: args.fixed.csv_max });
+        }
         let compressed = |k: &[u8]| k.len() == 33 && (k[0] == 2 || k[0] == 3);
         if !compressed(&args.k_u) || !compressed(&args.k_m) || !compressed(&args.k_e_leaf) {
             return Err(Error::BadKey);
@@ -338,6 +343,12 @@ impl Vault {
     /// what keeps a vault's row bounded by what it did in the last day.
     pub fn fee_window_entries(&self) -> usize {
         self.fee_window.len()
+    }
+
+    /// The same for the 24 h outflow window. A known destination's tier reads only the last day, so
+    /// this matters for the row's size and not for any rule.
+    pub fn outflow_window_entries(&self) -> usize {
+        self.outflow_window.len()
     }
 
     /// How long a coin this vault's own signed transaction paid back to itself must wait before it
@@ -660,6 +671,12 @@ impl Vault {
             GrantKind::RotateSpend { new_k_s } => {
                 self.k_s = new_k_s;
                 self.k_s_suspended = false;
+                // A stolen K_s can burn the 24 h budget with coins that do not exist, and the exit to a
+                // new vault is not a self-spend, so no override reaches it. The thief's key is gone
+                // now, so its spending does not count against the owner. This lands after `T_known`
+                // and `K_e` can veto it, so it is a grant that waits like any other. The per-tx cap
+                // still holds.
+                self.fee_window.clear();
             }
             GrantKind::AddDestination { script } => {
                 self.known.insert(script);
