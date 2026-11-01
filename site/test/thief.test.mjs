@@ -841,8 +841,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await toArmed(v, {});
     const r = await pressToWaiting();
     const req = await views.request(v.vaultHex, r);
-    await fastForwardToLeft(req.unlock, 25_000);
-    await sleep(5500);
+    await fastForwardToLeft(req.unlock, 30_000);
+    // A page reads block time every 5 s, and a jump counts only when a second read agrees.
+    await sleep(11_000);
     const before = await clockText();
     await js('location.reload()');
     await waitState('waiting', 10_000);
