@@ -1,0 +1,17 @@
+# Pages project. Bindings only: every secret and account name comes from the environment. See site/deploy.sh.
+name = "undo-btc"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-01-15"
+
+[[durable_objects.bindings]]
+name = "UNDO_STATE"
+class_name = "UndoState"
+script_name = "undo-cron"
+
+[vars]
+SITE_ORIGIN = "https://undo-btc.pages.dev"
+NEAR_RPC_URLS = "https://test.rpc.fastnear.com,https://near-testnet.drpc.org,https://rpc.testnet.near.org"
+ESPLORA_URL = "https://mutinynet.com/api"
+DISPENSER_NETWORK = "mutinynet"
+POW_BITS = "18"
+FUNDS_SATS = "2000"

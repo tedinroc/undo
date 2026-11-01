@@ -48,6 +48,8 @@ export const RELAY_ERRORS = Object.freeze({
   rpc_down: 503,
   stale_nonce: 503,
   tx_refused: 422,
+  assertion_refused: 422,
+  relay_error: 500,
   dispenser_empty: 503,
   esplora_down: 503,
 });

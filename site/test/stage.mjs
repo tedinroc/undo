@@ -23,6 +23,7 @@ import { randomBytes } from '../../tools/lib/crypto.mjs';
 import { throwawayOperatorPasskey } from '../../tools/lib/vault-client.mjs';
 import { build } from '../build.mjs';
 import { buildFragment } from '../lib/fragment.mjs';
+import { localStateNamespace } from './do-shim.mjs';
 
 const SITE = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RELAY_HANDLER = join(SITE, 'functions/_relay/handler.mjs');
@@ -154,6 +155,7 @@ async function stageOn(rig, { port, softPasskey, relayEnv, miner }) {
       DISPENSER_NETWORK: 'regtest',
       IP_SALT: 'undo-test-only:stage',
       POW_BITS: 8,
+      UNDO_STATE: localStateNamespace(),
       ...relayEnv,
     });
   }
