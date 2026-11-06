@@ -305,6 +305,8 @@ async fn gas_of_the_last_methods() -> Result<()> {
 /// `OWNER_ATTACH_TGAS` in `tools/lib/vault-client.mjs` too. Prepaid gas is held against the relay, and
 /// unused gas comes back, so this only has to clear the worst case, not match the usual one.
 const OWNER_ATTACH_TGAS: u64 = 30;
+/// What the docs tell a guard to attach to `assess`.
+const ASSESS_ATTACH_TGAS: u64 = 20;
 
 async fn rotate_at_owner_attach(h: &Harness, v: &Vault, label: &str) -> Result<(ExecutionFinalResult, ed25519_dalek::SigningKey)> {
     let expires_at = u64::MAX / 2;
@@ -320,78 +322,226 @@ async fn rotate_at_owner_attach(h: &Harness, v: &Vault, label: &str) -> Result<(
     Ok((r, new))
 }
 
-/// What a griefed panic button costs. A thief fills the queue with the largest requests the rules
-/// allow, each carrying half-signatures, so every owner method has them to load. These sizes are what
-/// the relay's owner key has to attach.
-#[tokio::test]
-async fn gas_of_owner_methods_on_a_griefed_queue() -> Result<()> {
-    let h = Harness::new().await?;
-    let burn = |r: &ExecutionFinalResult| tgas(r.total_gas_burnt.as_gas());
-    let mut v = h.create_vault("griefed").await?;
-    h.relayer.call(h.undo.id(), "deposit_storage").args_json(json!({"vault": v.hex()})).deposit(near_token::NearToken::from_near(2)).transact().await?.into_result()?;
-    let dest = p2wpkh("griefed-d");
-    // The fee cap refuses a new-address spend past 8 inputs at the rate floor. A self-spend may carry
-    // 16, up to a twentieth at propose, and the slot lets one through. The others are the largest that
-    // pass.
-    let own = v.spk.to_bytes();
-    let big = coins("griefed-a", 16, 1_000_000);
-    h.propose(&mut v, &big, &own, 16_000_000 - 2_000, None).await?;
-    for label in ["griefed-b", "griefed-c"] {
-        h.propose(&mut v, &coins(label, 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
-    }
-    let queue = h.vault_view(&v).await?["pending"].as_array().unwrap().clone();
-    assert_eq!(queue.len(), 3);
-    let third = queue[2].as_u64().unwrap();
+/// One griefed row: what it burnt, at exactly what a relay attaches.
+fn griefed(name: &str, r: ExecutionFinalResult) -> Result<()> {
+    let burnt = tgas(r.total_gas_burnt.as_gas());
+    println!("MEASURE griefed {name} tx={burnt:.2}T");
+    assert!(burnt < OWNER_ATTACH_TGAS as f64, "{name}: {burnt}");
+    r.into_result()?;
+    Ok(())
+}
 
-    let r = h.cancel_passkey(&v, third).await?;
-    println!("MEASURE griefed cancel_passkey tx={:.2}T", burn(&r));
-    r.into_result()?;
-    h.propose(&mut v, &coins("griefed-d", 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
-    let third = h.vault_view(&v).await?["pending"].as_array().unwrap()[2].as_u64().unwrap();
-    let args = h.cold_cancel_args(&v, &v.k_e_intent, third);
-    let r = h.relayer.call(h.undo.id(), "cancel").args_json(args).gas(gas(100)).transact().await?;
-    println!("MEASURE griefed cancel_cold tx={:.2}T", burn(&r));
-    r.into_result()?;
-    h.propose(&mut v, &coins("griefed-e", 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
+/// The worst row the rules allow: 32 known destinations of the longest script, a full list of grants with
+/// the longest account names, and the 24 h windows full at the rate floor. Thief here has K_s, K_u and K_p.
+async fn worst_row(h: &Harness, label: &str, guard: &str) -> Result<Vault> {
+    let k = keys(label);
+    let mut call = h.create_call(&k, 6);
+    call.guard = Some(guard.to_string());
+    let args = h.create_args(&k, &call).await?;
+    h.create_raw(args, 100).await?.into_result()?;
+    let id = h.vault_id(&k, 6);
+    let k_m = h.mpc_key(&id);
+    let script = witness_script(&compressed(&k.k_u), &compressed(&k_m), &compressed(&k.k_e_leaf), 6);
+    let spk = script.to_p2wsh();
+    let mut v = Vault { id, k_s: k.k_s, k_u: k.k_u, k_e_leaf: k.k_e_leaf, k_e_intent: k.k_e_intent, passkey: k.passkey, k_m, csv: 6, script, spk, spend_nonce: 0, passkey_nonce: 0 };
+    h.relayer.call(h.undo.id(), "deposit_storage").args_json(json!({"vault": v.hex()})).deposit(near_token::NearToken::from_near(5)).transact().await?.into_result()?;
 
     let expires_at = u64::MAX / 2;
-    // A full grant list on top: every byte of it is in the row each of these reads.
-    for i in 0..7u8 {
-        let mut script = vec![0x00, 0x14];
-        script.extend([i; 20]);
-        let n = h.nonce_of(&v, "passkey_nonce").await?;
-        h.passkey_call(&v, &v.passkey, "add_destination", &script, json!({"script": hex::encode(&script)}), n, expires_at).await?.into_result()?;
+    let t_new = h.vault_view(&v).await?["policy"]["t_new_ms"].as_u64().unwrap();
+    let mut known = None;
+    for i in 0..32 {
+        let mut script = vec![0x00, 0x20];
+        script.extend_from_slice(&test_key(&format!("{label}-known-{i}")));
+        let r = h.passkey_call(&v, &v.passkey, "add_destination", &script, json!({"script": hex::encode(&script)}), v.passkey_nonce, expires_at).await?;
+        let grant = r.into_result()?.json::<u64>()?;
+        v.passkey_nonce += 1;
+        known.get_or_insert(script);
+        if i % 8 == 7 {
+            h.advance_to(h.now_ms().await? + t_new + 1).await?;
+            for g in grant - 7..=grant {
+                h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": g})).transact().await?.into_result()?;
+            }
+        }
     }
-    let (r, _) = rotate_at_owner_attach(&h, &v, "griefed-new").await?;
-    println!("MEASURE griefed cancel_all_and_rotate tx={:.2}T", burn(&r));
-    r.into_result()?;
-
-    // The heaviest panic button there is: pressed again on the dead queue it must now sweep, with the
-    // grant list still full, at exactly what the relay attaches.
-    let (r, new) = rotate_at_owner_attach(&h, &v, "griefed-newer").await?;
-    println!("MEASURE griefed cancel_all_and_rotate_sweeping_three tx={:.2}T", burn(&r));
-    r.into_result()?;
+    for i in 0..8u8 {
+        let name = Some(format!("{}", (b'a' + i) as char).repeat(64));
+        h.passkey_call(&v, &v.passkey, "set_guard", &name, json!({"guard": name}), v.passkey_nonce, expires_at).await?.into_result()?;
+        v.passkey_nonce += 1;
+    }
+    let c = coins(&format!("{label}-win"), 31, 5_000);
+    let known = known.unwrap();
+    for chunk in c.chunks(3) {
+        let mut ids = vec![];
+        for coin in chunk {
+            ids.push(h.propose(&mut v, std::slice::from_ref(coin), &known, 5_000 - 161, None).await?);
+        }
+        for id in ids {
+            h.wait_unlock(&v, id).await?;
+            h.execute_and_respond(&v, id, 1, false).await?.into_result()?;
+        }
+    }
     let view = h.vault_view(&v).await?;
-    println!("MEASURE griefed row row_bytes={} grants={}", view["row_bytes"], view["grants"].as_array().unwrap().len());
+    println!("MEASURE griefed row row_bytes={} known={} grants={} fee_used={}", view["row_bytes"], view["known"].as_array().unwrap().len(), view["grants"].as_array().unwrap().len(), view["fee_used_24h"]);
+    Ok(v)
+}
 
-    // The new key lands, the thief's next queue dies, and the cold key's freeze is what sweeps it.
-    let grant = view["grants"].as_array().unwrap().last().unwrap().as_u64().unwrap();
-    let known = view["policy"]["t_known_ms"].as_u64().unwrap();
-    h.advance_to(h.now_ms().await? + known + 1).await?;
-    h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": grant})).transact().await?.into_result()?;
-    v.k_s = new;
-    for label in ["griefed-f", "griefed-g", "griefed-h"] {
-        h.propose(&mut v, &coins(label, 8, 1_000_000), &dest, 8_000_000 - 1_000, None).await?;
+/// The largest queue the rules allow. The slot lets one self-spend through per `T_new`, and a self-spend stays
+/// pending for over an hour, so three of 16 inputs can wait at once, each with the longest memo.
+async fn big_queue(h: &Harness, v: &mut Vault, label: &str) -> Result<Vec<u64>> {
+    let t_new = h.vault_view(v).await?["policy"]["t_new_ms"].as_u64().unwrap();
+    let own = v.spk.to_bytes();
+    let mut ids = vec![];
+    for i in 0..3 {
+        h.advance_to(h.now_ms().await? + t_new + 1).await?;
+        let c = coins(&format!("{label}-q{i}"), 16, 1_000_000);
+        let args = h.propose_args_memo(v, &c, &own, 16_000_000 - 2_000, None, v.spend_nonce, Some("\"".repeat(140)));
+        let r = h.propose_raw(args).await?;
+        ids.push(r.into_result()?.json::<u64>()?);
+        v.spend_nonce += 1;
     }
-    let (r, _) = rotate_at_owner_attach(&h, &v, "griefed-newest").await?;
-    r.into_result()?;
+    Ok(ids)
+}
 
-    // The first state change after that sweeps the dead queue: 32 outpoints freed in one call.
+/// What a griefed panic button costs, on the worst row and the largest queue. These sizes are what the
+/// relay's owner key has to attach, and the callback's fixed gas has to clear.
+#[tokio::test]
+async fn gas_of_owner_methods_on_the_worst_row_and_queue() -> Result<()> {
+    let h = Harness::new().await?;
+    let guard = h.worker.dev_create_account().await?;
+    let mut v = worst_row(&h, "griefed", guard.id().as_str()).await?;
+    let own = v.spk.to_bytes();
+    let expires_at = u64::MAX / 2;
+
+    // on_signed first, on the biggest request, while the row is at its largest.
+    let t_new = h.vault_view(&v).await?["policy"]["t_new_ms"].as_u64().unwrap();
+    h.advance_to(h.now_ms().await? + t_new + 1).await?;
+    let args = h.propose_args_memo(&v, &coins("griefed-big", 16, 1_000_000), &own, 16_000_000 - 2_000, None, v.spend_nonce, Some("\"".repeat(140)));
+    let r = h.propose_raw(args).await?;
+    let id = r.into_result()?.json::<u64>()?;
+    v.spend_nonce += 1;
+    h.raise_fee_cap(&mut v, id, 2_000).await?;
+    h.wait_unlock(&v, id).await?;
+    let r = h.execute_and_respond(&v, id, 16, false).await?;
+    r.clone().into_result()?;
+    let c = h.contract().to_string();
+    let most = own_gas(&r, &c, Some("undo:signed")).into_iter().max().unwrap_or(0);
+    println!("MEASURE griefed on_signed_16_inputs own={:.2}T", tgas(most));
+    assert!(tgas(most) < CALLBACK_TGAS as f64);
+    assert_eq!(h.status(&v, id).await?, "Signed");
+
+    let queue = big_queue(&h, &mut v, "griefed").await?;
+    let digest = h.passkey_digest(&v, "cancel", &queue[2], expires_at, None);
+    let auth = json!({"Passkey": assertion(&v.passkey, &digest, &Bend::default())});
+    griefed("cancel_passkey", h.relayer.call(h.undo.id(), "cancel").args_json(json!({"vault": v.hex(), "request": queue[2], "expires_at": expires_at, "auth": auth})).gas(gas(OWNER_ATTACH_TGAS)).transact().await?)?;
+    h.advance_to(h.now_ms().await? + t_new + 1).await?;
+    let again = h.propose(&mut v, &coins("griefed-again", 16, 1_000_000), &own, 16_000_000 - 2_000, None).await?;
+    let args = h.cold_cancel_args(&v, &v.k_e_intent, again);
+    griefed("cancel_cold", h.relayer.call(h.undo.id(), "cancel").args_json(args).gas(gas(OWNER_ATTACH_TGAS)).transact().await?)?;
+    h.advance_to(h.now_ms().await? + t_new + 1).await?;
+    h.propose(&mut v, &coins("griefed-again2", 16, 1_000_000), &own, 16_000_000 - 2_000, None).await?;
+
+    let (r, _) = rotate_at_owner_attach(&h, &v, "griefed-new").await?;
+    griefed("cancel_all_and_rotate", r)?;
+    let (r, _) = rotate_at_owner_attach(&h, &v, "griefed-newer").await?;
+    griefed("cancel_all_and_rotate_sweeping_three", r)?;
+    let view = h.vault_view(&v).await?;
+    println!("MEASURE griefed row_after_sweep row_bytes={} grants={}", view["row_bytes"], view["grants"].as_array().unwrap().len());
+    Ok(())
+}
+
+/// The other calls that can land on a dead queue: whichever comes first sweeps it. `apply_grant` and
+/// `recover_finish` are neither a passkey's nor a cold key's, and the rotation's landing goes through one.
+#[tokio::test]
+async fn gas_of_the_landing_and_the_cold_key_on_the_largest_dead_queue() -> Result<()> {
+    let h = Harness::new().await?;
+    let guard = h.worker.dev_create_account().await?;
+    let mut v = worst_row(&h, "landing", guard.id().as_str()).await?;
+    let expires_at = u64::MAX / 2;
+    big_queue(&h, &mut v, "landing-a").await?;
+    rotate_at_owner_attach(&h, &v, "landing-n1").await?.0.into_result()?;
+    let newest_grant = |view: &serde_json::Value| view["grants"].as_array().unwrap().last().unwrap().as_u64().unwrap();
+
+    // The cold key's recovery is the first state change.
+    let phone = p256::ecdsa::SigningKey::from_bytes((&test_key("landing-phone")).into()).unwrap();
+    let rp = sha256(RP_ID.as_bytes());
+    let args = (p256_compressed(&phone), rp);
+    let n = h.nonce_of(&v, "cold_nonce").await?;
+    let digest = intent_digest("undo-cold-v1", h.contract(), &v.id, "recover_begin", &args, expires_at, Some(n));
+    let call = json!({
+        "vault": v.hex(), "nonce": n, "expires_at": expires_at,
+        "new_passkey": {"pubkey": hex::encode(p256_compressed(&phone)), "rp_id_hash": hex::encode(rp)},
+        "pop_p": assertion(&phone, &digest, &Bend::default()),
+        "signature": hex::encode(secp_sign(&v.k_e_intent, &digest)),
+    });
+    griefed("recover_begin_sweeping_three", h.relayer.call(h.undo.id(), "recover_begin").args_json(call).gas(gas(OWNER_ATTACH_TGAS)).transact().await?)?;
+    let n = h.nonce_of(&v, "passkey_nonce").await?;
+    h.passkey_call(&v, &v.passkey, "recover_cancel", &(), json!({}), n, expires_at).await?.into_result()?;
+
+    // The rotation lands, the next queue dies, and `apply_grant` is what sweeps it.
+    let known = h.vault_view(&v).await?["policy"]["t_known_ms"].as_u64().unwrap();
+    let grant = newest_grant(&h.vault_view(&v).await?);
+    h.advance_to(h.now_ms().await? + known + 1).await?;
+    h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": grant})).gas(gas(OWNER_ATTACH_TGAS)).transact().await?.into_result()?;
+    v.k_s = ed25519_dalek::SigningKey::from_bytes(&test_key("landing-n1"));
+    big_queue(&h, &mut v, "landing-b").await?;
+    let (_, new) = rotate_at_owner_attach(&h, &v, "landing-n2").await?;
+    let grant = newest_grant(&h.vault_view(&v).await?);
+    h.advance_to(h.now_ms().await? + known + 1).await?;
+    griefed("apply_grant_sweeping_three", h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": grant})).gas(gas(OWNER_ATTACH_TGAS)).transact().await?)?;
+    v.k_s = new;
+
+    big_queue(&h, &mut v, "landing-c").await?;
+    rotate_at_owner_attach(&h, &v, "landing-n3").await?.0.into_result()?;
     let until = h.now_ms().await? + 60_000;
     let n = h.nonce_of(&v, "cold_nonce").await?;
-    let r = h.cold_call(&v, &v.k_e_intent, "freeze", &until, json!({"until": until}), n, expires_at).await?;
-    println!("MEASURE griefed freeze_sweeping_three tx={:.2}T", burn(&r));
-    assert!(burn(&r) < OWNER_ATTACH_TGAS as f64);
+    griefed("freeze_sweeping_three", h.cold_call(&v, &v.k_e_intent, "freeze", &until, json!({"until": until}), n, expires_at).await?)?;
+    Ok(())
+}
+
+/// The doc says 20 Tgas clears the largest `assess`. A thief can time two big requests to die just before the
+/// guard calls, so `assess` is the call that sweeps them, on the largest answer it reads, with eight signers.
+#[tokio::test]
+async fn gas_of_assess_on_a_dead_queue() -> Result<()> {
+    use ed25519_dalek::Signer as _;
+    let h = Harness::new().await?;
+    let guard = h.worker.dev_create_account().await?;
+    let mut v = worst_row(&h, "assess", guard.id().as_str()).await?;
+    let model_name = "Qwen/Qwen3.8-27B";
+    for i in 0..7 {
+        let decoy = ed25519_dalek::SigningKey::from_bytes(&test_key(&format!("decoy-{i}")));
+        h.relayer.call(h.undo.id(), "add_model_signer").args_json(json!({"model": model_name, "signer": hex::encode(decoy.verifying_key().to_bytes())})).transact().await?.into_result()?;
+    }
+    let model = ed25519_dalek::SigningKey::from_bytes(&test_key("assess-model"));
+    h.relayer.call(h.undo.id(), "add_model_signer").args_json(json!({"model": model_name, "signer": hex::encode(model.verifying_key().to_bytes())})).transact().await?.into_result()?;
+
+    let vault = v.hex();
+    let beat = || guard.call(h.undo.id(), "heartbeat").args_json(json!({"vault": vault})).gas(gas(10)).transact();
+    h.advance_to(h.now_ms().await? + 301_000).await?;
+    beat().await?.into_result()?;
+    let own = v.spk.to_bytes();
+    let t0 = h.now_ms().await?;
+    let a = h.propose(&mut v, &coins("assess-a", 16, 1_000_000), &own, 16_000_000 - 2_000, None).await?;
+    let b = h.propose(&mut v, &coins("assess-b", 8, 1_000_000), &p2wpkh("assess-thief"), 8_000_000 - 950, None).await?;
+    let (ax, bx) = (h.request(&v, a).await?["expires_at"].as_u64().unwrap(), h.request(&v, b).await?["expires_at"].as_u64().unwrap());
+    for minutes in [19, 38, 57] {
+        h.advance_to(t0 + minutes * MINUTE_MS).await?;
+        beat().await?.into_result()?;
+    }
+    // The real request goes in just before both die, and is still waiting when they have.
+    h.advance_to(ax - 20_000).await?;
+    let r = h.propose_simple(&mut v, &coins("assess-r", 1, 1_000_000)[0]).await?;
+    h.advance_to(bx + 1).await?;
+
+    let body: String = h.undo.view("guard_prompt").args_json(json!({"vault": v.hex(), "request": r})).await?.json()?;
+    let content = serde_json::to_string(r#"{"hold":true,"reason":"memo_mismatch"}"#)?;
+    let small = format!(r#"{{"id":"chatcmpl-1","object":"chat.completion","model":"{model_name}","choices":[{{"index":0,"message":{{"role":"assistant","content":{content}}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":318,"completion_tokens":15,"total_tokens":333}}}}"#);
+    let padded = format!("{small}{}", " ".repeat(16_384 - small.len()));
+    let text = format!("{model_name}:{}:{}", hex::encode(sha256(body.as_bytes())), hex::encode(sha256(padded.as_bytes())));
+    let sig = model.sign(text.as_bytes()).to_bytes();
+    let r = guard.call(h.undo.id(), "assess").args_json(json!({"vault": v.hex(), "request": r, "response_bytes": hex::encode(&padded), "signature": hex::encode(sig)})).gas(gas(ASSESS_ATTACH_TGAS)).transact().await?;
+    let burnt = tgas(r.total_gas_burnt.as_gas());
+    println!("MEASURE griefed assess_sweeping_two_16kb_eight_signers tx={burnt:.2}T");
+    assert!(burnt < ASSESS_ATTACH_TGAS as f64);
     r.into_result()?;
     Ok(())
 }

@@ -21,8 +21,9 @@ export function parseSignerKey(text) {
 }
 
 /**
- * What a relay attaches to a `K_p` or `K_e` method. The heaviest measured is a rotation sweeping a griefed
- * queue with a full grant list, in docs/measurements.md. Unused gas comes back.
+ * What a relay attaches to a `K_p` or `K_e` method, and to `apply_grant` and `recover_finish`, either of which
+ * can be the call that sweeps a dead queue. The heaviest measured is in docs/measurements.md, on the worst row and
+ * the largest queue. Unused gas comes back.
  */
 export const OWNER_ATTACH_TGAS = 30n;
 

@@ -7,30 +7,33 @@ scripts/build.sh
 scripts/protocol-check.sh --measure    # <target>/measure-<version>.txt
 ```
 
-The two protocols agreed to within 0.04 Tgas per method and 0.16 Tgas per transaction, both at `execute` with 16 inputs.
+The two protocols agreed to within 0.06 Tgas per method and 0.08 Tgas per transaction. The same wasm measured twice moved by up to 0.25 Tgas on the griefed rows, so read the last digit as noise.
 
 ## Last full run
 
-11/1, on the wasm below, sandbox with the mock signer, regtest and the consensus library. Nothing here touched a live network.
+11/6, on the wasm below, sandbox with the mock signer, regtest and the consensus library. Nothing here touched a live network. Every check ran on the same tree, the one the round-4 commits hold, read by a hash of every file before and after.
 
 | Check | Result |
 |---|---|
-| `scripts/protocol-check.sh` | 125 passed, 0 failed, on each of protocols 86 and 88 |
-| `crates/undo-core/props` | 113 passed, including 105 scenarios |
-| `crates/undo-core/props/mutation-check.py` | 139 of 139 killed, control green |
-| `scripts/shell-mutants.py` | 164 of 164 killed, control green. One lived on the first pass, the view's request epoch, because a fresh vault's epoch is 0: `film_the_phones_cancel_*` now reads the next request's too, and that mutant was re-run alone, not the other 163 |
-| `tools/test/run-all.sh` | Passed: 86 tool mutants killed, G1 driver on both protocols, G2 rehearsal 40 scenarios |
-| `crates/undo-btc` regtest | 2 passed on real bitcoind, including the escape's fee race |
+| `scripts/build.sh` | `undo_vault.wasm` 378,314 bytes, sha256 `4632075a…` |
+| `scripts/check-wasm.sh`, `check-identity.sh`, `secret-scan.sh`, `test-secret-scan.sh`, `outward-check.sh` | OK |
+| `scripts/protocol-check.sh` | 148 passed, 0 failed, on each of protocols 86 and 88 |
+| `scripts/protocol-check.sh --measure` | 6 passed on each, the figures below |
+| `crates/undo-core/props` | 131 passed, including 123 scenarios |
+| `crates/undo-core/props/mutation-check.py` | 165 of 165 killed, control green |
+| `scripts/shell-mutants.py`, protocol 88 | 198 of 198 killed, control green, none read as not judged |
+| `tools/test/run-all.sh` | Passed: 87 tool mutants killed, none not judged, both harness self-tests, G1 driver on both protocols, G2 rehearsal 40 scenarios |
+| `crates/undo-btc` | 50 passed, and 2 on real bitcoind regtest, including the escape's fee race |
 
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |
 |---|---:|---:|
-| `undo_vault.wasm` after wasm-opt, sha256 `1f0f7860…` | 371,025 | |
-| Contract account storage, with state | 371,734 | 3.72 |
+| `undo_vault.wasm` after wasm-opt, sha256 `4632075a…` | 378,314 | |
+| Contract account storage, with state | 379,047 | 3.79 |
 | `mock_signer.wasm`, tests only | 151,856 | |
 
-This is the whole method list. `bump` was cut by decision, from the crate as well as the contract: `reclaim` after `T_stuck` covers a stuck coin. An upgrade needs a smaller deposit than this only if the code shrinks: the contract account holds the storage for its own code, so a larger wasm has to find the difference in its balance first.
+This is the whole method list. `bump` was cut by decision, from the crate as well as the contract: `reclaim` after `T_stuck` covers a stuck coin. An upgrade needs a smaller deposit than this only if the code shrinks: the contract account holds the storage for its own code, so a larger wasm has to find the difference in its balance first, and not in what vaults have paid in (`upgrade_apply` and `migrate` refuse that). `instance.free_balance`, `upgrade_propose`'s log and `status` say how much is free. The last round of status text, the running total and the two checks added 7,289 bytes, 0.07 NEAR.
 
 ## Gas, Tgas burnt
 
@@ -38,59 +41,63 @@ Signer attach 30 Tgas, callback attach 10 Tgas. "Method" is the contract's own r
 
 | Method | Inputs | Method | Each `on_signed`, max | Tx |
 |---|---:|---:|---:|---:|
-| `create_vault` | | 5.56 | `on_derived` 2.00 | 13.46 |
-| `create_vault` and `heartbeat` in one transaction | | | | 15.45 |
-| `propose_btc` | 1 | 2.97 | | 3.31 |
-| `propose_btc` | 3 | 4.06 | | 4.42 |
-| `propose_btc` | 8 | 6.80 | | 7.22 |
-| `propose_btc` | 16 | 11.19 | | 11.70 |
-| `execute` | 1 | 3.44 | 2.99 | 10.59 |
-| `execute` | 3 | 5.49 | 3.50 | 26.45 |
-| `execute` | 8 | 10.58 | 4.77 | 68.85 |
-| `execute` | 16 | 18.72 | 6.82 | 144.98 |
-| `cancel`, passkey | | 3.89 | | 4.23 |
-| `cancel`, cold key | | 2.60 | | 2.92 |
-| `cancel_all_and_rotate` | | 3.51 | | 3.85 |
-| `reclaim` | | 3.17 | | 3.51 |
-| `veto_grant` | | 2.63 | | 2.95 |
-| `freeze` | | 2.26 | | 2.59 |
-| `unfreeze` | | 2.26 | | 2.58 |
-| `recover_begin` | | 3.73 | | 4.08 |
-| `recover_cancel` | | 3.39 | | 3.72 |
-| `recover_finish` | | 1.89 | | 2.20 |
-| `prune_signed` | 1 | 2.35 | | 2.67 |
-| `deposit_storage` | | | | 2.17 |
+| `create_vault` | | 5.57 | `on_derived` 2.01 | 13.49 |
+| `create_vault` and `heartbeat` in one transaction | | | | 15.49 to 15.56 |
+| `propose_btc` | 1 | 2.98 | | 3.32 |
+| `propose_btc` | 3 | 4.07 | | 4.43 |
+| `propose_btc` | 8 | 6.84 | | 7.25 |
+| `propose_btc` | 16 | 11.20 | | 11.71 |
+| `execute` | 1 | 3.45 | 3.00 | 10.61 |
+| `execute` | 3 | 5.50 | 3.51 | 26.50 |
+| `execute` | 8 | 10.61 | 4.81 | 69.03 |
+| `execute` | 16 | 18.73 | 6.83 | 145.19 |
+| `cancel`, passkey | | 3.90 | | 4.24 |
+| `cancel`, cold key | | 2.61 | | 2.93 |
+| `cancel_all_and_rotate` | | 3.52 | | 3.86 |
+| `reclaim` | | 3.18 | | 3.51 |
+| `veto_grant` | | 2.64 | | 2.96 |
+| `freeze` | | 2.27 | | 2.60 |
+| `unfreeze` | | 2.26 | | 2.59 |
+| `recover_begin` | | 3.74 | | 4.09 |
+| `recover_cancel` | | 3.39 | | 3.73 |
+| `recover_finish` | | 1.90 | | 2.21 |
+| `prune_signed` | 1 | 2.37 | | 2.68 |
+| `deposit_storage` | | | | 2.18 |
 | `heartbeat` | | 1.90 | | 2.21 |
-| `add_destination` | | 3.42 | | 3.77 |
+| `add_destination` | | 3.43 | | 3.77 |
 | `remove_destination` | | 3.44 | | 3.78 |
-| `set_policy` | | 3.43 | | 3.77 |
+| `set_policy` | | 3.43 | | 3.78 |
 | `set_guard` | | 3.42 | | 3.76 |
 | `clear_hold` | | 3.66 | | 4.00 |
 | `assess`, a 1 KB answer | | 2.60 | | 2.95 |
 | `assess`, the largest answer it reads, 16 KB | | 8.25 | | 10.13 |
-| `upgrade_propose` | | 1.63 | | 1.94 |
-| `upgrade_cancel` | | | | 3.42 |
-| `upgrade_apply`, 371 KB of code as raw input, with its deploy and `migrate` | | 25.57 | | 62.12 |
+| `upgrade_propose` | | 1.66 | | 1.97 |
+| `upgrade_cancel` | | | | 3.43 |
+| `upgrade_apply`, 378 KB of code as raw input, with its deploy and `migrate` | | 26.21 | | 63.44 |
 
-The request body `guard_prompt` returns is 1,179 bytes with no memo.
+The request body `guard_prompt` returns is 1,178 bytes with no memo.
 
 ## Griefed queue, and what a relay attaches
 
-The rows above are best case. Here a thief has filled the queue with the largest requests the rules allow, 16 inputs and two of 8, and a stolen passkey has filled the grant list, so every owner method has them to load. The row is 1,372 bytes. `tests/tests/measure.rs: gas_of_owner_methods_on_a_griefed_queue`.
+The rows above are best case. Here a thief holding `K_s`, `K_u` and `K_p` has built the worst row the rules allow: 32 known destinations of the longest script, 8 grants with 64-character account names, and the 24 h fee and outflow windows full at the rate floor, 4,213 bytes. The queue is the largest there is: the slot lets one self-spend through per `T_new`, and a self-spend stays pending for over an hour, so three of 16 inputs wait at once, each with the longest memo. `tests/tests/measure.rs: gas_of_owner_methods_on_the_worst_row_and_queue`, `gas_of_the_landing_and_the_cold_key_on_the_largest_dead_queue`, `gas_of_assess_on_a_dead_queue`. Figures are protocol 88, and this run read the same on 86. An earlier run of the same wasm read 14.09, 12.10 and 12.44 on 88 for the three sweeping rows of `recover_begin`, `apply_grant` and `freeze`.
 
 | Method | Tx, griefed | Best case |
 |---:|---:|---:|
-| `cancel`, passkey, 32 inputs waiting | 5.85 | 4.23 |
-| `cancel`, cold key | 4.54 | 2.92 |
-| `cancel_all_and_rotate`, live queue | 4.30 | 3.85 |
-| `cancel_all_and_rotate`, sweeping the dead queue, full grant list | 10.12 | 3.85 |
-| `freeze`, sweeping the dead queue | 7.48 | 2.59 |
+| `cancel`, passkey, 48 inputs waiting | 7.67 | 4.24 |
+| `cancel`, cold key | 6.52 | 2.93 |
+| `cancel_all_and_rotate`, live queue | 4.82 | 3.86 |
+| `cancel_all_and_rotate`, sweeping the dead queue | 13.49 | 3.86 |
+| `recover_begin`, sweeping the dead queue | 13.84 | 4.09 |
+| `freeze`, sweeping the dead queue | 12.20 | 2.60 |
+| `apply_grant`, sweeping the dead queue | 11.85 | about 2.6 |
+| `assess`, 16 KB answer, eight signers, sweeping two dead requests of 24 inputs | 16.91 | 10.14 |
+| `on_signed`, 16 inputs on that row, against its fixed 10 | 7.17 own | 6.83 own |
 
-**A relay attaches 30 Tgas to every `K_p` and `K_e` method**, `OWNER_ATTACH_TGAS` in `tools/lib/vault-client.mjs`: three times the worst row. The test runs each rotation at exactly that, and `tools/test/sandbox-intents.mjs` runs the passkey methods at it. Unused gas comes back, and a function-call key has the whole attach held against its allowance until it does. Not measured with 32 known destinations in the row, which would add about 700 bytes to read. A guard's key: 10 Tgas for `heartbeat`, and 20 Tgas clears the largest `assess`.
+**A relay attaches 30 Tgas to every `K_p` and `K_e` method, and to `apply_grant` and `recover_finish`**, `OWNER_ATTACH_TGAS` in `tools/lib/vault-client.mjs`: over twice the worst row. `apply_grant` and `recover_finish` belong to neither key, but either can be the first state change after a queue dies: 10 Tgas on `apply_grant` fails there with `Exceeded the prepaid gas`, and 12 passes. `recover_finish` was not run on a dead queue, and loads what `apply_grant` loads. The tests run each row at exactly the attach and assert it clears. Unused gas comes back, and a function-call key has the whole attach held against its allowance until it does. A guard's key: 10 Tgas for `heartbeat`, and 20 Tgas clears the largest `assess`. Not measured: a row grown further by fee windows that a passkey's override let past the budget, about 4.6 KB more. These sizes are sandbox gas with the mock signer, and the relay's real gas is its own measurement.
 
-`upgrade_apply` burns 62 Tgas in all for this size of code, so attach well above that. A call with too little fails in its first receipt and leaves the approval standing, tried at 15, 30 and 45 Tgas (`surface: upgrade_apply_with_too_little_gas_*`).
+`upgrade_apply` burns 63 Tgas in all for this size of code, so attach well above that. A call with too little fails in its first receipt and leaves the approval standing, tried at 15, 30 and 45 Tgas (`surface: upgrade_apply_with_too_little_gas_*`).
 
-The `on_signed` figure grows with the request's own inputs, because the answer that completes a request reads their ledger entries, and every answer rebuilds the digests. At the 16-input maximum it leaves 3.2 of the 10 Tgas attach. `execute` also computes the transaction's id and reads its child entries at first execute, about 0.2 Tgas here.
+The `on_signed` figure grows with the request's own inputs, because the answer that completes a request reads their ledger entries, and every answer rebuilds the digests. At the 16-input maximum it leaves 3.2 of the 10 Tgas attach, and 2.8 on the worst row above. `execute` also computes the transaction's id and reads its child entries at first execute, about 0.2 Tgas here.
 
 The mock's `derived_public_key` burned 5.07 Tgas, which says nothing about the real signer's view.
 
@@ -130,10 +137,10 @@ A `prune_signed` of a signed 2-input request gave back 631 bytes.
 
 | Spends | Row bytes | `on_signed` |
 |---:|---:|---:|
-| 25 | 1,374 | 2.89 |
-| 50 | 1,774 | 2.94 |
-| 100 | 2,574 | 3.05 |
-| 150 | 3,374 | 3.16 |
+| 25 | 1,374 | 2.94 |
+| 50 | 1,774 | 2.99 |
+| 100 | 2,574 | 3.10 |
+| 150 | 3,374 | 3.21 |
 
 The row still grows 16 bytes per spend in this run, which is the 24 h fee window. Entries leave after a day, and `first_execute` sweeps them, so this is bounded by spends per day. Without a passkey override the fee budget limits that to about 26 a day on the test-coin values. With an override, the slot limits a change-bearing or self-spend to one per `T_new`. This run's clock covered less than a day, so the shrink was not observed on the wasm. `crates/undo-core/props: the_fee_window_leaves_the_row_after_a_day` covers it in the core.
 
@@ -143,8 +150,8 @@ Pins in their own entries do not move the other methods either, on a vault with 
 
 | Pins | Row bytes | `on_signed`, 8 inputs | `propose_btc`, 1 input | `cancel`, passkey |
 |---:|---:|---:|---:|---:|
-| 8 | 998 | 4.84 | | |
-| 40 | 1,158 | 4.71 | 3.04 | 4.13 |
+| 8 | 998 | 4.85 | | |
+| 40 | 1,158 | 4.72 | 3.05 | 4.14 |
 
 ## A pre-signed chain of CSV restarts
 
