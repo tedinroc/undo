@@ -1,0 +1,82 @@
+# Runs on every push: ./verify.sh B (the vault state machine and the Bitcoin consensus tests) and
+# the offline Node tests. No secrets, no network calls of its own beyond fetching crates, no keys,
+# no deploys, and it commits nothing. Tier A reads live networks, so it is run by hand, not here.
+name: verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tier-b:
+    name: verify.sh B (offline Rust)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable && cargo --version
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: tier-b-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'crates/undo-core/props/Cargo.lock', 'tools/rust-check/Cargo.lock') }}
+      - name: ./verify.sh B
+        run: ./verify.sh B
+
+  offline:
+    name: offline Node tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tools/rust-check/target
+          key: rust-check-${{ runner.os }}-${{ hashFiles('tools/rust-check/Cargo.lock') }}
+      - name: Vendored noble matches its manifest
+        run: node tools/vendor/noble/vendor.mjs --check
+      - name: Build the independent referee (tools/rust-check)
+        run: cd tools/rust-check && cargo build --locked -q
+      - name: Tools, offline
+        env:
+          UNDO_TOOLS_CHECK_BIN: ${{ github.workspace }}/tools/rust-check/target/debug/undo-tools-check
+        run: |
+          files=()
+          for f in tools/test/offline.test.mjs tools/test/g2-units.test.mjs tools/test/watch.test.mjs; do
+            [ -f "$f" ] && files+=("$f")
+          done
+          node --test "${files[@]}"
+      - name: Site library and relay, offline
+        # Tests that need a local chain or Chrome skip themselves and say so.
+        run: |
+          if [ -d site/test ]; then
+            cd site && node --test --test-concurrency=1 test/*.test.mjs
+          else
+            echo "SKIP site/ is not in this tree"
+          fi
+      - name: Secret scan of the tree (the identity scan needs a private word list, so it runs before each push instead)
+        run: |
+          if [ -f scripts/secret-scan.sh ]; then scripts/secret-scan.sh; fi
