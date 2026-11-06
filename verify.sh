@@ -13,6 +13,9 @@
 # UNDO_CONFIG names another deployment file than deploy/testnet.json.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# Node's bundled CA list is enough for the public endpoints here. With NODE_USE_SYSTEM_CA=1, Node 22 on
+# macOS reads the keychain on the first TLS connection, and where that read is blocked it hangs with no timeout.
+unset NODE_USE_SYSTEM_CA
 tier="${1:-all}"
 status=0
 

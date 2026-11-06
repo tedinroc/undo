@@ -11,6 +11,9 @@
 # to ./verify.sh A (replay of real hashes) and ./verify.sh B (offline tests). Exit 0 PASS, 1 FAIL, 3 SKIP.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
+# Node's bundled CA list is enough for the public endpoints here. With NODE_USE_SYSTEM_CA=1, Node 22 on
+# macOS reads the keychain on the first TLS connection, and where that read is blocked it hangs with no timeout.
+unset NODE_USE_SYSTEM_CA
 if ! command -v node >/dev/null 2>&1; then
   echo "SKIP demo node is not installed: demo.sh needs Node 20 or later"
   exit 3
