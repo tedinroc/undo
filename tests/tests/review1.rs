@@ -449,15 +449,15 @@ async fn freeze_and_unfreeze_on_the_wasm() -> Result<()> {
     let until = now + 60_000;
     let call = json!({"until": until});
 
-    // Refused: wrong key, the leaf key, changed args, a stale nonce, past expiry, too long.
+    // Refused: wrong key, the leaf key, changed args, a stale nonce, past expiry, already over.
     assert_refused(&h.cold_call(&v, &stranger_cold(), "freeze", &until, call.clone(), 0, FAR).await?, "bad K_e");
     assert_refused(&h.cold_call(&v, &v.k_e_leaf, "freeze", &until, call.clone(), 0, FAR).await?, "bad K_e");
     let later = until + 1;
     assert_refused(&h.cold_call(&v, &cold, "freeze", &later, call.clone(), 0, FAR).await?, "bad K_e");
     assert_refused(&h.cold_call(&v, &cold, "freeze", &until, call.clone(), 2, FAR).await?, "BadNonce");
     assert_refused(&h.cold_call(&v, &cold, "freeze", &until, call.clone(), 0, SPENT).await?, "IntentExpired");
-    let too_long = now + 6 * 30_000 + 120_000;
-    assert_refused(&h.cold_call(&v, &cold, "freeze", &too_long, json!({"until": too_long}), 0, FAR).await?, "FreezeTooLong");
+    let over = now - 1;
+    assert_refused(&h.cold_call(&v, &cold, "freeze", &over, json!({"until": over}), 0, FAR).await?, "FreezeAlreadyOver");
     assert_eq!(h.vault_view(&v).await?["frozen_until"], Value::Null, "nothing landed");
 
     h.cold_call(&v, &cold, "freeze", &until, call.clone(), 0, FAR).await?.into_result()?;

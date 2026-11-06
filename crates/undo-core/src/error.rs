@@ -65,7 +65,7 @@ pub enum Error {
     TooManyGrants,
     TooManyDestinations,
     // Freeze.
-    FreezeTooLong { max_until: Ms },
+    FreezeAlreadyOver,
     NotFrozen,
     // Recovery.
     RecoveryInProgress,

@@ -379,8 +379,9 @@ impl World {
             }
             Action::Freeze { ms } => match self.h.freeze(self.h.now + ms) {
                 Ok(()) => {
-                    assert!(ms <= self.h.v.csv_period_ms(), "freeze longer than CSV");
-                    self.frozen_until = Some(self.h.now + ms);
+                    let until = self.h.now + ms.min(self.h.v.csv_period_ms());
+                    assert_eq!(self.h.v.frozen_until, Some(until), "freeze longer than CSV");
+                    self.frozen_until = Some(until);
                     self.epoch += 1;
                     self.grants.clear();
                     self.coverage.freezes += 1;

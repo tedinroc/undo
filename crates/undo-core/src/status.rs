@@ -49,19 +49,36 @@ impl Vault {
             attention.push(format!("frozen until {until} by the cold key: no proposals, no execute, no passkey grants, cold-key exit unaffected"));
         }
         if self.k_s_suspended {
-            attention.push("spend key suspended: every older request is dead, and a new key lands after its wait unless the cold key vetoes it".to_string());
+            // Execute is the point of no return, so a rotation cannot speak for a request past it. A veto,
+            // a freeze or a finished recovery takes the waiting key away and leaves this one suspended.
+            let waiting = self.grants.iter().any(|g| matches!(g.kind, GrantKind::RotateSpend { .. }));
+            let next = if waiting { "a new key lands after its wait unless the cold key vetoes it" } else { "no new key is waiting, so the passkey has to rotate again" };
+            attention.push(format!("spend key suspended: requests not yet executed are dead, one already executed keeps signing, and {next}"));
         }
+        if self.last_spend_at != 0 {
+            // A rotation that began or landed after this spend may be the owner reacting too late. The
+            // contract cannot tell a thief's spend from the owner's, so an ordinary one stays calm.
+            let before_rotation = self.k_s_suspended || (self.k_s_since > self.created_at && self.last_spend_at <= self.k_s_since);
+            let line = format!("last spend reached signing at {}", utc_text(self.last_spend_at));
+            if before_rotation && now.saturating_sub(self.last_spend_at) < DAY {
+                attention.push(format!("{line}, before the spend key was rotated: its signature cannot be taken back, so check it on Bitcoin"));
+            } else {
+                calm.push(line);
+            }
+        }
+        // Only said when it is true: a freeze, a suspended key and an inactive vault move nothing.
+        let movable = if self.active && !self.is_frozen(now) && !self.k_s_suspended { ", funds movable" } else { "" };
         match (&self.guard, self.last_heartbeat) {
-            (None, _) => calm.push("no guard: new-destination delay doubled, funds movable".to_string()),
+            (None, _) => calm.push(format!("no guard: new-destination delay doubled{movable}")),
             (Some(_), Some(beat)) if now.saturating_sub(beat) <= HEARTBEAT_STALE_MS => {
                 calm.push(format!("guard online, last heartbeat {}", utc_text(beat)));
             }
-            (Some(_), Some(beat)) => attention.push(format!("guard offline since {}: new-destination delay doubled, funds movable", utc_text(beat))),
-            (Some(_), None) => attention.push("guard offline, no heartbeat yet: new-destination delay doubled, funds movable".to_string()),
+            (Some(_), Some(beat)) => attention.push(format!("guard offline since {}: new-destination delay doubled{movable}", utc_text(beat))),
+            (Some(_), None) => attention.push(format!("guard offline, no heartbeat yet: new-destination delay doubled{movable}")),
         }
         if self.sign_failed_at != 0 {
             attention.push(format!(
-                "signing unavailable since {}: the signer's last answer failed, retry is open, and a coin {} blocks old can leave by the cold-key exit",
+                "the signer's last answer failed at {}: a request still signing can retry, and a coin {} blocks old can leave by the cold-key exit",
                 utc_text(self.sign_failed_at),
                 self.csv_blocks,
             ));
@@ -77,9 +94,10 @@ impl Vault {
             ));
         }
         let budget_used = self.fee_used_24h(now);
-        if budget_used >= self.policy.fee_budget_24h {
+        let budget_left = self.policy.fee_budget_24h.saturating_sub(budget_used);
+        if budget_left < self.policy.fee_cap_tx {
             attention.push(format!(
-                "24 h fee budget used, {budget_used} of {} sats: spends wait until it rolls off, within {} h, or until a rotation lands",
+                "24 h fee budget used, {budget_used} of {} sats: a fee above {budget_left} sats waits until it rolls off, within {} h, or until a rotation lands",
                 self.policy.fee_budget_24h,
                 DAY / crate::policy::HOUR,
             ));

@@ -7,12 +7,14 @@ leaves the repo alone, and it rebuilds the wasm for each mutant.
 
     shell-mutants.py [PROTOCOL] [NAME]    default 88, all mutants; NAME narrows to names containing it
     shell-mutants.py --check              only that each mutant's text is in the source exactly once
+    shell-mutants.py --self-test          only that a run's output is read correctly
 
 UNDO_MUTANTS_FROM and UNDO_MUTANTS_UNTIL run a stretch of the list, by mutant name.
 
 Needs the environment scripts/protocol-check.sh needs.
 """
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -105,8 +107,8 @@ MUTANTS = [
     ("reserve: a held rotation grant still counts", STORE, 'if !vault.grants.iter().any(|g| matches!(g.kind, GrantKind::RotateSpend { .. })) {\n        bytes += ROTATE_GRANT_BYTES;\n    }', 'bytes += ROTATE_GRANT_BYTES;', "review2", "panic_button"),
     ("reserve: a held freeze still counts", STORE, 'if vault.frozen_until.is_none() {\n        bytes += FREEZE_BYTES;\n    }', 'bytes += FREEZE_BYTES;', "review2", "panic_button"),
     ("reserve: a held recovery still counts", STORE, 'if vault.recovery.is_none() {\n        bytes += RECOVERY_BYTES;\n    }', 'bytes += RECOVERY_BYTES;', "review2", "panic_button"),
-    ("reclaim may run short", LIB, '.reclaim(&caller, Intent { nonce, expires_at }, input.outpoint, input.value, fee, half_sig.0, now())\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse);', '.reclaim(&caller, Intent { nonce, expires_at }, input.outpoint, input.value, fee, half_sig.0, now())\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved);', "review2", "reclaim_is_refused"),
-    ("propose may run short", LIB, '.propose(\n                &caller,\n                Intent { nonce, expires_at },\n                ProposeArgs { inputs, outputs, half_sigs: half_sigs.into_iter().map(|s| s.0).collect(), memo },\n                now(),\n            )\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse);', '.propose(\n                &caller,\n                Intent { nonce, expires_at },\n                ProposeArgs { inputs, outputs, half_sigs: half_sigs.into_iter().map(|s| s.0).collect(), memo },\n                now(),\n            )\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved);', "shell", "rotation_needs"),
+    ("reclaim may run short", LIB, '.reclaim(&caller, Intent { nonce, expires_at }, input.outpoint, input.value, fee, half_sig.0, now())\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);', '.reclaim(&caller, Intent { nonce, expires_at }, input.outpoint, input.value, fee, half_sig.0, now())\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);', "review2", "reclaim_is_refused"),
+    ("propose may run short", LIB, '.propose(\n                &caller,\n                Intent { nonce, expires_at },\n                ProposeArgs { inputs, outputs, half_sigs: half_sigs.into_iter().map(|s| s.0).collect(), memo },\n                now(),\n            )\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);', '.propose(\n                &caller,\n                Intent { nonce, expires_at },\n                ProposeArgs { inputs, outputs, half_sigs: half_sigs.into_iter().map(|s| s.0).collect(), memo },\n                now(),\n            )\n            .unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);', "shell", "rotation_needs"),
     ("a refund skips what was reserved", STORE, 'let freed = before.saturating_sub(env::storage_usage()) + loaded.row.reserved;', 'let freed = before.saturating_sub(env::storage_usage());', "review2", "whole_deposit"),
     ("a refund skips the credit", STORE, 'loaded.row.credit.saturating_add(cost(freed))', 'cost(freed)', "review2", "whole_deposit"),
     ("a refused vault keeps its deposit", LIB, 'if refund > 0 {\n                let promise', 'if false {\n                let promise', "review_contract", "f1_create"),
@@ -117,16 +119,16 @@ MUTANTS = [
     ("the signer's answer may be any size", LIB, 'const MAX_SIGNER_RESPONSE: usize = 1024;', 'const MAX_SIGNER_RESPONSE: usize = 1_000_000;', "review3", "oversized_signer"),
     # Section 11: the last methods.
     ("add_destination skips the passkey", LIB, 'let caller = self.passkey_caller(&id, &loaded, "add_destination", &script.0, expires_at, Some(nonce), &assertion);', 'let _ = &assertion; let caller = Caller::Passkey(loaded.row.vault.passkey.pubkey.clone());', "surface", "add_destination_negatives"),
-    ("add_destination may run short", LIB, 'loaded.row.vault.add_destination(&caller, Intent { nonce, expires_at }, script.0, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse);', 'loaded.row.vault.add_destination(&caller, Intent { nonce, expires_at }, script.0, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved);', "surface", "need_no_credit"),
+    ("add_destination may run short", LIB, 'loaded.row.vault.add_destination(&caller, Intent { nonce, expires_at }, script.0, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);', 'loaded.row.vault.add_destination(&caller, Intent { nonce, expires_at }, script.0, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);', "surface", "need_no_credit"),
     ("remove_destination skips the passkey", LIB, 'let caller = self.passkey_caller(&id, &loaded, "remove_destination", &script.0, expires_at, Some(nonce), &assertion);', 'let _ = &assertion; let caller = Caller::Passkey(loaded.row.vault.passkey.pubkey.clone());', "surface", "remove_destination_lands"),
     ("remove_destination reads no ledger", LIB, 'if loaded.row.vault.requests.get(&request).is_some_and(|r| r.outputs.dest_script == script.0) {\n                loaded.load_inputs(&id, request);\n            }', 'let _ = request;', "surface", "remove_destination_lands"),
     ("set_policy skips the passkey", LIB, 'let caller = self.passkey_caller(&id, &loaded, "set_policy", &policy, expires_at, Some(nonce), &assertion);', 'let _ = &assertion; let caller = Caller::Passkey(loaded.row.vault.passkey.pubkey.clone());', "surface", "set_policy_is_bounded"),
-    ("a loosening may run short", LIB, 'PolicyOutcome::Grant(grant) => {\n                loaded.commit(&id, Short::Refuse);', 'PolicyOutcome::Grant(grant) => {\n                loaded.commit(&id, Short::Reserved);', "surface", "loosening_with_no_credit"),
+    ("a loosening may run short", LIB, 'PolicyOutcome::Grant(grant) => {\n                loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);', 'PolicyOutcome::Grant(grant) => {\n                loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);', "surface", "loosening_with_no_credit"),
     ("set_guard skips the passkey", LIB, 'let caller = self.passkey_caller(&id, &loaded, "set_guard", &guard, expires_at, Some(nonce), &assertion);', 'let _ = &assertion; let caller = Caller::Passkey(loaded.row.vault.passkey.pubkey.clone());', "surface", "set_guard_waits"),
     ("clear_hold skips the passkey", LIB, 'let caller = self.passkey_caller(&id, &loaded, "clear_hold", &request, expires_at, Some(nonce), &assertion);', 'let _ = &assertion; let caller = Caller::Passkey(loaded.row.vault.passkey.pubkey.clone());', "surface", "clear_hold"),
     ("clear_hold reads no request", LIB, 'loaded.fetch_request(&id, request);\n        let caller = self.passkey_caller(&id, &loaded, "clear_hold"', 'let caller = self.passkey_caller(&id, &loaded, "clear_hold"', "surface", "clear_hold"),
     ("heartbeat from anyone", LIB, 'let caller = Caller::Guard(env::predecessor_account_id().to_string());\n        loaded.row.vault.heartbeat(', 'let caller = Caller::Guard(loaded.row.vault.guard.clone().unwrap_or_default());\n        loaded.row.vault.heartbeat(', "surface", "heartbeat_keeps"),
-    ("a first heartbeat may run short", LIB, 'loaded.row.vault.heartbeat(&caller, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse);', 'loaded.row.vault.heartbeat(&caller, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved);', "surface", "first_heartbeat"),
+    ("a first heartbeat may run short", LIB, 'loaded.row.vault.heartbeat(&caller, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);', 'loaded.row.vault.heartbeat(&caller, now()).unwrap_or_else(|e| fail(e));\n        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);', "surface", "first_heartbeat"),
     ("assess from anyone", LIB, 'let caller = Caller::Guard(env::predecessor_account_id().to_string());\n        loaded.row.vault.assess(', 'let caller = Caller::Guard(loaded.row.vault.guard.clone().unwrap_or_default());\n        loaded.row.vault.assess(', "surface", "assess_refuses"),
     ("assess skips the signature", LIB, 'require!(signed, "not signed by a registered signer for this model");', 'let _ = signed;', "surface", "assess_refuses"),
     ("assess takes any model's signer", LIB, '.any(|(model, key)| *model == cfg.guard_model && env::ed25519_verify(&sig, text.as_bytes(), key));', '.any(|(_, key)| env::ed25519_verify(&sig, text.as_bytes(), key));', "surface", "model_signers"),
@@ -146,10 +148,10 @@ MUTANTS = [
     ("upgrade_apply takes any code", LIB, 'self.upgrade.take_for_apply(env::sha256_array(&code), now())', 'self.upgrade.take_for_apply(self.upgrade.pending.map_or([0; 32], |p| p.code_hash), now())', "surface", "lands_after_the_wait"),
     ("upgrade_apply deploys nothing", LIB, 'env::promise_batch_action_deploy_contract(promise, &code);\n', '', "surface", "lands_after_the_wait"),
     ("upgrade_apply hides how it went", LIB, '        env::promise_return(promise);\n', '', "surface", "without_a_migrate"),
-    ("upgrade_apply runs no migrate", LIB, 'env::promise_batch_action_function_call(promise, "migrate", &[], NearToken::from_yoctonear(0), Gas::from_tgas(MIGRATE_TGAS));\n', '', "surface", "without_a_migrate"),
+    ("upgrade_apply runs no migrate", LIB, 'env::promise_batch_action_function_call(promise, "migrate", format!(r#"{{"code_bytes":{code_bytes}}}"#).as_bytes(), NearToken::from_yoctonear(0), Gas::from_tgas(MIGRATE_TGAS));\n', '', "surface", "without_a_migrate"),
     ("migrate is public", LIB, '#[private]\n    pub fn migrate', 'pub fn migrate', "surface", "migrate_is_private"),
     ("the operator passkey need not be a key", LIB, 'require!(operator_passkey.pubkey.0.len() == 33, "the operator passkey must be a compressed P-256 key");', '', "review3", "instance_rules"),
-    ("stats: a cancel does not count", LIB, 'self.note_completed(&mut loaded);\n        loaded.commit(&id, Short::Reserved);\n        env::log_str(&format!("undo:cancelled', 'loaded.commit(&id, Short::Reserved);\n        env::log_str(&format!("undo:cancelled', "surface", "stats_counts"),
+    ("stats: a cancel does not count", LIB, 'self.note_completed(&mut loaded);\n        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);\n        env::log_str(&format!("undo:cancelled', 'loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);\n        env::log_str(&format!("undo:cancelled', "surface", "stats_counts"),
     ("stats: a spend does not count", LIB, 'if outcome == (SignedOutcome::Stored { complete: true }) {\n            self.note_completed(&mut loaded);\n        }', '', "surface", "stats_counts"),
     ("stats: every vault counts its passkey again", LIB, 'if loaded.row.vault.mark_completed() && loaded.count_passkey() {', 'if loaded.row.vault.mark_completed() {', "surface", "stats_counts"),
     ("stats: a refused vault stays counted", LIB, 'self.stats.vaults_created = self.stats.vaults_created.saturating_sub(1);\n', '', "surface", "stats_counts"),
@@ -199,22 +201,95 @@ MUTANTS = [
     ("webauthn skips the length check", AUTH, 'require!(auth.len() >= AUTH_DATA_MIN, "webauthn: short authenticator data");', 'require!(auth.len() >= 33, "webauthn: short");', "review2", "malformed_webauthn"),
     ("credit never refuses", STORE, 'if short == Short::Refuse {', 'if false && short == Short::Refuse {', "shell", "rotation_needs"),
     ("deleted bytes not paid back", STORE, 'self.row.credit = self.row.credit.saturating_add(cost(before - after));', '', "review_contract", "f5_cancel"),
+    # The fifth review: an upgrade's bill.
+    ("upgrade_apply may spend what vaults paid in", LIB, 'require!(short == 0, format!("the new code would spend what vaults have paid in: send this account at least {short} yoctoNEAR first"));\n', 'let _ = short;\n', "review4", "an_upgrade_that"),
+    ("upgrade_apply counts the old code as well", LIB, 'env::storage_usage().saturating_sub(self.stats.code_bytes) + code_bytes', 'env::storage_usage() + code_bytes', "review4", "an_upgrade_that"),
+    ("upgrade_apply leaves what vaults paid in out", LIB, '+ code_bytes).saturating_add(self.stats.vault_funds);', '+ code_bytes);', "review4", "an_upgrade_that"),
+    ("migrate may spend what vaults paid in", LIB, 'require!(self.balance_short() == 0, "the new code spends what vaults have paid in");\n', '', "review4", "migrate_refuses"),
+    ("migrate keeps the old code size", LIB, 'self.stats.code_bytes = code_bytes;\n', 'let _ = code_bytes;\n', "review4", "an_upgrade_that"),
+    ("upgrade_apply sends the wrong size", LIB, 'format!(r#"{{"code_bytes":{code_bytes}}}"#).as_bytes()', 'br#"{"code_bytes":0}"#', "review4", "an_upgrade_that"),
+    ("the code size is not recorded at new", LIB, 'stats: Stats { code_bytes: env::storage_usage(), ..Stats::default() },', 'stats: Stats::default(),', "review4", "an_upgrade_that"),
+    ("a commit leaves the total alone", STORE, '*vault_funds = vault_funds.saturating_sub(self.paid_in_read).saturating_add(paid_in(&self.row));\n', 'let _ = vault_funds;\n', "review4", "vault_funds_follows"),
+    ("a commit only adds to the total", STORE, '*vault_funds = vault_funds.saturating_sub(self.paid_in_read).saturating_add(paid_in(&self.row));', '*vault_funds = vault_funds.saturating_add(paid_in(&self.row));', "review4", "vault_funds_follows"),
+    ("creation leaves the total alone", STORE, '*vault_funds = vault_funds.saturating_add(paid_in(&row));\n', 'let _ = vault_funds;\n', "review4", "vault_funds_follows"),
+    ("a refused vault stays in the total", STORE, '*vault_funds = vault_funds.saturating_sub(loaded.paid_in_read);\n', 'let _ = vault_funds;\n', "review4", "vault_funds_follows"),
+    ("the total skips reservations", STORE, 'row.credit.saturating_add(cost(row.reserved))', 'row.credit', "review4", "vault_funds_follows"),
+    ("the view hides the free balance", LIB, 'free_balance: self.free_balance().into(),', 'free_balance: 0u128.into(),', "review4", "an_upgrade_that"),
+    ("the view hides the vaults' total", LIB, 'vault_funds: self.stats.vault_funds.into(),', 'vault_funds: 0u128.into(),', "review4", "vault_funds_follows"),
+    ("status hides a short balance", LIB, 'if short > 0 {', 'if false {', "review4", "migrate_refuses"),
+    ("status does not call a short balance a fault", LIB, 'if short > 0 {\n            ok = false;', 'if short > 0 {', "review4", "migrate_refuses"),
+    ("status does not name the origins", LIB, 'lines.push(format!("passkeys work from {}. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit", c.origins.join(", ")));\n', '', "review4", "second_origin"),
+    ("the propose log hides what is free", LIB, ' free_bytes={}", hex::encode(hash), pending.unlock_at, pending.expires_at, self.free_balance() / storage::cost(1)));', '", hex::encode(hash), pending.unlock_at, pending.expires_at));', "review4", "an_upgrade_that"),
+    # The fifth review: the film's cancel, and what the views say.
+    ("the film's cancel does not count", LIB, 'if stopped_something {\n            self.note_completed(&mut loaded);\n        }\n', 'let _ = stopped_something;\n', "review4", "films_cancel"),
+    ("a rotation counts with nothing to stop", LIB, 'if stopped_something {', 'if true || stopped_something {', "review4", "films_cancel"),
+    ("the credit line never shows", LIB, 'if loaded.row.credit < largest {', 'if false {', "review4", "credit_line"),
+    ("the credit line always calls for attention", LIB, 'ok &= !low;', 'ok = false;', "review4", "credit_line"),
+    ("the credit line never calls for attention", LIB, 'ok &= !low;\n', '', "review4", "credit_line"),
+    ("the one-input figure is off", STORE, '(cost(650), cost(5_700))', '(cost(400), cost(5_700))', "review4", "credit_line"),
+    ("the 16-input figure is off", STORE, '(cost(650), cost(5_700))', '(cost(650), cost(4_000))', "review4", "credit_line"),
+    ("the freeze log says what was asked", LIB, 'let until = loaded.row.vault.frozen_until.unwrap_or(until);\n', '', "review4", "late_or_long"),
+    ("nine model signers fit", LIB, 'require!(self.config.model_signers.len() < MAX_MODEL_SIGNERS, "too many model signers");\n', '', "review4", "signer_list"),
+    ("thirty-three excluded passkeys fit", LIB, 'require!(self.config.stats_excluded.len() < MAX_STATS_EXCLUDED, "too many excluded passkeys");\n', '', "review4", "excluded_list"),
+    ("assess reads the last choice", LIB, 'completion.choices.first()', 'completion.choices.last()', "review4", "first_choice"),
+    ("the view hides the fee window", LIB, 'fee_used_24h: v.fee_used_24h(now()),', 'fee_used_24h: 0,', "review4", "before_the_budget"),
+    # Binding rules. The contract and the harness's own digest both change, so only a digest made for
+    # something else can notice. The extra edit is in EXTRA.
+    ("an intent does not bind its contract", AUTH, 'contract: &env::current_account_id(),', 'contract: &"xx".parse::<AccountId>().unwrap(),', "review4", "passkey_assertion_binds"),
+    ("an intent does not bind its vault", AUTH, '        vault,\n        method,\n        args_hash: env::sha256_array(borsh::to_vec(args).unwrap()),', '        vault: &[0; 32],\n        method,\n        args_hash: env::sha256_array(borsh::to_vec(args).unwrap()),', "review4", "passkey_assertion_binds"),
+    ("an intent does not bind its tag", AUTH, 'let bytes = IntentBytes {\n        tag,', 'let bytes = IntentBytes {\n        tag: { let _ = tag; "t" },', "review4", "passkey_assertion_binds"),
+    ("an intent does not bind its expiry", AUTH, '        expires_at,\n        nonce,\n    };\n    env::sha256_array(borsh::to_vec(&bytes)', '        expires_at: { let _ = expires_at; 0 },\n        nonce,\n    };\n    env::sha256_array(borsh::to_vec(&bytes)', "review4", "passkey_assertion_binds"),
 ]
+
+HARNESS = "tests/src/lib.rs"
+# Edits a mutant makes beyond its first, by name.
+EXTRA = {
+    "an intent does not bind its contract": [(HARNESS, 'let bytes = IntentBytes { tag, contract, vault, method,', 'let contract = "xx"; let bytes = IntentBytes { tag, contract, vault, method,')],
+    "an intent does not bind its vault": [(HARNESS, 'let bytes = IntentBytes { tag, contract, vault, method,', 'let _ = vault; let vault = &[0u8; 32]; let bytes = IntentBytes { tag, contract, vault, method,')],
+    "an intent does not bind its tag": [(HARNESS, 'let bytes = IntentBytes { tag, contract, vault, method,', 'let _ = tag; let tag = "t"; let bytes = IntentBytes { tag, contract, vault, method,')],
+    "an intent does not bind its expiry": [(HARNESS, 'args_hash: sha256(&borsh::to_vec(args).unwrap()), expires_at, nonce };', 'args_hash: sha256(&borsh::to_vec(args).unwrap()), expires_at: { let _ = expires_at; 0 }, nonce };')],
+}
+
+def judge(returncode, stdout):
+    """A kill needs a test that failed. A red exit with none, a node that would not answer after a green
+    run, a cargo that stopped, says nothing about the mutant."""
+    counts = re.findall(r"^protocol \S+: (\d+) passed, (\d+) failed$", stdout, re.M)
+    if not counts or all(p == "0" and f == "0" for p, f in counts):
+        return "not judged"
+    if any(f != "0" for _, f in counts):
+        return "killed"
+    return "survived" if returncode == 0 else "not judged"
+
+def self_test():
+    cases = [
+        (0, "protocol 88: 3 passed, 0 failed\nPROTOCOL OK: 88\n", "survived"),
+        (1, "protocol 88: 2 passed, 1 failed\nPROTOCOL FAIL: 88, exit 101\n", "killed"),
+        (1, "protocol 88: 1 passed, 0 failed\nPROTOCOL FAIL: 88, exit 0, node after the run: 'nothing'\n", "not judged"),
+        (1, "protocol 88: 0 passed, 0 failed\n", "not judged"),
+        (2, "PROTOCOL ERROR: tests do not compile\n", "not judged"),
+        (1, "", "not judged"),
+    ]
+    wrong = [c for c in cases if judge(c[0], c[1]) != c[2]]
+    print(f"self-test: {len(cases) - len(wrong)} of {len(cases)}")
+    return 1 if wrong else 0
 
 def check():
     wrong = 0
-    for name, path, old, _new, _test, _filt in MUTANTS:
-        with open(os.path.join(REPO, path)) as f:
-            count = f.read().count(old)
-        if count != 1:
-            wrong += 1
-            print(f"NOT APPLIED {name}: found {count} times", flush=True)
+    for name, path, old, new, _test, _filt in MUTANTS:
+        for edit_path, edit_old, _edit_new in [(path, old, new), *EXTRA.get(name, [])]:
+            with open(os.path.join(REPO, edit_path)) as f:
+                count = f.read().count(edit_old)
+            if count != 1:
+                wrong += 1
+                print(f"NOT APPLIED {name}: found {count} times", flush=True)
     print(f"{len(MUTANTS) - wrong} of {len(MUTANTS)} mutants apply")
     return 1 if wrong else 0
 
 def main():
     if sys.argv[1:] == ["--check"]:
         return check()
+    if sys.argv[1:] == ["--self-test"]:
+        return self_test()
     protocol = sys.argv[1] if len(sys.argv) > 1 else "88"
     only = sys.argv[2] if len(sys.argv) > 2 else ""
     mutants = [m for m in MUTANTS if only in m[0]]
@@ -228,7 +303,7 @@ def main():
     tree = os.path.join(base, "undo")
     shutil.copytree(REPO, tree, ignore=shutil.ignore_patterns("target", ".git", ".tools", "props"))
     env = dict(os.environ, CARGO_TARGET_DIR=os.path.join(base, "target"), CARGO_BUILD_JOBS=os.environ.get("CARGO_BUILD_JOBS", "3"))
-    survived, wrong = [], []
+    survived, wrong, unjudged = [], [], []
     try:
         # A control first: the unmutated tree, on exactly the tests that will judge these mutants. A red
         # or empty one would read as a kill for every mutant that names it.
@@ -246,39 +321,54 @@ def main():
                 return 2
         print("baseline green", flush=True)
         for name, path, old, new, test, filt in mutants:
-            full = os.path.join(tree, path)
-            with open(full) as f:
-                text = f.read()
-            if text.count(old) != 1:
-                wrong.append(name)
-                print(f"NOT APPLIED {name}", flush=True)
-                continue
-            with open(full, "w") as f:
-                f.write(text.replace(old, new))
+            originals = {}
+            applied = True
+            for edit_path, edit_old, edit_new in [(path, old, new), *EXTRA.get(name, [])]:
+                full = os.path.join(tree, edit_path)
+                with open(full) as f:
+                    text = f.read()
+                originals.setdefault(full, text)
+                if text.count(edit_old) != 1:
+                    applied = False
+                    break
+                with open(full, "w") as f:
+                    f.write(text.replace(edit_old, edit_new))
             try:
+                if not applied:
+                    wrong.append(name)
+                    print(f"NOT APPLIED {name}", flush=True)
+                    continue
                 build = subprocess.run([os.path.join(tree, "scripts/build.sh")], cwd=tree, env=env, capture_output=True, text=True)
                 if build.returncode != 0:
                     wrong.append(name)
                     print(f"DID NOT BUILD {name}: {build.stderr[-400:]}", flush=True)
                     continue
-                run = subprocess.run(
+                run_test = lambda: subprocess.run(
                     [os.path.join(tree, "scripts/protocol-check.sh"), "--test", test, protocol],
                     cwd=tree, env=dict(env, UNDO_TEST_FILTER=filt), capture_output=True, text=True,
                 )
-                ran = "0 passed, 0 failed" not in run.stdout and "protocol" in run.stdout
-                if run.returncode == 0 or not ran:
+                run = run_test()
+                verdict = judge(run.returncode, run.stdout)
+                if verdict == "not judged":
+                    run = run_test()
+                    verdict = judge(run.returncode, run.stdout)
+                if verdict == "survived":
                     survived.append(name)
                     print(f"SURVIVED {name}", flush=True)
-                else:
+                elif verdict == "killed":
                     print(f"KILLED {name} ({test}: {filt})", flush=True)
+                else:
+                    unjudged.append(name)
+                    print(f"NOT JUDGED {name}: twice no test failed and the run was not green\n{run.stdout[-300:]}", flush=True)
             finally:
-                with open(full, "w") as f:
-                    f.write(text)
+                for full, text in originals.items():
+                    with open(full, "w") as f:
+                        f.write(text)
         total = len(mutants)
-        print(f"{total - len(survived) - len(wrong)} of {total} killed, {len(survived)} survived, {len(wrong)} did not apply")
+        print(f"{total - len(survived) - len(wrong) - len(unjudged)} of {total} killed, {len(survived)} survived, {len(wrong)} did not apply, {len(unjudged)} not judged")
     finally:
         shutil.rmtree(base, ignore_errors=True)
-    return 1 if survived or wrong else 0
+    return 1 if survived or wrong or unjudged else 0
 
 if __name__ == "__main__":
     sys.exit(main())

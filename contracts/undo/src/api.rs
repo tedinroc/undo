@@ -178,6 +178,12 @@ pub struct InstanceView {
     /// How long an owner has to notice an upgrade and still be out before it lands.
     pub reaction_window_ms: u64,
     pub pending_upgrade: Option<UpgradeView>,
+    /// All vaults' credit, plus what their reservations paid for.
+    pub vault_funds: near_sdk::json_types::U128,
+    /// What the balance holds beyond storage and `vault_funds`, which is all new code may spend.
+    pub free_balance: near_sdk::json_types::U128,
+    /// The running code's size, high by the account's overhead until the first upgrade.
+    pub code_bytes: u64,
     pub operator_passkey: HexBytes,
     pub guard_model: String,
     pub model_signers: Vec<ModelSignerView>,

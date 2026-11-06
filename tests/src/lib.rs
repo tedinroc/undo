@@ -333,11 +333,12 @@ pub struct Options {
     pub restrict_create: bool,
     pub mode: &'static str,
     pub callback_tgas: u64,
+    pub origins: &'static [&'static str],
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { preset: "TestCoin", restrict_create: false, mode: "Yield", callback_tgas: CALLBACK_TGAS }
+        Options { preset: "TestCoin", restrict_create: false, mode: "Yield", callback_tgas: CALLBACK_TGAS, origins: &[ORIGIN] }
     }
 }
 
@@ -396,7 +397,7 @@ impl Harness {
                 "preset": o.preset, "operator": relayer.id(), "restrict_create": o.restrict_create || o.preset == "MainnetProof",
                 "signer": mock.id(), "domain_id": 0, "sign_tgas": SIGN_TGAS, "callback_tgas": o.callback_tgas,
                 "derive_tgas": DERIVE_TGAS, "network": if o.preset == "MainnetProof" { "mainnet" } else { "mutinynet" },
-                "origins": [ORIGIN], "outflow_cap_24h": OUTFLOW_CAP, "operator_passkey": operator_passkey_args(),
+                "origins": o.origins, "outflow_cap_24h": OUTFLOW_CAP, "operator_passkey": operator_passkey_args(),
             }))
             .transact()
             .await?
@@ -726,6 +727,16 @@ impl Harness {
 
     pub async fn request(&self, v: &Vault, id: u64) -> Result<Value> {
         Ok(self.undo.view("request").args_json(json!({"vault": v.hex(), "request": id})).await?.json()?)
+    }
+
+    /// The page's rule, in one place. A rotation or a freeze moves the epoch at once and a Pending request
+    /// stays in the row until the next state change sweeps it, so reading only its status would let the
+    /// clock run on. One that has reached Signing keeps going whatever the epoch says. Gone reads as
+    /// cancelled, for a request last read as Pending: a pruned Signed one is gone too, and a page knows
+    /// which it last saw.
+    pub async fn reads_cancelled(&self, v: &Vault, id: u64) -> Result<bool> {
+        let r = self.request(v, id).await?;
+        Ok(r.is_null() || (r["status"] == "Pending" && r["epoch"] != self.vault_view(v).await?["spend_epoch"]))
     }
 
     pub async fn status(&self, v: &Vault, id: u64) -> Result<String> {

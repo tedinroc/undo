@@ -129,12 +129,21 @@ pub struct Bounds {
 
 impl Bounds {
     /// Delay maxima equal the deployed values, because the upgrade arithmetic (26 min of a 1 h
-    /// `T_upgrade`) assumes them. Delays therefore cannot move on this instance. Fee floors are
-    /// this crate's choice: the spec requires a floor and names no number.
+    /// `T_upgrade`) assumes them. A vault can set its waits shorter, which only a test coin's owner would
+    /// want, and `hold_ms` and `T_stuck` stay where they are. Fee floors are this crate's choice: the spec
+    /// requires a floor and names no number.
     pub fn test_coin(outflow_cap_24h: Sats) -> Bounds {
         let deployed = Policy::test_coin(outflow_cap_24h);
         Bounds {
-            min: Policy { fee_cap_tx: 500, fee_budget_24h: 1_000, outflow_cap_24h: 0, ..deployed },
+            min: Policy {
+                t_known_ms: 30_000,
+                t_new_ms: MINUTE,
+                t_new_unguarded_ms: MINUTE,
+                fee_cap_tx: 500,
+                fee_budget_24h: 1_000,
+                outflow_cap_24h: 0,
+                ..deployed
+            },
             max: deployed,
         }
     }

@@ -797,11 +797,11 @@ async fn status_is_plain_language_with_no_arguments_and_for_a_vault() -> Result<
     h.mock.call("set_mode").args_json(json!({"mode": "Garbage"})).transact().await?.into_result()?;
     let _ = h.execute_call(&v, id, None).transact().await?;
     let text = status(&h, Some(&v)).await?.1;
-    assert!(text.contains("signing unavailable since "), "{text}");
+    assert!(text.contains("the signer's last answer failed at "), "{text}");
     assert!(text.contains("a coin 6 blocks old can leave by the cold-key exit"), "{text}");
     h.mock.call("set_mode").args_json(json!({"mode": "Yield"})).transact().await?.into_result()?;
     h.execute_and_respond(&v, id, 1, false).await?.into_result()?;
-    assert!(!status(&h, Some(&v)).await?.1.contains("signing unavailable"));
+    assert!(!status(&h, Some(&v)).await?.1.contains("last answer failed"));
 
     // Rotation and a freeze read as what they are, and a waiting grant shows.
     let g = add_dest(&h, &v, &script_a()).await?.json::<u64>()?;
@@ -1185,14 +1185,6 @@ async fn film_vault(h: &Harness, label: &str) -> Result<Vault> {
     Ok(Vault { id, k_s: k.k_s, k_u: k.k_u, k_e_leaf: k.k_e_leaf, k_e_intent: k.k_e_intent, passkey: k.passkey, k_m, csv: 6, script, spk, spend_nonce: 0, passkey_nonce: 0 })
 }
 
-/// The page's rule, in one place. A rotation or a freeze moves the epoch at once and the request stays
-/// in the row until the next state change sweeps it, so reading only its status would let the clock run
-/// on. Gone reads as cancelled too.
-async fn reads_cancelled(h: &Harness, v: &Vault, id: u64) -> Result<bool> {
-    let r = h.request(v, id).await?;
-    Ok(r.is_null() || r["epoch"] != h.vault_view(v).await?["spend_epoch"])
-}
-
 const FIVE_MINUTES: u64 = 300_000;
 
 #[tokio::test]
@@ -1254,7 +1246,7 @@ async fn film_the_thief_tab_can_execute_the_moment_the_unlock_arrives() -> Resul
     assert!(r["first_execute_at"].as_u64().unwrap() >= unlock);
     assert_eq!(r["status"], "Signed");
     h.verified_final_tx(&v, id, &c[..1]).await?;
-    assert!(!reads_cancelled(&h, &v, id).await?, "a signed spend is not cancelled");
+    assert!(!h.reads_cancelled(&v, id).await?, "a signed spend is not cancelled");
 
     // Past that point the phone has nothing left to stop.
     assert_refused(&h.cancel_passkey(&v, id).await?, "NotPending");
@@ -1267,7 +1259,7 @@ async fn film_the_phones_cancel_reads_as_cancelled_and_the_stolen_key_cannot_ask
     let mut v = film_vault(&h, "film-cancel").await?;
     let c = coins("film-cancel", 1, 100_000);
     let id = h.propose_simple(&mut v, &c[0]).await?;
-    assert!(!reads_cancelled(&h, &v, id).await?, "a live request reads as live");
+    assert!(!h.reads_cancelled(&v, id).await?, "a live request reads as live");
     let before = h.vault_view(&v).await?["spend_epoch"].as_u64().unwrap();
     let r = h.request(&v, id).await?;
     assert_eq!((r["epoch"].as_u64(), r["status"].as_str()), (Some(before), Some("Pending")));
@@ -1278,7 +1270,7 @@ async fn film_the_phones_cancel_reads_as_cancelled_and_the_stolen_key_cannot_ask
     let view = h.vault_view(&v).await?;
     assert_eq!(view["spend_epoch"].as_u64(), Some(before + 1));
     assert_eq!(view["k_s_suspended"].as_bool(), Some(true));
-    assert!(reads_cancelled(&h, &v, id).await?, "the clock stops on this read, before anything sweeps it");
+    assert!(h.reads_cancelled(&v, id).await?, "the clock stops on this read, before anything sweeps it");
     assert_eq!(h.request(&v, id).await?["status"], "Pending", "which is why the page cannot read status");
     assert_eq!(h.outpoint(&v, &c[0]).await?["state"], "Free", "the coin reads free at once");
     assert!(status(&h, Some(&v)).await?.1.contains("spend key suspended"));
@@ -1304,11 +1296,11 @@ async fn film_the_phones_cancel_reads_as_cancelled_and_the_stolen_key_cannot_ask
     v.k_s = new_k_s;
     let next = h.propose_simple(&mut v, &c[0]).await?;
     assert!(h.request(&v, id).await?.is_null());
-    assert!(reads_cancelled(&h, &v, id).await?);
+    assert!(h.reads_cancelled(&v, id).await?);
 
     // And the owner's next request, in the new epoch, does not read as cancelled.
     assert_eq!(h.request(&v, next).await?["epoch"].as_u64(), Some(before + 1));
-    assert!(!reads_cancelled(&h, &v, next).await?);
+    assert!(!h.reads_cancelled(&v, next).await?);
     Ok(())
 }
 
@@ -1331,6 +1323,6 @@ async fn film_a_hold_adds_exactly_five_minutes_and_the_page_can_read_why() -> Re
 
     // The phone still stops a held request.
     h.rotate(&mut v, &test_key("film-hold-new")).await?;
-    assert!(reads_cancelled(&h, &v, id).await?);
+    assert!(h.reads_cancelled(&v, id).await?);
     Ok(())
 }

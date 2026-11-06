@@ -10,6 +10,9 @@
 //! `on_signed`, a passkey rotation and the cold key's methods can still add. Those methods must never
 //! fail for lack of credit, so the bytes are paid for ahead of time. A call adjusts the reservation by
 //! what it changes, so it never has to read the whole vault to know the total.
+//!
+//! The same goes for all vaults together. Credit and reservations sit in the contract's balance, and
+//! nothing but the running total in `Stats` keeps new code from spending them.
 
 use std::collections::BTreeMap;
 
@@ -52,6 +55,11 @@ pub struct Row {
     pub reserved: u64,
     pub creator: AccountId,
     pub vault: Vault,
+}
+
+/// What this vault has paid in and not yet used: its credit, and what its reservation paid for.
+fn paid_in(row: &Row) -> u128 {
+    row.credit.saturating_add(cost(row.reserved))
 }
 
 fn row_reserve(vault: &Vault) -> u64 {
@@ -115,7 +123,7 @@ fn ledger_key(id: &[u8; 32], outpoint: &Outpoint) -> Vec<u8> {
     key
 }
 
-fn cost(bytes: u64) -> u128 {
+pub fn cost(bytes: u64) -> u128 {
     env::storage_byte_cost().as_yoctonear().saturating_mul(u128::from(bytes))
 }
 
@@ -134,9 +142,11 @@ pub fn exists(id: &[u8; 32]) -> bool {
     env::storage_has_key(&row_key(id))
 }
 
-/// Roughly what one more request costs, for a status line. Nothing refuses on this.
-pub fn request_floor() -> u128 {
-    cost(1_000)
+/// Roughly what a proposal costs, for a status line, measured on a vault with no credit: nothing refuses
+/// on these, because a proposal is refused by what it really grows by. A one-input proposal and the
+/// largest there is.
+pub fn proposal_cost() -> (u128, u128) {
+    (cost(650), cost(5_700))
 }
 
 /// A loaded vault, and what its pieces held when they were read.
@@ -150,6 +160,8 @@ pub struct Loaded {
     reserve_read: u64,
     /// Bytes written outside the row and its entries since loading, which `commit` settles too.
     written_early: u64,
+    /// What [`paid_in`] read when this was loaded, so the running total can move by the difference.
+    paid_in_read: u128,
 }
 
 /// The row alone. For views, and for callers that name exactly what they touch.
@@ -157,6 +169,7 @@ pub fn try_load_row(id: &[u8; 32]) -> Option<Loaded> {
     let raw_row = env::storage_read(&row_key(id))?;
     let row = Row::try_from_slice(&raw_row).unwrap_or_else(|_| env::panic_str("bad row"));
     let reserve_read = row_reserve(&row.vault);
+    let paid_in_read = paid_in(&row);
     Some(Loaded {
         row,
         row_bytes: raw_row.len() as u64,
@@ -165,6 +178,7 @@ pub fn try_load_row(id: &[u8; 32]) -> Option<Loaded> {
         raw_ledger: BTreeMap::new(),
         reserve_read,
         written_early: 0,
+        paid_in_read,
     })
 }
 
@@ -271,8 +285,9 @@ pub enum Short {
 }
 
 impl Loaded {
-    /// Writes what changed and settles the credit for the change in bytes plus reservation.
-    pub fn commit(mut self, id: &[u8; 32], short: Short) {
+    /// Writes what changed, settles the credit for the change in bytes plus reservation, and moves the
+    /// total the vaults have paid in by what this one's share became.
+    pub fn commit(mut self, id: &[u8; 32], short: Short, vault_funds: &mut u128) {
         let usage_before = env::storage_usage() - self.written_early;
         let requests = core::mem::take(&mut self.row.vault.requests);
         let ledger = core::mem::take(&mut self.row.vault.ledger);
@@ -322,6 +337,7 @@ impl Loaded {
         } else {
             self.row.credit = self.row.credit.saturating_add(cost(before - after));
         }
+        *vault_funds = vault_funds.saturating_sub(self.paid_in_read).saturating_add(paid_in(&self.row));
         let bytes = encoded(&self.row);
         if bytes != self.raw_row {
             env::storage_write(&row_key(id), &bytes);
@@ -331,7 +347,7 @@ impl Loaded {
 
 /// First write of a row. The whole cost, with the entry's overhead, comes out of the attached
 /// deposit. Anything above it stays as credit.
-pub fn insert(id: &[u8; 32], mut row: Row) {
+pub fn insert(id: &[u8; 32], mut row: Row, vault_funds: &mut u128) {
     let before = env::storage_usage();
     row.reserved = row_reserve(&row.vault);
     env::storage_write(&row_key(id), &encoded(&row));
@@ -341,12 +357,14 @@ pub fn insert(id: &[u8; 32], mut row: Row) {
         env::panic_str(&format!("attach at least {need} yoctoNEAR for {used} bytes"));
     }
     row.credit -= need;
+    *vault_funds = vault_funds.saturating_add(paid_in(&row));
     env::storage_write(&row_key(id), &encoded(&row));
 }
 
 /// Deletes a row and returns everything it held: its credit, and what its bytes and reservation
 /// were paying for. Only for a vault that never activated, which has no requests or ledger entries.
-pub fn remove(id: &[u8; 32], loaded: &Loaded) -> u128 {
+pub fn remove(id: &[u8; 32], loaded: &Loaded, vault_funds: &mut u128) -> u128 {
+    *vault_funds = vault_funds.saturating_sub(loaded.paid_in_read);
     let before = env::storage_usage();
     env::storage_remove(&row_key(id));
     let freed = before.saturating_sub(env::storage_usage()) + loaded.row.reserved;
