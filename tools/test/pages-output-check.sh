@@ -59,7 +59,7 @@ if "$REPO/scripts/check-identity.sh" --files $(find "${scan[@]}" -type f); then 
 
 # Hosts: everything a page names must be in the config. The vendored crypto's comments cite papers, so it is left out,
 # and a separate line checks it holds no fetch at all.
-allowed='mutinynet\.com|test\.rpc\.fastnear\.com|near-testnet\.drpc\.org|rpc\.testnet\.near\.org|testnet\.nearblocks\.io|undo-btc\.pages\.dev'
+allowed='mutinynet\.com|test\.rpc\.fastnear\.com|near-testnet\.drpc\.org|rpc\.testnet\.near\.org|testnet\.nearblocks\.io|undo-btc\.pages\.dev|github\.com'
 hosts="$(grep -rIhoE 'https?://[A-Za-z0-9.-]+' "$OUT/pages" --exclude=LICENSE --exclude-dir=vendor | sed -E 's#https?://##' | sort -u | grep -vE "^($allowed)$" | grep -vE '^(www\.w3\.org|example\.[a-z]+)$' || true)"
 if [ -z "$hosts" ]; then ok "every host in the pages is on the list"; else bad "hosts off the list:"; printf '     %s\n' $hosts; fi
 

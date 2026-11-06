@@ -1,0 +1,211 @@
+{
+  "schema": "undo-replay-v1",
+  "label": "replay",
+  "title": "Replay of earlier runs",
+  "note": "Real hashes from two earlier runs on one test vault, shown in story order. Nothing on this page is happening now, and no clock here is running.",
+  "chip": "signet test coins",
+  "vault": {
+    "id": "d669008a65ebd76e49b7679e80dfef98a66b21f6729c1c7dd8c3f4a031c4bfb4",
+    "address": "tb1qkaq3lndkl5a88k9w5zsmj4ucjl7ddqezyfhp0m09q34zz4f5t5ms680mmz",
+    "contract": "g1.s.undo-btc.testnet",
+    "code_hash": "6JAGfdMuvVhxszbTT2VabYD39VadHc8txiWLqBdU6iE1",
+    "signer": "v1.signer-prod.testnet",
+    "csv_blocks": 6
+  },
+  "runs": {
+    "s2": {
+      "date": "2026-11-01",
+      "what": "the spend key alone, sent straight to Bitcoin",
+      "near": "NEAR testnet, read only",
+      "bitcoin": "Mutinynet (a signet)"
+    },
+    "g2": {
+      "date": "2026-10-31",
+      "what": "G2: the wait, the contract's signature, and the cold-key exit",
+      "near": "NEAR testnet",
+      "bitcoin": "Mutinynet (a signet)"
+    }
+  },
+  "steps": [
+    {
+      "id": "coin",
+      "run": "s2",
+      "at": null,
+      "title": "A coin sits in the test vault.",
+      "lines": [
+        {
+          "kind": "hash",
+          "chain": "Mutinynet",
+          "type": "address",
+          "hash": "tb1qkaq3lndkl5a88k9w5zsmj4ucjl7ddqezyfhp0m09q34zz4f5t5ms680mmz",
+          "what": "the test vault"
+        },
+        {
+          "kind": "hash",
+          "chain": "Mutinynet",
+          "type": "txid",
+          "hash": "65801b967be8ada9e4299513908960952f18c7f0e5e3f96aaba04a46a5a66e24",
+          "what": "the coin: 10,000 sats, block 3553028"
+        }
+      ]
+    },
+    {
+      "id": "refused",
+      "run": "s2",
+      "at": "2026-11-01T09:00:53.549Z",
+      "title": "The thief sends it with your spend key alone. Bitcoin refuses.",
+      "lines": [
+        {
+          "kind": "text",
+          "text": "A spend signed by the spend key only, with nothing where the second signature goes, posted straight to a Mutinynet node."
+        },
+        {
+          "kind": "node",
+          "chain": "Mutinynet",
+          "text": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), input 0 of 6aa2b419a2f28a475c539fa25445101650ac90f0960aa1ae0ec5bbdae0128eb2 (wtxid b8cf7847664583ca66c10a55a93e61231bd1eeacf1b45a4af20bd13427234f9f), spending 65801b967be8ada9e4299513908960952f18c7f0e5e3f96aaba04a46a5a66e24:0\"}"
+        },
+        {
+          "kind": "text",
+          "text": "Read again at 09:00:55 UTC: the coin is still unspent. The thief's spend moved nothing."
+        },
+        {
+          "kind": "hash",
+          "chain": "Mutinynet",
+          "type": "txid",
+          "hash": "f0bd80ec3caaa63cedee159fbbca657ce01bdcf2786a0616a4ce7e0c28b175b5",
+          "what": "later, the owner's cold key took the coin back, block 3553034"
+        }
+      ],
+      "film": true
+    },
+    {
+      "id": "wait",
+      "run": "g2",
+      "at": "2026-10-31T23:25:56.681Z",
+      "title": "It needs a second signature, and a public NEAR contract makes the request wait.",
+      "lines": [
+        {
+          "kind": "hash",
+          "chain": "NEAR testnet",
+          "type": "tx",
+          "hash": "CJjjq46pkvfWupdWyphbwe2owDJ1LLbP2E9f49ZykFc8",
+          "what": "the request"
+        },
+        {
+          "kind": "text",
+          "text": "The contract set its unlock 10:00 later: requested 23:25:56 UTC, unlocks 23:35:56 UTC. A new destination, and no guard was running."
+        }
+      ]
+    },
+    {
+      "id": "cancel",
+      "run": null,
+      "at": null,
+      "recorded": false,
+      "title": "Your phone cancels first.",
+      "lines": [
+        {
+          "kind": "text",
+          "text": "Not in this recording yet: no cancel on NEAR testnet is recorded here. This step stays empty until one is."
+        }
+      ]
+    },
+    {
+      "id": "signed",
+      "run": "g2",
+      "at": "2026-10-31T23:35:57.509Z",
+      "title": "Nobody cancelled this one. At the unlock, the contract asked for Bitcoin's second signature.",
+      "lines": [
+        {
+          "kind": "hash",
+          "chain": "NEAR testnet",
+          "type": "tx",
+          "hash": "HvPEKTuzDqwxNS1mnLx2mpmSbyREVedv3pK7wT89Mqun",
+          "what": "the contract asks the signer"
+        },
+        {
+          "kind": "hash",
+          "chain": "Mutinynet",
+          "type": "txid",
+          "hash": "66825f2ca020bc2de22cb4cdebefdb85dcf86e8fa1dfcc444f71b04bfb5aa365",
+          "what": "paid 19,704 sats out, block 3551937"
+        }
+      ]
+    },
+    {
+      "id": "exit",
+      "run": "g2",
+      "at": null,
+      "title": "If NEAR goes away, the cold key gets the coin out after a timelock: 6 blocks here.",
+      "lines": [
+        {
+          "kind": "text",
+          "text": "Too early, the node refuses it:"
+        },
+        {
+          "kind": "node",
+          "chain": "Mutinynet",
+          "text": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"non-BIP68-final\"}"
+        },
+        {
+          "kind": "text",
+          "text": "After 6 blocks, with no NEAR at all:"
+        },
+        {
+          "kind": "hash",
+          "chain": "Mutinynet",
+          "type": "txid",
+          "hash": "6fa7536948b4939bafd47a89dcde7d86eb8acb2204cbcca330eb5a65d9a9e715",
+          "what": "19,740 sats out by the cold key, block 3551944"
+        }
+      ],
+      "film": true
+    }
+  ],
+  "film": [
+    {
+      "kind": "hash",
+      "chain": "Mutinynet",
+      "type": "address",
+      "hash": "tb1qkaq3lndkl5a88k9w5zsmj4ucjl7ddqezyfhp0m09q34zz4f5t5ms680mmz",
+      "what": "the test vault"
+    },
+    {
+      "kind": "hash",
+      "chain": "Mutinynet",
+      "type": "txid",
+      "hash": "65801b967be8ada9e4299513908960952f18c7f0e5e3f96aaba04a46a5a66e24",
+      "what": "the coin the spend key alone could not move"
+    },
+    {
+      "kind": "hash",
+      "chain": "Mutinynet",
+      "type": "txid",
+      "hash": "6fa7536948b4939bafd47a89dcde7d86eb8acb2204cbcca330eb5a65d9a9e715",
+      "what": "the cold key's exit after the timelock"
+    }
+  ],
+  "same_vault": [
+    {
+      "kind": "hash",
+      "chain": "NEAR testnet",
+      "type": "tx",
+      "hash": "CJjjq46pkvfWupdWyphbwe2owDJ1LLbP2E9f49ZykFc8",
+      "what": "a request the contract made wait"
+    },
+    {
+      "kind": "hash",
+      "chain": "NEAR testnet",
+      "type": "tx",
+      "hash": "HvPEKTuzDqwxNS1mnLx2mpmSbyREVedv3pK7wT89Mqun",
+      "what": "the contract asking for the second signature"
+    },
+    {
+      "kind": "hash",
+      "chain": "Mutinynet",
+      "type": "txid",
+      "hash": "66825f2ca020bc2de22cb4cdebefdb85dcf86e8fa1dfcc444f71b04bfb5aa365",
+      "what": "the spend it co-signed after the wait"
+    }
+  ]
+}
