@@ -197,10 +197,14 @@ test('a redirect is not followed: raw bytes stay on the allow-listed host', asyn
   });
   await new Promise((r) => redirector.listen(0, '127.0.0.1', r));
   const e = new Esplora(`http://127.0.0.1:${redirector.address().port}`, { backoffMs: 1, attempts: 2 });
-  await assert.rejects(e.broadcast('00', '44'.repeat(32)), RelayError);
-  assert.equal(hits.length, 0);
-  redirector.close();
-  other.close();
+  // Closed either way: a server left open would hang the runner, and the failure would read as a timeout.
+  try {
+    await assert.rejects(e.broadcast('00', '44'.repeat(32)), RelayError);
+    assert.equal(hits.length, 0);
+  } finally {
+    redirector.close();
+    other.close();
+  }
 });
 
 test('NEAR calls do not follow a redirect either', async () => {
@@ -212,10 +216,13 @@ test('NEAR calls do not follow a redirect either', async () => {
     res.end();
   });
   await new Promise((r) => redirector.listen(0, '127.0.0.1', r));
-  await assert.rejects(new Near(`http://127.0.0.1:${redirector.address().port}`).rpcOnce(`http://127.0.0.1:${redirector.address().port}`, 'status', []));
-  assert.equal(hits.length, 0);
-  redirector.close();
-  other.close();
+  try {
+    await assert.rejects(new Near(`http://127.0.0.1:${redirector.address().port}`).rpcOnce(`http://127.0.0.1:${redirector.address().port}`, 'status', []));
+    assert.equal(hits.length, 0);
+  } finally {
+    redirector.close();
+    other.close();
+  }
 });
 
 test('a damaged NEAR key file is not quoted back', () => {

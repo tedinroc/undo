@@ -5,7 +5,7 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 | Tool | What it does | Network |
 |---|---|---|
 | `escape.mjs` | The Bitcoin escape from a recovery file and a UTXO list | None |
-| `freeze.mjs` | Signs one cold-key intent to a file: `freeze`, `unfreeze`, `veto_grant`, `cancel` | None |
+| `freeze.mjs` | Signs one cold-key intent to a file: `freeze`, `unfreeze`, `veto_grant`, `cancel`. With no `--minutes` a freeze lands at the whole CSV period, however wrong this clock or late the relay | None |
 | `sign-intent.mjs` | Signs `propose_btc` or `reclaim` from a seed file and prints the arguments | None |
 | `human-key.mjs` | Makes the dispenser and funding keys, for `scripts/human/02` and `03` | None |
 | `g1.mjs` | Gate G1 driver. Plan only unless `--live`. Refuses mainnet | NEAR RPC |

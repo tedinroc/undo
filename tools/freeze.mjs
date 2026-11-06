@@ -9,8 +9,10 @@
 // cold nonce, which the vault view shows, because this tool stays offline.
 //
 // It builds the digest from the fields it displays, and takes no digest from anyone. It signs with a
-// key derived from the cold secret, never the leaf key that spends on Bitcoin. The longest freeze is
-// the CSV period, counted from when you sign. The contract checks again when the intent lands.
+// key derived from the cold secret, never the leaf key that spends on Bitcoin. The contract cuts a
+// freeze to one CSV period from when the intent lands, so with no --minutes this asks for past the
+// intent's own expiry: however wrong this clock or late the relay, what lands is the whole period.
+// A shorter one you name counts from this clock, so it is refused here if it is past the period.
 //
 // Exit 0: wrote the intent. 1: refused or answered no. 2: bad usage.
 import { readFileSync, realpathSync, writeFileSync, existsSync } from 'node:fs';
@@ -46,11 +48,13 @@ async function run() {
   const fields = {};
   const shown = [];
   if (a.method === 'freeze') {
-    const max = now + file.csv * BLOCK_MS[file.network];
-    fields.until = a['until-ms'] ?? (a.minutes !== undefined ? now + a.minutes * 60_000 : max);
+    const period = file.csv * BLOCK_MS[file.network];
+    const max = now + period;
+    const named = a['until-ms'] ?? (a.minutes !== undefined ? now + a.minutes * 60_000 : undefined);
+    fields.until = named ?? expiresAt + period;
     if (fields.until <= now) throw new Error('until is in the past');
-    if (fields.until > max) throw new Error(`a freeze lasts at most the CSV period, ${file.csv} blocks on ${file.network}`);
-    shown.push(['freeze until', `${new Date(fields.until).toISOString()} (${fields.until})`]);
+    if (named !== undefined && fields.until > max) throw new Error(`a freeze lasts at most the CSV period, ${file.csv} blocks on ${file.network}`);
+    shown.push(['freeze until', named === undefined ? `the whole CSV period from when it lands, ${file.csv} blocks (asks for ${fields.until})` : `${new Date(fields.until).toISOString()} (${fields.until})`]);
   }
   if (a.method === 'veto_grant') {
     if (a.grant === undefined) throw new UsageError('veto_grant needs --grant');
