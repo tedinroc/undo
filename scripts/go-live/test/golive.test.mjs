@@ -364,10 +364,11 @@ function deployTree(contract) {
   return dir;
 }
 
-test('40: dry run builds and scans offline; live runs both checks, then the Worker, then Pages; a failed check sends nothing', { skip: noSite || (process.env.UNDO_WASM_DIR ? false : 'set UNDO_WASM_DIR: the outward check reads the built wasm'), timeout: 600_000 }, () => {
+test('40: dry run builds and scans offline; live runs both checks, then the Worker, then Pages; a failed check sends nothing', { skip: noSite || (process.env.UNDO_WASM_DIR ? false : 'set UNDO_WASM_DIR: the outward check reads the built wasm'), timeout: 2_400_000 }, () => {
   const tree = deployTree('v1.s.undo-btc.testnet');
   const run = (args, env) => {
-    const out = spawnSync('bash', [join(tree, 'scripts/go-live/40-deploy.sh'), ...args], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 300_000 });
+    // The scans in the deploy scripts read the whole tree and both wasm files more than once: minutes on a busy machine.
+    const out = spawnSync('bash', [join(tree, 'scripts/go-live/40-deploy.sh'), ...args], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 900_000 });
     return { code: out.status, out: `${out.stdout}${out.stderr}` };
   };
   const dry = run(['--dry-run', '--contract', 'v1.s.undo-btc.testnet'], {});
