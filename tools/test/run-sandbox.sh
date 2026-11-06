@@ -14,6 +14,8 @@ WASM_DIR="${UNDO_WASM_DIR:-${CARGO_TARGET_DIR:-$REPO/target}/near}"
 WORK="${UNDO_SANDBOX_WORK:-$REPO/target/tools-sandbox}"
 : "${NEAR_SANDBOX_BIN_PATH:?set NEAR_SANDBOX_BIN_PATH}"
 [ -z "${UNDO_LIBLZMA_DIR:-}" ] || export DYLD_LIBRARY_PATH="$UNDO_LIBLZMA_DIR"
+# Local http only. With the system CA store on, Node on macOS can hang at exit reading the keychain.
+unset NODE_USE_SYSTEM_CA
 for f in undo_vault mock_signer; do
   [ -s "$WASM_DIR/$f.wasm" ] || { echo "SANDBOX ERROR: no $f.wasm, run scripts/build.sh" >&2; exit 2; }
 done
@@ -75,6 +77,9 @@ PY
 
   echo "== protocol $version: intents against the real wasm"
   node "$TOOLS/test/sandbox-intents.mjs" "${common[@]}" || { echo "SANDBOX FAIL: intents on $version"; failed=1; }
+
+  echo "== protocol $version: agent CLI end to end"
+  UNDO_AGENT_WORK="$WORK" node "$REPO/agent/test/sandbox-e2e.mjs" "${common[@]}" || { echo "SANDBOX FAIL: agent CLI on $version"; failed=1; }
   stop_node
 done
 [ "$failed" -eq 0 ] || exit 1

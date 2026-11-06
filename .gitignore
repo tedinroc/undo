@@ -25,6 +25,7 @@ dist/
 *cold-key*
 *cold-file*
 *vault-keys*
+undo-agent*.json
 g2-state*
 # The watcher's config holds its ntfy topic. tools/watch.mjs writes it outside any repo; this is a second lock.
 .undo-watch/

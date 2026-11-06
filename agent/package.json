@@ -1,0 +1,13 @@
+{
+  "name": "undo-agent",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "The agent's side of Undo for Bitcoin: propose, check, status, keys. No install step: it uses tools/lib and the noble copy vendored there.",
+  "bin": {
+    "undo": "./undo.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/offline.test.mjs"
+  }
+}

@@ -28,6 +28,7 @@ trap 'rm -f "$record"' EXIT
 step "vendored noble matches its manifest" node "$TOOLS/vendor/noble/vendor.mjs" --check
 step "offline tests" node --test "$TOOLS/test/offline.test.mjs"
 step "G2 checks, offline" node --test "$TOOLS/test/g2-units.test.mjs"
+step "agent CLI, offline" node --test "$REPO/agent/test/offline.test.mjs"
 step "watcher, offline" env -u NODE_USE_SYSTEM_CA node --test "$TOOLS/test/watch.test.mjs"
 step "human scripts, under shims" env UNDO_NEAR_RECORD="$record" node --test "$TOOLS/test/human-scripts.test.mjs"
 step "near-cli commands against --help, network denied" node "$TOOLS/test/near-cli-check.mjs" "$record"
