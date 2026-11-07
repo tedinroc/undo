@@ -1276,6 +1276,19 @@ test('attack 5: vaults stop at their share of the general ceiling, and calls on 
   assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true, 'and a call on a vault that exists still goes');
 });
 
+test('create: one address makes only its hourly count of vaults, and another address is not held by it', async () => {
+  const { perIpHour } = RELAY_METHODS.create_vault;
+  const world = fakeWorld();
+  const r = relayWith(world);
+  const create = async (name, ip) => (await r.relay('create_vault', (await createBody(name)).args, { pow: 0, ip })).body;
+  const answers = [];
+  for (let i = 0; i <= perIpHour; i += 1) answers.push(await create(`per-ip-${i}`, '203.0.113.9'));
+  assert.deepEqual(answers.map((a) => a.code ?? 'sent'), [...Array(perIpHour).fill('sent'), 'rate_limited'], `${perIpHour} creates an hour from one address`);
+  assert.ok(answers[perIpHour].retry_after_s > 60, 'until the hour turns');
+  assert.equal(world.sent.length, perIpHour, 'the refused one was never signed');
+  assert.equal((await create('per-ip-other', '203.0.113.10')).ok, true, 'another address goes');
+});
+
 test('attack 6: status says when the owner key cannot pay, and a dead RPC claims nothing', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
   const r = relayWith(world);

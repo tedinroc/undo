@@ -1,6 +1,7 @@
-# Runs on every push: ./verify.sh B (the vault state machine and the Bitcoin consensus tests) and
-# the offline Node tests. No secrets, no network calls of its own beyond fetching crates, no keys,
-# no deploys, and it commits nothing. Tier A reads live networks, so it is run by hand, not here.
+# Runs on every push: ./verify.sh B (the vault state machine and the Bitcoin consensus tests), the
+# offline Node tests, and the relay mutants on the site tests. No secrets, no network calls of its own
+# beyond fetching crates and packages, no keys, no deploys, and it commits nothing. Tier A reads live
+# networks, so it is run by hand, not here.
 name: verify
 
 on:
@@ -80,3 +81,21 @@ jobs:
       - name: Secret scan of the tree (the identity scan needs a private word list, so it runs before each push instead)
         run: |
           if [ -f scripts/secret-scan.sh ]; then scripts/secret-scan.sh; fi
+
+  relay-mutants:
+    name: relay and page mutants, site tests only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The harness reads a run correctly, and every mutant applies once
+        run: node tools/test/relay-mutants.mjs --self-test && node tools/test/relay-mutants.mjs --check
+      - name: Every mutant fails a site test, with no stage and no Chrome
+        # The stage tier needs a local NEAR node, bitcoind and workerd, so it runs by hand in tools/test/run-all.sh.
+        # Every mutant has a site test that kills it, so a mutant this run cannot judge fails the job.
+        run: node tools/test/relay-mutants.mjs --no-stage

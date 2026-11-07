@@ -41,7 +41,7 @@ step "mutation harnesses read a run correctly" sh -c "node '$TOOLS/test/mutants.
 if [ "$mutants" -eq 1 ] && [ "$sandbox" -eq 1 ]; then
   step "relay and page mutants: nearest site tests, the rest of site/test, then the stage and workerd" node "$TOOLS/test/relay-mutants.mjs"
 elif [ "$mutants" -eq 1 ]; then
-  step "relay and page mutants on the site tests alone, so the stage's part reads not judged" node "$TOOLS/test/relay-mutants.mjs" --no-stage
+  step "relay and page mutants on the site tests alone, as CI runs them: each has a site test that kills it" node "$TOOLS/test/relay-mutants.mjs" --no-stage
 fi
 [ "$sandbox" -eq 0 ] || step "G1 driver and intents on sandbox, protocols 86 and 88" "$TOOLS/test/run-sandbox.sh" 86 88
 [ "$sandbox" -eq 0 ] || step "G2 driver rehearsal: regtest, local NEAR node, mock signer" node "$TOOLS/test/g2-rehearsal.mjs"
