@@ -7,7 +7,7 @@ import {
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
-import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, satsText, sumOfInputs, tickPulse } from './logic.mjs';
+import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from './logic.mjs';
 
 const $ = (id) => document.getElementById(id);
 const root = $('root');
@@ -744,16 +744,25 @@ function enterSigning() {
   $('note').textContent = '';
   if (!signingLoop) {
     signingLoop = true;
-    resendWhileSigning();
+    resendSigning();
   }
 }
 
-/** A sign call can die on the signer. `execute` picks up what is missing, and refuses while one is in flight. */
-async function resendWhileSigning() {
-  while (S.state === 'signing') {
-    await sleep(SIGNING_RESEND_MS);
-    if (S.state !== 'signing') return;
-    await S.relay.call('execute', { vault: S.vaultHex, request: S.requestId }).catch(() => {});
+/** A sign call can die on the signer. `execute` picks up what is missing, until the contract stops asking for it. */
+async function resendSigning() {
+  const why = await resendWhileSigning({
+    read: () => {
+      const sample = S.tracker.sample();
+      return { signing: S.state === 'signing', request: S.request, chainNow: sample ? sample.blockMs + (Date.now() - sample.localMs) : 0 };
+    },
+    send: () => S.relay.call('execute', { vault: S.vaultHex, request: S.requestId }),
+    sleep,
+    everyMs: SIGNING_RESEND_MS,
+  });
+  signingLoop = false;
+  if (why === 'retry_closed' && S.state === 'signing') {
+    $('auto').textContent = 'No more signatures';
+    $('note').textContent = 'The signer did not finish within a day of the first execute, so the contract asks it for nothing more. The coins it did not sign come back to the vault by reclaim.';
   }
 }
 

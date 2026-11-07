@@ -23,7 +23,7 @@ import { executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
-import { destinationProblem, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
+import { destinationProblem, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
 import { stageAvailable, startStage, staticServer } from './stage.mjs';
 
@@ -101,6 +101,43 @@ describe('rules with no page around them', () => {
     assert.equal(await liveRequestIn([1, 2, 3], async (id) => ({ kind: kinds[id] })), 1);
     assert.equal(await liveRequestIn([2, 3], async (id) => ({ kind: kinds[id] })), null);
     assert.equal(await liveRequestIn([], async () => null), null);
+  });
+
+  test('while signing, execute goes again every interval, and stops once the request can no longer ask for signatures', async () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const signing = (over = {}) => ({ status: 'Signing', tier: 'New', first_execute_at: 1_000_000, in_flight: 0, ...over });
+    const run = async (reads) => {
+      let at = 0;
+      const sent = [];
+      const slept = [];
+      const why = await resendWhileSigning({
+        read: () => reads[Math.min(at, reads.length - 1)],
+        send: async () => {
+          sent.push(at);
+          if (sent.length === 2) throw new Error('a refused send does not stop the loop');
+        },
+        sleep: async (ms) => {
+          slept.push(ms);
+          at += 1;
+        },
+        everyMs: 30_000,
+      });
+      return { why, sent: sent.length, slept };
+    };
+    // Open window: it sends after each wait, until the request leaves Signing.
+    const open = { signing: true, request: signing(), chainNow: 1_000_000 + DAY - 1 };
+    const out = await run([open, open, open, open, { signing: false, request: signing(), chainNow: 1_000_000 + DAY - 1 }]);
+    assert.deepEqual([out.why, out.sent, out.slept[0]], ['left_signing', 3, 30_000]);
+    // A day after the first execute of a spend that pays out, the contract asks the signer for nothing more: no send.
+    const closed = { signing: true, request: signing(), chainNow: 1_000_000 + DAY };
+    assert.deepEqual(await run([closed]), { why: 'retry_closed', sent: 0, slept: [] });
+    // It closes while the tab waits: the send after that wait does not go.
+    assert.deepEqual((await run([open, open, closed])).sent, 1);
+    // A self-spend, a reclaim among them, keeps retrying, and so does a request with no first execute on record.
+    const selfSpend = { ...closed, request: signing({ tier: 'SelfSpend' }) };
+    assert.equal((await run([selfSpend, selfSpend, { signing: false }])).sent, 1);
+    const noFirst = { ...closed, request: signing({ first_execute_at: null }) };
+    assert.equal((await run([noFirst, noFirst, { signing: false }])).sent, 1);
   });
 
   test('the page ships with no inline script or style, at both paths, and needs no source map', () => {

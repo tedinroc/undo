@@ -136,6 +136,11 @@ function fakeWorld({ vaults = {}, requests = {} } = {}) {
     }
     if (w.rpcDown) throw new TypeError('network');
     const { method, params } = JSON.parse(init.body);
+    if (method === 'block' && params.block_id !== undefined) {
+      w.oldBlockReads = (w.oldBlockReads ?? 0) + 1;
+      const at = w.blockTimes?.[params.block_id];
+      return at === undefined ? err({ name: 'HANDLER_ERROR', cause: { name: 'UNKNOWN_BLOCK' } }) : ok({ header: { hash: BLOCK, height: params.block_id, timestamp_nanosec: `${at}000000` } });
+    }
     if (method === 'block') return ok({ header: { hash: BLOCK, height: 1000, timestamp_nanosec: `${NOW}000000` } });
     if (method === 'query' && params.request_type === 'view_access_key') {
       const pub = params.public_key;
@@ -1161,6 +1166,44 @@ test('attack 5: execute goes only when it can run: not early, not cancelled, not
   assert.equal(await spentGeneral(r), 0);
   assert.equal((await r.relay('execute', { vault: VAULT, request: 5 })).body.ok, true, 'a page at zero, a moment ahead of this node');
   assert.equal((await r.relay('execute', { vault: VAULT, request: 6 })).body.ok, true, 'a sign call that died is picked up again');
+});
+
+test('execute on a Signing request: refused before the general key pays when the contract would refuse it, sent when it might not', async () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  // The node's latest block is 1000 at NOW. A first execute after block 760 (1000 less 250, plus 10 to land in) is
+  // inside the 250 blocks a sign call still out holds a retry back.
+  const signing = (over) => requestRow({ status: 'Signing', tier: 'Known', in_flight: 0, ...over });
+  const requests = {
+    1: signing({ first_execute_at: NOW - DAY }),
+    2: signing({ first_execute_at: NOW - DAY + 1000 }),
+    3: signing({ tier: 'SelfSpend', first_execute_at: NOW - 3 * DAY }),
+    4: signing({ tier: 'New', first_execute_at: NOW - DAY - 1, in_flight: 1 }),
+    5: signing({ first_execute_at: NOW - 60_000, in_flight: 1 }),
+    6: signing({ first_execute_at: NOW - 200_000, in_flight: 1 }),
+    7: signing({ first_execute_at: NOW - 150_000, in_flight: 1 }),
+  };
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests });
+  world.blockTimes = { 760: NOW - 150_000 };
+  const r = relayWith(world);
+  const closed = await r.relay('execute', { vault: VAULT, request: 1 });
+  assert.deepEqual([closed.status, closed.body.code], [422, 'would_refuse'], closed.text);
+  assert.match(closed.body.message, /can no longer ask for signatures/);
+  assert.match((await r.relay('execute', { vault: VAULT, request: 4 })).body.message, /can no longer ask for signatures/, 'closed first, whatever is in flight');
+  const out = await r.relay('execute', { vault: VAULT, request: 5 });
+  assert.deepEqual([out.status, out.body.code], [422, 'would_refuse'], out.text);
+  assert.match(out.body.message, /still out/);
+  assert.equal(world.sent.length, 0, 'none of those was sent');
+  assert.equal(await spentGeneral(r), 0, 'and each gave its charge back');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 2 })).body.ok, true, 'a millisecond inside the window');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 3 })).body.ok, true, 'a self-spend has no window');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 6 })).body.ok, true, 'a first execute before block 760 cannot show the sign call is recent');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 7 })).body.ok, true, 'nor one in block 760 itself');
+  assert.equal(world.sent.length, 4);
+  // No node has block 760, as for a height the chain skipped: nothing can be shown, so the contract decides.
+  const blind = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests });
+  const rb = relayWith(blind);
+  assert.equal((await rb.relay('execute', { vault: VAULT, request: 5 })).body.ok, true);
+  assert.ok(blind.oldBlockReads >= 1);
 });
 
 test('attack 5: a creation its spend key did not sign, or of a vault that exists, is refused and costs nothing', async () => {

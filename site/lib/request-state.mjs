@@ -79,3 +79,17 @@ export function cancelButton({ state: s, relay, passkey, originAllowed, frozen =
   if (!relay.owner.up) return { show: false, why: relay.owner.why ?? 'relay_owner_down' };
   return { show: true, why: null };
 }
+
+// `execute` on a Signing request, as crates/undo-core decides it. A request that pays out gets its missing signatures
+// asked for until a day after its first execute (RetryWindowClosed); a self-spend, which a reclaim also is, has no such
+// limit. A sign call that has not answered blocks another ask for RETRY_AFTER_BLOCKS blocks after the last (InFlight).
+// A request an earlier build executed can close sooner, which no view shows, so for that one the contract decides.
+export const RETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const RETRY_AFTER_BLOCKS = 250;
+
+/** When the contract stops asking the signer for this request's missing signatures, or null if this cannot tell it ever does. */
+export function retryClosesAt(request) {
+  if (!request || request.status !== 'Signing' || request.tier === 'SelfSpend') return null;
+  if (typeof request.first_execute_at !== 'number') return null;
+  return request.first_execute_at + RETRY_WINDOW_MS;
+}

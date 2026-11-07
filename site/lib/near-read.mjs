@@ -117,6 +117,20 @@ export class NearReader {
     return JSON.parse(textDecoder.decode(Uint8Array.from(result.result)));
   }
 
+  /**
+   * The time of the block at `height`, or null when no node answers with it: a height the chain skipped, one older
+   * than a node keeps, or no node at all. Only a lower bound on a height is ever drawn from it.
+   */
+  async blockMsAt(height) {
+    try {
+      const { result, error } = await this.rpc('block', { block_id: height });
+      if (error || result?.header?.height !== height) return null;
+      return Number(BigInt(result.header.timestamp_nanosec) / 1_000_000n);
+    } catch {
+      return null;
+    }
+  }
+
   /** What the contract's clock read, and when this machine heard it. Feed it to SkewTracker. */
   async blockTime() {
     const sentAt = this.nowFn();

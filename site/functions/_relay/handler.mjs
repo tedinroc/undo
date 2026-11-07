@@ -12,6 +12,7 @@ import { vaultIdOfCreateArgs } from '../../lib/intents.mjs';
 import { callAction, milliNear } from '../../lib/near-tx.mjs';
 import { NearReader } from '../../lib/near-read.mjs';
 import { checkPow } from '../../lib/pow.mjs';
+import { RETRY_AFTER_BLOCKS, retryClosesAt } from '../../lib/request-state.mjs';
 import {
   CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, executeTgas, GENERAL, OWN_ACCOUNT_PATH, OWNER, OWNER_FLOOR_YOCTO, ownerReserveYocto, ownerRunwayDays, RELAY_METHODS, relayBodyProblem,
 } from '../../lib/relay-table.mjs';
@@ -38,8 +39,9 @@ const holdYocto = (tgas, deposit = 0n) => BigInt(tgas) * HOLD_YOCTO_PER_TGAS + H
 const createHold = () => holdYocto(RELAY_METHODS.create_vault.tgas + RELAY_METHODS.create_vault.heartbeatTgas, milliNear(RELAY_METHODS.create_vault.depositMilli));
 const executeHold = (inputs, instance) => holdYocto(executeTgas(inputs, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas }));
 // Status calls general up only when a new vault, which is what a page offers on it, and an execute of this many
-// inputs both fit above the owner key's reserve. These are the sums reserveCheck makes on each send, so the two agree.
-// A bigger execute is decided by its own send, which reads its input count first.
+// inputs both fit above the owner key's reserve. These are the sums reserveCheck makes on each send, so status never
+// says up while one of those sends would be refused for the reserve. Near the reserve it can say down, or leave out
+// calls_fit, while a smaller send still goes. A bigger execute is decided by its own send, which reads its input count first.
 const STATUS_EXECUTE_INPUTS = 4;
 // What scripts/go-live/10-deploy-instance.mjs sets, for a status that could not read the instance in time.
 const DEFAULT_GAS = { sign_tgas: 30, callback_tgas: 10 };
@@ -49,6 +51,8 @@ const CANNOT_PAY = /NotEnoughAllowance|NotEnoughBalance|LackBalanceForState|Acce
 const EXPIRY_GRACE_MS = 60_000;
 // A page's zero may land a moment before this node's block says so. The contract decides that too.
 const UNLOCK_SLACK_MS = 5000;
+// Blocks between this node's latest and the one an execute sent now runs in, at most, for the in-flight check.
+const LANDING_BLOCKS = 10;
 
 const urlsOf = (text) => String(text ?? '').split(',').map((u) => u.trim()).filter(Boolean);
 
@@ -370,10 +374,32 @@ class Relay {
       if (block.blockMs > request.expires_at) throw new Refusal('would_refuse', { message: 'that request has expired' });
       if (block.blockMs + UNLOCK_SLACK_MS < request.unlock) throw new Refusal('would_refuse', { message: 'that request has not unlocked', retryAfterS: Math.ceil((request.unlock - block.blockMs) / 1000) });
     }
+    if (request.status === 'Signing') await this.signingChecks(request, block, reader);
     await this.chargeInputs(args, request.inputs.length, charged);
     const tgas = executeTgas(request.inputs.length, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
     charged.hold = executeHold(request.inputs.length, instance);
     return [callAction('execute', args, tgas)];
+  }
+
+  /**
+   * A Signing request the contract would not ask the signer for again, refused before the general key pays for the
+   * failure. The retry window is read from the request. A sign call still out blocks a retry until RETRY_AFTER_BLOCKS
+   * after the last ask, whose height no view gives; but no ask came before the first execute, so a first execute
+   * after the block that many back (less a margin for this send to land) proves the wait. When that cannot be shown,
+   * the call goes and the contract decides.
+   */
+  async signingChecks(request, block, reader) {
+    const closesAt = retryClosesAt(request);
+    if (closesAt !== null && block.blockMs >= closesAt) {
+      throw new Refusal('would_refuse', { message: 'that request can no longer ask for signatures: one that pays out stops a day after its first execute, and its coins come back by reclaim' });
+    }
+    if (!(request.in_flight > 0) || typeof request.first_execute_at !== 'number') return;
+    const back = block.height - RETRY_AFTER_BLOCKS + LANDING_BLOCKS;
+    if (back >= 1) {
+      const backMs = await reader.blockMsAt(back);
+      if (backMs === null || request.first_execute_at <= backMs) return;
+    }
+    throw new Refusal('would_refuse', { message: `a signature request for it is still out, and execute asks again only after it answers or ${RETRY_AFTER_BLOCKS} blocks pass` });
   }
 
   /** Sixteen inputs burn sixteen times the gas. The first was charged already. */

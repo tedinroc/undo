@@ -281,6 +281,50 @@ test('create_vault through the relay: a real vault at 5:00, exact gas and deposi
   assert.deepEqual(coins, [], 'creating a vault pays nothing');
 });
 
+// Before any test moves the sandbox clock, so every height the in-flight check may read is a block the node has.
+test('a sign call still out: a second execute is refused before the key signs, as the contract refuses it, and the answer then signs', { skip, timeout: 180_000 }, async () => {
+  const v = await makeVault('in-flight');
+  const vault = await views.vault(v.vaultHex);
+  const spend = sendEverything({ coins: [{ txid: toHex(label('in-flight-coin')), vout: 0, value: 2000 }], to: fromHex(vault.script_pubkey), script: fromHex(await views.script(v.vaultHex)), feeRate: 2 });
+  const chainNow = (await reader.blockTime()).blockMs;
+  const body = buildPropose({ contract: stage.contract, vault, script: fromHex(await views.script(v.vaultHex)), seed: v.keys.seed, inputs: spend.inputs, to: fromHex(vault.script_pubkey), amount: spend.amount, nonce: vault.spend_nonce, expiresAt: chainNow + 30 * 60_000 });
+  const proposed = await relay('main', 'propose_btc', body);
+  assert.equal(proposed.body.ok, true, proposed.text);
+  assert.equal(failureOf(await settled(proposed.body.hash)), null);
+  const request = Math.max(...(await views.vault(v.vaultHex)).pending);
+  const r0 = await views.request(v.vaultHex, request);
+  assert.equal(r0.tier, 'SelfSpend', 'a send to the vault itself, whose short wait passes in real time');
+  while ((await reader.blockTime()).blockMs < r0.unlock) await new Promise((res) => setTimeout(res, 1000));
+
+  stage.rig.setFault('signer-silent');
+  try {
+    const fired = await relay('main', 'execute', { vault: v.vaultHex, request });
+    assert.equal(fired.body.ok, true, fired.text);
+    let r = r0;
+    for (let i = 0; i < 80 && !(r.status === 'Signing' && r.in_flight === 1); i += 1) {
+      await new Promise((res) => setTimeout(res, 250));
+      r = await views.request(v.vaultHex, request);
+    }
+    assert.deepEqual([r.status, r.in_flight, r.attempt], ['Signing', 1, 1], 'the signer holds the call');
+    const nonceBefore = await keyNonce(stage.relay.publicKey);
+    const again = await relay('main', 'execute', { vault: v.vaultHex, request });
+    assert.deepEqual([again.status, again.body.code], [422, 'would_refuse'], again.text);
+    assert.match(again.body.message, /still out/);
+    assert.equal(await keyNonce(stage.relay.publicKey), nonceBefore, 'the general key sent nothing');
+    const direct = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('execute', { vault: v.vaultHex, request }, 100n * TGAS, 0n)]);
+    assert.match(failureOf(direct.result) ?? 'no failure', /InFlight/, 'the contract refuses the same call from anyone');
+    assert.equal((await views.request(v.vaultHex, request)).attempt, 1, 'and asked the signer nothing more');
+  } finally {
+    stage.rig.setFault(null);
+  }
+  let r = await views.request(v.vaultHex, request);
+  for (let i = 0; i < 120 && r.status !== 'Signed'; i += 1) {
+    await new Promise((res) => setTimeout(res, 250));
+    r = await views.request(v.vaultHex, request);
+  }
+  assert.equal(r.status, 'Signed', 'the held answer lands and signs');
+});
+
 test('propose, heartbeat, execute: the contract takes each, on the general key at the table\'s gas', { skip, timeout: 120_000 }, async () => {
   const v = await makeVault('flow');
   const { tx, request } = await propose(v);

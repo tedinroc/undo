@@ -1,5 +1,6 @@
 // The library's own logic, offline. Network answers here are copied from real ones where a real one exists.
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { sha256 } from '../../tools/lib/crypto.mjs';
 import { toHex } from '../../tools/lib/bytes.mjs';
@@ -13,7 +14,7 @@ import { checkPow, solvePow } from '../lib/pow.mjs';
 import { RelayClient, RelayRefused } from '../lib/relay-client.mjs';
 import { executeTgas, RELAY_ERRORS, RELAY_METHODS, relayBodyProblem } from '../lib/relay-table.mjs';
 import { chooseOnScreen, coinCheck } from '../lib/pending.mjs';
-import { advanceState, cancelButton, requestState } from '../lib/request-state.mjs';
+import { advanceState, cancelButton, requestState, RETRY_AFTER_BLOCKS, RETRY_WINDOW_MS, retryClosesAt } from '../lib/request-state.mjs';
 import { credentialsFor } from '../lib/passkey-source.mjs';
 import { parseRequest, parseVault, ShapeError } from '../lib/views.mjs';
 
@@ -203,6 +204,25 @@ test('advanceState: a terminal state holds against a lagging read, and only a si
   assert.equal(advanceState(cancelled, read(req({ status: 'Signed' }))).kind, 'signed');
   assert.equal(advanceState(read(req()), read(req({ epoch: 3 }))).kind, 'cancelled');
   assert.equal(advanceState(null, read(req())).kind, 'waiting');
+});
+
+test('retryClosesAt: a spend that pays out stops asking a day after its first execute; a self-spend never does. The numbers are the core\'s', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const signing = (over = {}) => ({ status: 'Signing', tier: 'Known', first_execute_at: 5_000, ...over });
+  assert.equal(retryClosesAt(signing()), 5_000 + DAY);
+  assert.equal(retryClosesAt(signing({ tier: 'New' })), 5_000 + DAY);
+  assert.equal(retryClosesAt(signing({ tier: 'SelfSpend' })), null, 'a self-spend, and so a reclaim, keeps retrying');
+  assert.equal(retryClosesAt(signing({ first_execute_at: null })), null);
+  assert.equal(retryClosesAt(signing({ status: 'Pending' })), null);
+  assert.equal(retryClosesAt(signing({ status: 'Signed' })), null);
+  assert.equal(retryClosesAt(null), null);
+  const core = (file) => readFileSync(new URL(`../../crates/undo-core/src/${file}`, import.meta.url), 'utf8');
+  assert.match(core('policy.rs'), new RegExp(`pub const RETRY_AFTER_BLOCKS: u64 = ${RETRY_AFTER_BLOCKS};`));
+  assert.match(core('policy.rs'), /pub const DAY: Ms = 24 \* HOUR;/);
+  assert.equal(RETRY_WINDOW_MS, DAY);
+  const vault = core('vault.rs');
+  assert.match(vault, /if request\.tier != Tier::SelfSpend \{\n\s*let mut closed_at = request\.first_execute_at\.unwrap_or\(now\)\.saturating_add\(DAY\);/, 'the window the core keeps');
+  assert.match(vault, /if !request\.in_flight\.is_empty\(\) && height < retry_at_height \{/, 'the in-flight rule the core keeps');
 });
 
 const RELAY_UP = { reachable: true, owner: { up: true } };

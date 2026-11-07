@@ -182,6 +182,13 @@ The two reviewers of round 5 found five more, all low. The `round5` tests in the
 
 Mutants: 7 more in `crates/undo-core/props/mutation-check.py`: the retry after an earlier build's entry has left, the close it reports, the window's length in the lines, the old wording of each line, the suspended key offered reclaim, and reclaims spaced by the wrong delay.
 
+The same check found one in the relay, low: it sent `execute` for a Signing request the contract would refuse, and the thief tab sent it again every 30 s for as long as the request read Signing, so each call after the window closed was a failed transaction on the relay's general key. The tests failed on the code before the fix (the relay sent the call; the tab's loop had no stop) and pass now.
+
+| Problem | Test | Result expected now |
+|---|---|---|
+| The relay sent `execute` for a Signing request whose retry window had closed, or whose sign call was still out | `site/test/relay.test.mjs: execute on a Signing request: refused before the general key pays when the contract would refuse it, sent when it might not`; on the real wasm in workerd, `site/test/relay.workerd.test.mjs: a sign call still out: …` | Refused before the key signs once a paying request is a day past its first execute, and while a sign call is out if its first execute is newer than the block 240 back. When neither can be shown from the views, the call goes and the contract decides. The contract refuses the same call with `InFlight`. |
+| The thief tab resent `execute` after the window closed | `site/test/thief.test.mjs: while signing, execute goes again every interval, and stops once the request can no longer ask for signatures` | It stops, and says the contract asks the signer for nothing more. A self-spend keeps retrying. |
+
 ## Section 11, the last methods
 
 Every method is on both protocols through `scripts/protocol-check.sh`, with a positive and a negative in `tests/tests/surface.rs`:

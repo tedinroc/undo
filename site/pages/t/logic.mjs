@@ -1,6 +1,7 @@
 // The thief tab's rules with no page around them, so a test can hold each one down without a browser.
 import { addressToSpk } from '../../../tools/lib/btc.mjs';
 import { fromHex } from '../../../tools/lib/bytes.mjs';
+import { retryClosesAt } from '../../../site/lib/request-state.mjs';
 
 /** Refused before anything is signed: this is a demo for test coins, and a bc1 address is real money. */
 export function destinationProblem(text) {
@@ -69,4 +70,27 @@ export async function liveRequestIn(pending, judge) {
     if (state?.kind === 'waiting' || state?.kind === 'unlocked' || state?.kind === 'signing') return id;
   }
   return null;
+}
+
+/**
+ * A sign call can die on the signer, and `execute` asks again for what is missing, so while a request is signing this
+ * tab sends it again every `everyMs`. It stops when the request leaves Signing, and when the contract will ask the
+ * signer for nothing more (retryClosesAt), since every send after that would be refused. `read()`
+ * answers { signing, request, chainNow } as the tab last read them. Answers 'left_signing' or 'retry_closed'.
+ */
+export async function resendWhileSigning({ read, send, sleep, everyMs }) {
+  for (;;) {
+    const before = signingStop(read());
+    if (before) return before;
+    await sleep(everyMs);
+    const after = signingStop(read());
+    if (after) return after;
+    await send().catch(() => {});
+  }
+}
+
+function signingStop({ signing, request, chainNow }) {
+  if (!signing) return 'left_signing';
+  const closesAt = retryClosesAt(request);
+  return closesAt !== null && chainNow >= closesAt ? 'retry_closed' : null;
 }
