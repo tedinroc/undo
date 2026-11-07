@@ -638,6 +638,7 @@ test('sandbox 50: the relay in real workerd with the keys step 20 made, behind t
     assert.match(r.out, /PASS \[mock-signer\] refused a WebAuthn assertion with a field the contract does not have: 400 bad_request/);
     assert.match(r.out, /PASS \[mock-signer\] refused a cancel naming both the passkey and the cold key: 400 bad_request/);
     assert.match(r.out, /PASS \[mock-signer\] refused funds for a vault this relay did not make: 422 would_refuse/);
+    assert.match(r.out, /(PASS|WARN) \[mock-signer\] owner key runway: \d+(\.\d)? days of a full owner ceiling above the 0\.05 NEAR floor/);
     assert.match(r.out, /PASS \[mock-signer\] RELAY_OWNER_KEY nonce \d+ before the refused POSTs, \d+ after: it signed nothing/);
     assert.match(r.out, /PASS \[mock-signer\] \/ content-security-policy as built/);
     assert.match(r.out, /PASS \[mock-signer\] the landing page is titled Undo for Bitcoin/);

@@ -31,6 +31,8 @@ const ZERO_VAULT = '00'.repeat(32);
 const TIMEOUT_MS = 20_000;
 // What a 30 Tgas owner send can hold until its refund lands: below this a cancel cannot be paid for.
 const KEY_FLOOR = NEAR / 20n;
+// Owner sends spend the relay account's balance and nothing refills it, so a short runway is a top-up to do soon.
+const RUNWAY_WARN_DAYS = 3;
 
 class NetworkSkip extends Error {}
 
@@ -151,6 +153,9 @@ async function main() {
     say(j.contract === contract ? 'PASS' : 'FAIL', label, `contract is ${j.contract}`);
     for (const bucket of ['owner', 'general']) say(j[bucket]?.up === true ? 'PASS' : 'FAIL', label, `${bucket}: up=${j[bucket]?.up} why=${j[bucket]?.why ?? null}${j[bucket]?.degraded ? ' degraded' : ''}`);
     say(j.funds?.up === true ? 'PASS' : 'WARN', label, `funds: up=${j.funds?.up} why=${j.funds?.why ?? null} sats=${j.funds?.sats}`);
+    const runway = j.owner_runway_days;
+    const longEnough = typeof runway === 'number' && runway >= RUNWAY_WARN_DAYS;
+    say(longEnough ? 'PASS' : 'WARN', label, `owner key runway: ${runway ?? 'unknown'} days of a full owner ceiling above the 0.05 NEAR floor${longEnough ? '' : `, under ${RUNWAY_WARN_DAYS}: top up the relay account`}`);
     say(r.headers.get('cache-control') === 'no-store' ? 'PASS' : 'FAIL', label, `/api/relay Cache-Control is ${r.headers.get('cache-control')}`);
     say(r.headers.get('access-control-allow-origin') === null ? 'PASS' : 'FAIL', label, `/api/relay sends ${r.headers.get('access-control-allow-origin') === null ? 'no' : 'a'} CORS header`);
   });

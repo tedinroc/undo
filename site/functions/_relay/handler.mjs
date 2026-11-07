@@ -13,7 +13,7 @@ import { callAction, milliNear } from '../../lib/near-tx.mjs';
 import { NearReader } from '../../lib/near-read.mjs';
 import { checkPow } from '../../lib/pow.mjs';
 import {
-  CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, executeTgas, GENERAL, OWN_ACCOUNT_PATH, OWNER, OWNER_FLOOR_YOCTO, ownerReserveYocto, RELAY_METHODS, relayBodyProblem,
+  CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, executeTgas, GENERAL, OWN_ACCOUNT_PATH, OWNER, OWNER_FLOOR_YOCTO, ownerReserveYocto, ownerRunwayDays, RELAY_METHODS, relayBodyProblem,
 } from '../../lib/relay-table.mjs';
 import { ed25519Verifies, hashIp, json, numberOr, readBody, Refusal, refused, workerFetch } from './answer.mjs';
 import { fundsHandler, fundsStatus } from './funds.mjs';
@@ -163,7 +163,10 @@ class Relay {
     return this.keyCache;
   }
 
-  /** What general sends must leave on the account for the owner key. */
+  /**
+   * What general sends must leave on the account for the owner key. It holds against general traffic only: owner
+   * sends are not checked against it, so they drain it, and only a top-up refills it.
+   */
   get ownerReserve() {
     return ownerReserveYocto(this.ceilings.owner);
   }
@@ -249,6 +252,9 @@ class Relay {
       pow_bits: this.powBits,
       owner,
       general,
+      // Days of a full owner ceiling the free balance above the floor still pays for. Owner sends spend it, nothing
+      // here refills it, and general sends stop at 1. Null when the balance could not be read.
+      owner_runway_days: ownerRunwayDays(free, this.ceilings.owner),
       funds: fundsStatus(this, read),
     });
   }

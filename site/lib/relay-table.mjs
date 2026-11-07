@@ -44,9 +44,25 @@ export const OWNER_UNCHECKED_SHARE = 0.1;
  * What the relay keeps of its account's balance for the owner key's cancels: the status floor, plus a whole day of
  * owner sends at the owner ceiling. The two keys sit on one account, so a general send that would leave less than
  * this is refused, and no amount of general traffic can spend what a cancel needs. In yoctoNEAR.
+ *
+ * It guards against general traffic only. Owner sends are not checked against it, because they are what it is for,
+ * so owner sends drain it: real cancels, and a full owner ceiling of calls on vaults made here, which about 42 such
+ * vaults can send every day and which burns about 0.2 NEAR of real gas a day against the 0.3 NEAR it keeps. The cron key's canary heartbeat,
+ * when one is set, does not check it either. Nothing refills it but a top-up, so status reports owner_runway_days.
  */
 export const OWNER_FLOOR_YOCTO = 50_000_000_000_000_000_000_000n;
 export const ownerReserveYocto = (ownerCeilingMicro) => OWNER_FLOOR_YOCTO + BigInt(Math.ceil(ownerCeilingMicro)) * 1_000_000_000_000_000_000n;
+
+/**
+ * How many days of owner sends at a full owner ceiling the free balance above the floor still pays for, to a tenth,
+ * or null when the balance is unknown. General sends stop at 1; below that only owner sends spend it.
+ */
+export function ownerRunwayDays(freeYocto, ownerCeilingMicro) {
+  if (freeYocto === null || freeYocto === undefined || !(ownerCeilingMicro > 0)) return null;
+  const day = BigInt(Math.ceil(ownerCeilingMicro)) * 1_000_000_000_000_000_000n;
+  const tenths = ((BigInt(freeYocto) - OWNER_FLOOR_YOCTO) * 10n) / day;
+  return tenths > 0n ? Number(tenths) / 10 : 0;
+}
 
 /**
  * Where a cancel goes when this relay will not send it: from any NEAR testnet account, with no relay at all. The relay

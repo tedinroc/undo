@@ -1627,6 +1627,22 @@ async function createBody(name) {
   });
 }
 
+test('status: owner_runway_days says how many days of a full owner ceiling the balance above the floor still pays for', async () => {
+  const storage = 182n * 10n ** 19n;
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  const at = (yocto) => { world.account = { amount: `${yocto + storage}`, storage_usage: 182 }; };
+  const runway = async () => (await r.status()).body.owner_runway_days;
+  at(10n ** 25n);
+  assert.equal(await runway(), 33.1, '10 NEAR free: (10 - 0.05) / 0.3 days');
+  at(400n * 10n ** 21n);
+  assert.equal(await runway(), 1.1, 'general sends stop at a day, and this is just above it');
+  at(60n * 10n ** 21n);
+  assert.equal(await runway(), 0, 'just above the floor: owner sends alone are spending what is left');
+  world.account = { error: 'down' };
+  assert.equal(await runway(), null, 'a balance it could not read says nothing');
+});
+
 test('made rows: two sends of one create_vault, the first refused at the node. The relay keeps a row exactly when a create landed', async () => {
   const world = fakeWorld();
   // The node refuses the next send_tx it sees, once, as a node can. Every later one lands.
