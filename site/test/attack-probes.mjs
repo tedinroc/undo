@@ -168,7 +168,7 @@ async function makeVault(name) {
   return { vaultHex, keys, cred: passkey.cred };
 }
 
-/** The relay only funds vaults it guards, and these are the payer's, so a coin comes straight from the dispenser. */
+/** The relay only funds vaults it made, and these were made straight on the contract, so a coin comes straight from the dispenser. */
 async function fundDirect(v) {
   const vault = await views.vault(v.vaultHex);
   const dispenser = loadDispenser(stage.rig.info.dispenser, 'regtest');

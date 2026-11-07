@@ -1,10 +1,11 @@
 // /api/relay and /api/funds. The page names a method from a short table, and this builds the transaction itself,
 // with its own gas, against the one contract in its environment: never a free-form relay. Two keys with two
 // nonce rows and two ceilings, and general sends stop short of the balance a day of cancels needs, so general
-// traffic cannot stop a cancel. The owner key sends only for vaults this relay made, once per signed call. The
-// owner ceiling is still one ceiling: enough vaults made here can fill it, and then a cancel goes from any account,
-// and the refusal says how. Logs nothing of a body, an address or a vault. Reads its keys only from the
-// environment, and has no default for any of them.
+// traffic cannot spend what a cancel needs. The owner key sends only for vaults this relay made, once per signed call.
+// The owner ceiling is still one ceiling, shared by every vault made here: enough of them can fill it, and so can
+// anyone's real calls on their own. The relay is a convenience, so then a cancel goes from any account, and the refusal
+// says how. Logs nothing of a body, an address or a vault. Reads its keys only from the environment, and has no
+// default for any of them.
 import { fromHex, toHex } from '../../../tools/lib/bytes.mjs';
 import { argBytes, createDigest, intentDigest, SPEND_TAG } from '../../../tools/lib/intent.mjs';
 import { vaultIdOfCreateArgs } from '../../lib/intents.mjs';
@@ -425,7 +426,7 @@ class Relay {
   static ownerWords(out) {
     if (out.code === 'not_this_relays') return NOT_THIS_RELAYS;
     if (out.code === 'already_sent') return 'this relay already sent that signed call once. Read the vault, and if it still needs a cancel, sign a new one.';
-    if (out.code === 'daily_ceiling') return `the ${out.bucket} key is at today's limit. ${OWN_ACCOUNT_PATH}`;
+    if (out.code === 'daily_ceiling') return `the ${out.bucket} key is at today's limit, which calls on every vault this relay made count against. ${OWN_ACCOUNT_PATH}`;
     if (out.unchecked) return `the relay can't read this vault right now, and sends only a few calls it can't check. ${OWN_ACCOUNT_PATH}`;
     if (out.code === 'rate_limited') return `too many calls on this vault. ${OWN_ACCOUNT_PATH}`;
     return out.code;

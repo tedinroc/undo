@@ -576,7 +576,7 @@ test('relay: a node\'s refusal comes back in its own words, and costs no ceiling
 
 // ---------------------------------------------------------------- the griefing boundary
 
-test('owner: junk spends nothing. A victim\'s per-vault limit and the owner ceiling cannot be used up by someone without the passkey', async () => {
+test('owner: while the vault can be read, a call its passkey did not sign is refused and charges nothing. The owner ceiling can still fill: see AUDIT-1 and AUDIT-2', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
   const r = relayWith(world, {}, { made: [VAULT, 'ef'.repeat(32)] });
   const good = await rotateBody();

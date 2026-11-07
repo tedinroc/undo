@@ -48,8 +48,11 @@ export const OWNER_UNCHECKED_SHARE = 0.1;
 export const OWNER_FLOOR_YOCTO = 50_000_000_000_000_000_000_000n;
 export const ownerReserveYocto = (ownerCeilingMicro) => OWNER_FLOOR_YOCTO + BigInt(Math.ceil(ownerCeilingMicro)) * 1_000_000_000_000_000_000n;
 
-/** Where a cancel goes when this relay will not send it: from any NEAR testnet account, with no relay at all. */
-export const OWN_ACCOUNT_PATH = 'Any NEAR testnet account can send it without this relay: tools/cancel.mjs sends a cancel this page signed, and tools/freeze.mjs --method cancel signs one with the recovery file.';
+/**
+ * Where a cancel goes when this relay will not send it: from any NEAR testnet account, with no relay at all. The relay
+ * is a convenience, and its limits are shared, so the words say so and do not promise it will send.
+ */
+export const OWN_ACCOUNT_PATH = 'This relay is a convenience: any NEAR testnet account can send the cancel without it. tools/cancel.mjs sends a cancel this page signed, tools/freeze.mjs --method cancel signs one with the recovery file, and the cold key always works, relay or not.';
 
 /** Vaults may take this share of the general ceiling, so a day of them still leaves room for calls already under way. */
 export const CREATE_SHARE = 0.7;

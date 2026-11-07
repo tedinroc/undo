@@ -34,4 +34,4 @@ export function ownCancelWords({ expiresAt, vaultHex }) {
 }
 
 /** What it says with no signed call in hand. */
-export const OWN_PATH_LINE = 'Any NEAR testnet account can send a cancel without this relay: tools/cancel.mjs sends one this page signs, and tools/freeze.mjs --method cancel signs one with the recovery file.';
+export const OWN_PATH_LINE = 'The relay is a convenience, and its limits are shared. Any NEAR testnet account can send a cancel: tools/cancel.mjs sends one this page signs, tools/freeze.mjs --method cancel signs one with the recovery file, and the cold key always works.';
