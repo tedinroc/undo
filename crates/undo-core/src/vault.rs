@@ -127,12 +127,24 @@ impl SeenRing {
     }
 }
 
+/// Outflow to anywhere but the vault itself, for the known-destination cap. `at` starts at propose and
+/// moves to now at each execute that asks the signer for this request, and when its last signature
+/// lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 struct OutflowEntry {
     at: Ms,
     amount: Sats,
     request: RequestId,
+}
+
+impl OutflowEntry {
+    /// A pending request holds its reservation for as long as it lives, however long its expiry or a hold
+    /// makes that. After execute the entry counts for a day from `at`, so what reaches the signer in any
+    /// 24 h stays within the cap, and a deleted request's outflow still counts for its day.
+    fn counts(&self, pending: &[RequestId], now: Ms) -> bool {
+        pending.contains(&self.request) || now < self.at.saturating_add(DAY)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -414,7 +426,7 @@ impl Vault {
     pub fn outflow_used_24h(&self, now: Ms) -> Sats {
         self.outflow_window
             .iter()
-            .filter(|e| now < e.at.saturating_add(DAY))
+            .filter(|e| e.counts(&self.pending, now))
             .fold(0, |sum, e| sum.saturating_add(e.amount))
     }
 
@@ -424,8 +436,9 @@ impl Vault {
         self.fee_window.len()
     }
 
-    /// The same for the 24 h outflow window. A known destination's tier reads only the last day, so
-    /// this matters for the row's size and not for any rule.
+    /// The same for the outflow window: pending requests, and what reached the signer in the last day.
+    /// A paying request takes signatures only for a day after its first execute, so this holds at most
+    /// two days of first executes plus the pending cap.
     pub fn outflow_window_entries(&self) -> usize {
         self.outflow_window.len()
     }
@@ -605,6 +618,15 @@ impl Vault {
                 if !request.in_flight.is_empty() && height < retry_at_height {
                     return Err(Error::InFlight { retry_at_height });
                 }
+                // Its outflow counts for a day from its last signature request, and a proposal made after
+                // that day was checked without it. So a request that pays out takes no signatures a day
+                // after its first execute. Reclaim, open after `T_stuck`, is the way out for its coins.
+                if request.tier != Tier::SelfSpend {
+                    let closed_at = request.first_execute_at.unwrap_or(now).saturating_add(DAY);
+                    if now >= closed_at {
+                        return Err(Error::RetryWindowClosed { closed_at });
+                    }
+                }
             }
             RequestStatus::Signed => return Err(Error::AlreadySigned),
         }
@@ -616,7 +638,9 @@ impl Vault {
         request.attempt += 1;
         request.in_flight = indices.clone();
         request.last_attempt_height = height;
-        Ok(SignBatch { attempt: request.attempt, indices })
+        let attempt = request.attempt;
+        self.stamp_outflow(id, now);
+        Ok(SignBatch { attempt, indices })
     }
 
     /// Callback from the signer. `recomputed` is the digest the shell rebuilt from current request
@@ -660,6 +684,7 @@ impl Vault {
                     entry.state = OutpointState::Spent { request: id };
                 }
             }
+            self.stamp_outflow(id, now);
         }
         SignedOutcome::Stored { complete }
     }
@@ -1169,7 +1194,16 @@ impl Vault {
             self.kill_pending(id);
         }
         self.fee_window.retain(|(at, _)| now < at.saturating_add(DAY));
-        self.outflow_window.retain(|e| now < e.at.saturating_add(DAY));
+        let pending = &self.pending;
+        self.outflow_window.retain(|e| e.counts(pending, now));
+    }
+
+    /// The request's outflow counts for a day from now: execute has asked the signer for it, or its last
+    /// signature has landed.
+    fn stamp_outflow(&mut self, id: RequestId, now: Ms) {
+        for entry in self.outflow_window.iter_mut().filter(|e| e.request == id) {
+            entry.at = now;
+        }
     }
 
     /// Pending to deleted: outpoints freed, reserved outflow released.

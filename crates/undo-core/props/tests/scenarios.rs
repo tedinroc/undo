@@ -1805,7 +1805,8 @@ fn the_outflow_window_leaves_the_row_after_a_day() {
     h.advance(h.v.delay_now(h.now));
     h.execute(r.id, 16).unwrap();
     assert_eq!(h.v.outflow_window_entries(), 1, "an executed spend stays counted");
-    h.advance(DAY - h.v.delay_now(h.now) - 1);
+    // A day from the execute, which asked the signer for it, not from the propose.
+    h.advance(DAY - 1);
     let (caller, intent) = (h.pass_caller(), h.pk());
     h.tx(|v, now| v.remove_destination(&caller, intent, &[0x00], now)).unwrap();
     assert_eq!(h.v.outflow_window_entries(), 1, "one millisecond short of a day");

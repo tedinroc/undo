@@ -47,6 +47,8 @@ pub enum Error {
     NotUnlocked { unlock: Ms },
     AlreadySigned,
     InFlight { retry_at_height: u64 },
+    /// A request that pays out takes no more signatures a day after its first execute.
+    RetryWindowClosed { closed_at: Ms },
     NothingToSign,
     NotReclaimable,
     NotStuck { ready_at: Ms },
