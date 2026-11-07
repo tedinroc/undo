@@ -1,5 +1,10 @@
 // /api/funds: test coins from the relay's own wallet, a separate action a visitor asks for. A coin never pays out
 // on vault creation. The address comes from the contract, so nobody can name a payee.
+//
+// The daily coin limit can run one coin over for each relay fault of one kind: a coin went out but the state store
+// failed to record it, or a broadcast with no answer landed after all. Once the vault's owner spends that coin, a
+// later ask for the same vault takes the claim over without a new charge and is paid a second coin. A claim made
+// before 00:00 UTC and taken over after it counts on the earlier day, the day it was charged.
 import { classifyBroadcast } from '../../../tools/lib/esplora.mjs';
 import { fromHex } from '../../../tools/lib/bytes.mjs';
 import { checkPow, fundsPowTarget } from '../../lib/pow.mjs';

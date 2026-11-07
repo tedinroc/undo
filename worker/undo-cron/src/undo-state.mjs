@@ -343,7 +343,8 @@ export class UndoState {
     /**
      * No coin moved, so the vault may ask again and the ceiling gets back what this claim charged, on the day it
      * charged it. Only while the claim stands as `funded` left it: once a coin is recorded, or another call has taken
-     * the claim over, nothing is dropped and nothing comes back, so the funds ceiling never forgets a coin that went out.
+     * the claim over, nothing is dropped and nothing comes back, so no drop gives back the charge of a coin that went
+     * out. A takeover itself is free, which can let the day run one coin over: the header of funds.mjs says when.
      */
     fundedDrop({ vault, at, charged = 0 }) {
       const row = this.first('SELECT at FROM funded_vaults WHERE vault = ? AND txid IS NULL', vault);

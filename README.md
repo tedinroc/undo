@@ -13,7 +13,7 @@ A cancel button for Bitcoin: if your spend key is stolen, Bitcoin refuses that k
 
 ### Try a cancel yourself
 
-You need a phone that can make passkeys, and a laptop. The relay pays the NEAR gas, and its daily limits are shared by everyone who tries this, `./demo.sh` runs included: with this tree's settings, at most 13 new vaults and 20 test coins a day in all, and from one IP address 3 vaults and 2 test coins an hour, counted from 00:00 UTC. So it can be full.
+You need a phone that can make passkeys, and a laptop. The relay pays the NEAR gas, and its daily limits are shared by everyone who tries this, `./demo.sh` runs included: with this tree's settings, at most 13 new vaults and 20 test coins a day in all, and from one IP address 3 vaults and 2 test coins an hour, counted from 00:00 UTC. So it can be full. The coin count can run one over for each relay fault of one kind: if a coin went out but the relay failed to record it, or its broadcast got no answer and landed anyway, the same vault can get a second coin once its owner spends the first. A coin claim made before 00:00 UTC and taken over after it counts on the earlier day, the day it was charged.
 
 From a real phone this path has **not yet run** end to end. The phone's Cancel sends `cancel_all_and_rotate`; on NEAR testnet only `./demo.sh`'s `cancel`, from a software passkey, has run (C05).
 
