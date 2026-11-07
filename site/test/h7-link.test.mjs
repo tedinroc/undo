@@ -184,13 +184,24 @@ test('a stored credential id is used only in its own form: junk under the key ca
 test('the report says which call each try was and its S form, and claims no high-S result before eight tries', () => {
   const tryOf = (m, s) => ({ m, s, sheetMs: 900, includedMs: 2100, readMs: 2600, hidden: false, blurred: false, pagehide: false, stallMs: 30, hash: null });
   const base = { sense: { ua: 'node', inApp: null, api: true, secure: true, platform: true }, config, passkeyFlags: { be: true, bs: false }, operator: null, answers: {}, vault: VAULT };
+  // What a line says, not its wording: the call it names, its S-form tokens, and its try count.
   const lines = (over) => reportText({ ...base, ...over }).split('\n');
+  const line = (all, start) => all.find((l) => l.startsWith(start)) ?? '';
+  const sForms = (text) => text.match(/\b(high|low)-S\b/g) ?? [];
+  const callOf = (text) => /^Try \d+: ([a-z_]+)\b/.exec(text)?.[1] ?? null;
   const mixed = lines({ proofS: 'l', tries: [tryOf('c', 'l'), tryOf('r', 'h')] });
-  assert.ok(mixed.includes('Creation tap: low-S.'), mixed.join('\n'));
-  assert.ok(mixed.some((l) => l.startsWith('Try 1: cancel, low-S, contract took it.')), mixed.join('\n'));
-  assert.ok(mixed.some((l) => l.startsWith('Try 2: cancel_all_and_rotate, high-S, contract took it.')), mixed.join('\n'));
-  assert.ok(mixed.includes('A high-S signature appeared on try 2 of 2. The page sent it in low-S form and the contract took it.'));
-  assert.ok(lines({ proofS: 'h', tries: [] }).includes('Creation tap: high-S.'));
-  for (let n = 1; n < 8; n += 1) assert.equal(sFormSentence(Array(n).fill(tryOf('c', 'l'))), `${n} of 8 tries so far, no high-S yet.`);
-  assert.equal(sFormSentence(Array(8).fill(tryOf('c', 'l'))), 'No high-S signature in 8 tries. Fixtures cover high-S, and CLAIMS.md must say so.');
+  assert.deepEqual(sForms(line(mixed, 'Creation tap')), ['low-S'], mixed.join('\n'));
+  assert.deepEqual(sForms(line(lines({ proofS: 'h', tries: [] }), 'Creation tap')), ['high-S']);
+  assert.deepEqual([callOf(line(mixed, 'Try 1:')), sForms(line(mixed, 'Try 1:'))], ['cancel', ['low-S']], mixed.join('\n'));
+  assert.deepEqual([callOf(line(mixed, 'Try 2:')), sForms(line(mixed, 'Try 2:'))], ['cancel_all_and_rotate', ['high-S']], mixed.join('\n'));
+  const found = sFormSentence([tryOf('c', 'l'), tryOf('r', 'h')]);
+  assert.match(found, /\bhigh-S\b.*\btry 2 of 2\b/, 'a high-S try is named, with its place among the tries');
+  for (let n = 1; n < 8; n += 1) {
+    const sofar = sFormSentence(Array(n).fill(tryOf('c', 'l')));
+    assert.match(sofar, new RegExp(`\\b${n} of 8\\b`), `${n} tries`);
+    assert.doesNotMatch(sofar, /^No high-S/, `no claim of none after ${n} tries`);
+  }
+  const eight = sFormSentence(Array(8).fill(tryOf('c', 'l')));
+  assert.match(eight, /^No high-S\b.*\b8 tries\b/, 'after eight tries, the claim of none');
+  assert.doesNotMatch(eight, /\bof 8\b/);
 });

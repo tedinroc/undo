@@ -16,7 +16,7 @@ import { argBytes, intentDigest, signEd25519, SPEND_TAG } from '../../tools/lib/
 import { coldKeys } from '../../tools/lib/keys.mjs';
 import { action, keyFromSecret, milliNear, signTransaction, TGAS } from '../../tools/lib/near.mjs';
 import { canaryBeat } from '../../worker/undo-cron/src/index.mjs';
-import { UndoState } from '../../worker/undo-cron/src/undo-state.mjs';
+import { PRUNE_EVERY, UndoState } from '../../worker/undo-cron/src/undo-state.mjs';
 import { ed25519Verifies, hashIp, limitAddress, workerFetch } from '../functions/_relay/answer.mjs';
 import { buildFunding, dispenserFromSecret } from '../functions/_relay/funding.mjs';
 import { makeRelay } from '../functions/_relay/handler.mjs';
@@ -1426,6 +1426,7 @@ test('attack 12: a declared length over the cap is refused before a byte is read
   });
   const short = await handler(declared(JSON.stringify({ method: 'heartbeat', args: { vault: VAULT } })));
   assert.deepEqual([short.status, (await short.json()).message], [400, 'the body is too large'], 'a short body under a long claim');
+  // A high-water mark of 0 queues nothing ahead, so the stream is pulled only when something reads it.
   let pulled = 0;
   const stream = new ReadableStream({
     pull(controller) {
@@ -1433,10 +1434,10 @@ test('attack 12: a declared length over the cap is refused before a byte is read
       if (pulled > 100) controller.close();
       else controller.enqueue(new Uint8Array(1024));
     },
-  });
+  }, { highWaterMark: 0 });
   const res = await handler(declared(stream));
   assert.deepEqual([res.status, (await res.json()).message], [400, 'the body is too large']);
-  assert.ok(pulled <= 1, `the stream filled its queue once, and nothing read it: pulled ${pulled} KB`);
+  assert.equal(pulled, 0, `nothing read the stream: pulled ${pulled} KB`);
   assert.equal(world.sent.length, 0);
   assert.equal(r.ns.calls.length, 0);
 });
@@ -1990,9 +1991,11 @@ test('owner: a vault row whose passkey is on no curve cannot vouch for a call, s
   // The contract checks a passkey when it takes one, so this is a node's answer, not a vault on the chain.
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ passkey: `02${'ff'.repeat(32)}` }) } });
   const r = relayWith(world, {}, { made: [VAULT] });
+  const { uncheckedPerVaultMinute: unchecked, perVaultMinute: checked } = RELAY_METHODS.cancel_all_and_rotate;
+  assert.ok(checked > unchecked, 'only while a checked call gets more a minute can the count tell the two apart');
   const codes = [];
-  for (let i = 0; i < 3; i += 1) codes.push((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: NOW + 60_000 + i }))).body.code ?? 'sent');
-  assert.deepEqual(codes, ['sent', 'sent', 'rate_limited'], `${RELAY_METHODS.cancel_all_and_rotate.uncheckedPerVaultMinute} unchecked calls a minute, not ${RELAY_METHODS.cancel_all_and_rotate.perVaultMinute}`);
+  for (let i = 0; i <= unchecked; i += 1) codes.push((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: NOW + 60_000 + i }))).body.code ?? 'sent');
+  assert.deepEqual(codes, [...Array(unchecked).fill('sent'), 'rate_limited'], `${unchecked} unchecked calls a minute, not ${checked}`);
 });
 
 test('replay row: two cancels that differ only in their request are two calls, each sent and charged once', async () => {
@@ -2050,7 +2053,9 @@ test('state: the owner key is charged only for a vault this relay made, in the s
   assert.equal((await charge(VAULT)).ok, true);
 
   // The handler asks first, and a store that failed that question but answers the charge still refuses.
+  const asked = [];
   const ns = stateWith((op) => {
+    asked.push(op);
     if (op === 'madeVault') throw new Error('gone');
     return null;
   });
@@ -2058,18 +2063,19 @@ test('state: the owner key is charged only for a vault this relay made, in the s
   const r = relayWith(world, { UNDO_STATE: ns });
   const out = await r.relay('cancel_all_and_rotate', await rotateBody());
   assert.deepEqual([out.status, out.body.code], [422, 'not_this_relays']);
+  assert.deepEqual(asked.filter((op) => ['madeVault', 'charge'].includes(op)), ['madeVault', 'charge'], 'the made-row read failed, so it was the charge that refused');
   assert.equal(world.sent.length, 0);
 });
 
 test('refund: a call refused after its charge gives back the ceiling, and its per-vault counts only when its send failed', async () => {
   const state = new StateClient(localStateNamespace());
-  const cost = RELAY_METHODS.heartbeat.costMicro;
+  const { costMicro: cost, perVaultMinute: perMinute } = RELAY_METHODS.heartbeat;
   const beat = () => state.call('charge', { key: 'general', method: 'heartbeat', ipHash: 'a', vault: VAULT, now: NOW, ceiling: 1e9 });
   const first = await beat();
-  assert.equal((await beat()).ok, true);
-  assert.equal((await beat()).code, 'rate_limited', `${RELAY_METHODS.heartbeat.perVaultMinute} a minute per vault`);
+  for (let i = 1; i < perMinute; i += 1) assert.equal((await beat()).ok, true);
+  assert.equal((await beat()).code, 'rate_limited', `${perMinute} a minute per vault`);
   assert.deepEqual(await state.call('refund', { bucket: 'general', cost, now: NOW, ticket: first.ticket, counters: false }), { ok: true });
-  assert.equal((await state.call('status', { now: NOW })).spent.general, cost, 'the ceiling came back');
+  assert.equal((await state.call('status', { now: NOW })).spent.general, (perMinute - 1) * cost, 'the ceiling came back');
   assert.equal((await beat()).code, 'rate_limited', 'the vault\'s count did not');
   await state.call('refund', { bucket: 'general', cost, now: NOW, ticket: first.ticket, counters: true });
   assert.equal((await beat()).ok, true, 'a send that never reached the chain gives it back');
@@ -2096,15 +2102,18 @@ test('made-sends: an answer about an older send of the same create changes nothi
   assert.deepEqual((await state.call('madeVault', { vault: VAULT })).row, { ...row, confirmed: true });
 });
 
-test('replay row: a signed call stays sent for two days, past the ten-minute prune', async () => {
+test('replay row: a signed call stays sent for two days, past the prune that runs every PRUNE_EVERY', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
   const r = relayWith(world, {}, { made: [VAULT] });
   let clock = NOW;
   Object.defineProperty(world, 'now', { get: () => clock });
-  const once = await signedRotation({ expiresAt: NOW + 3 * 3_600_000 });
+  const once = await signedRotation({ expiresAt: NOW + PRUNE_EVERY + 3 * 3_600_000 });
   assert.equal((await r.relay('cancel_all_and_rotate', once)).body.ok, true);
-  clock += 11 * 60_000;
+  // A row any prune drops, written after the send's own charge has pruned, so it is gone only if a prune runs again.
+  await r.state.call('heartbeatLogged', { vault: VAULT, at: 1, hash: 'prunable' });
+  clock += PRUNE_EVERY + 60_000;
   assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true, 'a later charge runs the prune');
+  assert.ok(!(await r.state.call('heartbeats', { vault: VAULT })).beats.some((b) => b.hash === 'prunable'), 'and the prune did run');
   clock += 60_000;
   const again = await r.relay('cancel_all_and_rotate', once);
   assert.deepEqual([again.status, again.body.code], [409, 'already_sent']);

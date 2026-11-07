@@ -119,9 +119,11 @@ test('the phone link puts the vault and request in the fragment, which the phone
   assert.equal(link, `https://undo-btc.pages.dev/p/#v=${VAULT}&r=12`);
   assert.ok(!link.includes('?'));
   const fields = new URLSearchParams(new URL(link).hash.slice(1));
-  // The rules in site/lib/fragment.mjs, as of this commit.
+  // The forms site/lib/fragment.mjs takes: a vault id of 64 hex, and a request id with no leading zero that reads back
+  // as a safe integer. Where site/ is in the tree, parseFragment below applies the rule itself.
   assert.match(fields.get('v'), /^[0-9a-f]{64}$/);
   assert.match(fields.get('r'), /^(0|[1-9][0-9]{0,15})$/);
+  assert.ok(Number.isSafeInteger(Number(fields.get('r'))));
   const fragmentLib = join(SITE, 'lib/fragment.mjs');
   if (existsSync(fragmentLib)) {
     const { parseFragment } = await import(pathToFileURL(fragmentLib).href);
