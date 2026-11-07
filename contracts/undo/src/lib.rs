@@ -340,7 +340,8 @@ impl Undo {
 
     /// `K_s` plus a fresh `K_u` half-signature. One outpoint, back to the vault's own script, after
     /// `T_stuck`. May re-declare the value, because a single-input digest cannot combine with any
-    /// other session.
+    /// other session. A Signed request it supersedes may still be valid on Bitcoin, so its final
+    /// transaction goes into this call's log, as `prune_signed` does.
     pub fn reclaim(
         &mut self,
         vault: HexBytes,
@@ -365,8 +366,13 @@ impl Undo {
 
         loaded.load_outpoints(&id, &[input.outpoint]);
         // The request that held this coin is superseded, so its other inputs change state too.
+        let mut superseded = None;
         if let OutpointState::Signing(owner) | OutpointState::Spent { request: owner } = loaded.row.vault.outpoint_state(&input.outpoint) {
             loaded.load_request(&id, owner);
+            let vault = &loaded.row.vault;
+            if let Some(r) = vault.requests.get(&owner).filter(|r| r.status == RequestStatus::Signed) {
+                superseded = Some((owner, btc::final_tx(vault, r)));
+            }
         }
         let caller = Caller::SpendKey(loaded.row.vault.k_s);
         let proposed = loaded
@@ -375,6 +381,9 @@ impl Undo {
             .reclaim(&caller, Intent { nonce, expires_at }, input.outpoint, input.value, fee, half_sig.0, now())
             .unwrap_or_else(|e| fail(e));
         loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
+        if let Some((owner, tx)) = superseded {
+            env::log_str(&format!("undo:superseded request={owner} tx={}", tx.map(hex::encode).unwrap_or_default()));
+        }
         env::log_str(&format!("undo:proposed request={} unlock={}", proposed.id, proposed.base_unlock));
         proposed.id
     }
@@ -1024,7 +1033,8 @@ impl Undo {
     }
 
     /// The whole witness transaction once every input is signed. Anyone can broadcast it. After
-    /// `prune_signed` this returns nothing, and the transaction is in that call's log.
+    /// `prune_signed`, or a `reclaim` that supersedes the request, this returns nothing, and the
+    /// transaction is in that call's log.
     pub fn final_tx(&self, vault: HexBytes, request: u64) -> Option<HexBytes> {
         let id = vault_key(&vault);
         let mut loaded = storage::try_load_row(&id)?;
