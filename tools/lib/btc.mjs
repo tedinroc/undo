@@ -112,7 +112,7 @@ function convertBits(data, from, to, pad) {
   if (pad) {
     if (bits > 0) out.push((acc << (to - bits)) & max);
   } else if (bits >= from || ((acc << (to - bits)) & max) !== 0) {
-    throw new Error('bad padding');
+    throw new AddressError('padding', 'its last character carries bits an address never has');
   }
   return out;
 }
@@ -131,19 +131,47 @@ export function segwitAddress(network, version, program) {
 export const p2wshAddress = (network, script) => segwitAddress(network, 0, p2wshProgram(script));
 export const p2wpkhAddress = (network, pub) => segwitAddress(network, 0, hash160(pub));
 
-function decodeSegwit(hrp, address) {
-  if (address !== address.toLowerCase() && address !== address.toUpperCase()) throw new Error('mixed-case address');
-  const text = address.toLowerCase();
-  const sep = text.lastIndexOf('1');
-  if (sep < 1 || text.length > 90 || text.length - sep - 1 < 6) throw new Error('bad address');
-  const data = Array.from(text.slice(sep + 1), (c) => CHARSET.indexOf(c));
-  if (data.includes(-1)) throw new Error('bad character');
-  const check = polymod([...hrpExpand(hrp), ...data]);
-  const version = data[0];
-  if (check !== (version === 0 ? BECH32 : BECH32M)) throw new Error('bad checksum');
-  const program = Uint8Array.from(convertBits(data.slice(1, -6), 5, 8, false));
-  if (version > 16 || program.length < 2 || program.length > 40) throw new Error('bad program');
-  if (version === 0 && program.length !== 20 && program.length !== 32) throw new Error('bad program');
+/** An address refused, with a short code a test can hold and words a person can read. */
+export class AddressError extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+  }
+}
+
+/**
+ * BIP-173 and BIP-350 for the whole string: printable ASCII, one case, at most 90 characters, an hrp before the last
+ * `1`, at least a checksum after it, only charset letters there, and a checksum that is bech32's or bech32m's. Nothing
+ * is skipped, so text in front of a valid address changes the hrp and is refused.
+ */
+export function bech32Decode(text) {
+  if (typeof text !== 'string') throw new AddressError('not_text', 'not text');
+  if (/[^\x21-\x7e]/.test(text)) throw new AddressError('range', 'it has a character outside printable ASCII');
+  if (text !== text.toLowerCase() && text !== text.toUpperCase()) throw new AddressError('mixed_case', 'it mixes upper and lower case');
+  if (text.length > 90) throw new AddressError('length', 'it is longer than 90 characters');
+  const lower = text.toLowerCase();
+  const sep = lower.lastIndexOf('1');
+  if (sep < 1) throw new AddressError('separator', 'it has no network prefix before a 1');
+  if (lower.length - sep - 1 < 6) throw new AddressError('short', 'it is too short to hold a checksum');
+  const data = Array.from(lower.slice(sep + 1), (c) => CHARSET.indexOf(c));
+  if (data.includes(-1)) throw new AddressError('charset', 'it has a character an address never uses, such as b, i or o');
+  const hrp = lower.slice(0, sep);
+  const residue = polymod([...hrpExpand(hrp), ...data]);
+  const spec = residue === BECH32 ? 'bech32' : residue === BECH32M ? 'bech32m' : null;
+  if (spec === null) throw new AddressError('checksum', 'its checksum does not match, so a character is wrong');
+  return { hrp, data: data.slice(0, -6), spec };
+}
+
+/** A segwit address for exactly `hrp`, by the rules of BIP-173, BIP-141 and BIP-350. Returns the output script. */
+export function decodeSegwit(hrp, address) {
+  const got = bech32Decode(address);
+  if (got.hrp !== hrp) throw new AddressError('hrp', `it is not a ${hrp}1 address`);
+  const program = Uint8Array.from(convertBits(got.data.slice(1), 5, 8, false));
+  if (program.length < 2 || program.length > 40) throw new AddressError('program_length', 'it holds a program of the wrong length');
+  const version = got.data[0];
+  if (version > 16) throw new AddressError('version', 'its witness version is above 16');
+  if (version === 0 && program.length !== 20 && program.length !== 32) throw new AddressError('v0_length', 'a version 0 program must be 20 or 32 bytes');
+  if (got.spec !== (version === 0 ? 'bech32' : 'bech32m')) throw new AddressError('checksum_type', `its checksum is ${got.spec}, and version ${version} takes ${version === 0 ? 'bech32' : 'bech32m'}`);
   return concat(Uint8Array.of(version === 0 ? 0 : 0x50 + version, program.length), program);
 }
 
@@ -151,6 +179,7 @@ function decodeSegwit(hrp, address) {
 export function addressToSpk(network, address) {
   const net = NETWORKS[network];
   if (!net) throw new Error('unknown network');
+  if (typeof address !== 'string') throw new AddressError('not_text', 'not text');
   if (address.toLowerCase().startsWith(`${net.hrp}1`)) return decodeSegwit(net.hrp, address);
   const raw = base58Decode(address);
   if (raw.length !== 25) throw new Error('not an address on this network');

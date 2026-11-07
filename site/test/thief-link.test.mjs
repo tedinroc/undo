@@ -53,3 +53,12 @@ test('the phone page copies the link thiefLink builds, with fresh random bytes f
   assert.match(body, /const link = thiefLink\(location\.origin, P\.v, toHex\(P\.seed\), randomBytes\(20\)\);/);
   assert.doesNotMatch(body, /\/t\/#/, 'no hand-built link beside it');
 });
+
+test('a link whose destination has a valid address at its end and junk in front is not taken as that address', () => {
+  const good = parseFragment(new URL(thiefLink('https://undo-btc.pages.dev', VAULT, SEED, label('to-1').slice(0, 20))).hash).to;
+  const other = parseFragment(new URL(thiefLink('https://undo-btc.pages.dev', VAULT, SEED, label('to-2').slice(0, 20))).hash).to;
+  const fields = parseFragment(`#v=${VAULT}&k=${SEED}&to=${other}${good}`);
+  assert.equal(fields.to, `${other}${good}`, 'the link\'s own rule lets it through, so the tab\'s check is the one that must refuse it');
+  assert.equal(destinationProblem(fields.to), 'bad_address');
+  assert.throws(() => destinationSpk(fields.to));
+});

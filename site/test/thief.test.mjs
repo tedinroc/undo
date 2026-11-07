@@ -23,7 +23,7 @@ import { executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
-import { destinationProblem, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
+import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
 import { stageAvailable, startStage, staticServer } from './stage.mjs';
 
@@ -48,6 +48,12 @@ describe('rules with no page around them', () => {
     assert.equal(destinationProblem(THIEF_TO.toUpperCase()), 'not_test_address');
     assert.equal(destinationProblem(`${THIEF_TO.slice(0, -1)}${THIEF_TO.endsWith('q') ? 'p' : 'q'}`), 'bad_address');
     assert.equal(toHex(addressToSpk('mutinynet', THIEF_TO)).slice(0, 4), '0014');
+    // The whole field is the address: a valid one with anything in front of it is not one.
+    const other = segwitAddress('mutinynet', 0, label('y').slice(0, 20));
+    for (const junk of [`${other}${THIEF_TO}`, `tb1qqqqqqqqq${THIEF_TO}`, `tb1${THIEF_TO}`]) {
+      assert.equal(destinationProblem(junk), 'bad_address', junk);
+      assert.throws(() => destinationSpk(junk));
+    }
   });
 
   test('a key is 64 hex characters, however it was pasted, and nothing else', () => {

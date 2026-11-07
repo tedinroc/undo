@@ -221,6 +221,11 @@ async function main() {
     const chk = await undo(['check', '--to', dest1, '--amount', '50000'], file);
     check('undo check: free view, tier New, wait 5:00', chk.code === 0 && /^tier +New/m.test(chk.out) && /^wait +5:00 after propose/m.test(chk.out), chk.out + chk.err);
     check('undo check sent nothing', (await near.view(contract, 'vault', { vault: vault.hex })).spend_nonce === nonceBefore);
+    // The whole --to is the address: a valid one with anything in front is refused in words, and nothing is sent.
+    const junk = await undo(['propose', '--to', `tb1qqqqqqqqq${dest1}`, '--amount', '50000'], file);
+    check('undo propose refuses a valid address with junk in front, in plain words, and sends nothing', junk.code === 1
+      && /^--to is not a mutinynet address: its checksum does not match, so a character is wrong$/m.test(junk.out) && !/^\s+at /m.test(junk.out + junk.err)
+      && (await near.view(contract, 'vault', { vault: vault.hex })).spend_nonce === nonceBefore, junk.out + junk.err);
 
     const prop = await undo(['propose', '--to', dest1, '--amount', '50000', '--memo', 'invoice 42'], file);
     const filmStdout = prop.out;

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { addressToSpk, derSig, makeTx, p2wshAddress, parseDer, parseTx, parseWitnessScript, SEQUENCE_COSIGNED, serialize, sighash, witnessScript } from '../lib/btc.mjs';
+import { AddressError, addressToSpk, bech32Decode, decodeSegwit, derSig, makeTx, p2wshAddress, parseDer, parseTx, parseWitnessScript, segwitAddress, SEQUENCE_COSIGNED, serialize, sighash, witnessScript } from '../lib/btc.mjs';
 import { base58Decode, base58Encode, fromHex, toHex, utf8 } from '../lib/bytes.mjs';
 import { randomBytes, secp256k1, sha256 } from '../lib/crypto.mjs';
 import { signColdIntent } from '../lib/cold-intent.mjs';
@@ -62,6 +62,143 @@ test('addresses refused: wrong network, wrong checksum type, mixed case, bad che
   refused('mainnet', 'Bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4');
   refused('mainnet', '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3');
   refused('mutinynet', '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2');
+});
+
+// The BIP-173 and BIP-350 test vectors, as the bech32 crate's tests carry them (bech32 0.11.1, tests/ and
+// src/primitives/decode.rs). The code each refusal must carry is the first rule the string breaks, in the order of
+// BIP-350's reference decoder, so a test fails if any one rule is dropped.
+const BECH32_VALID = ['A12UEL5L', 'a12uel5l', 'an83characterlonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1tt5tgs',
+  'abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw', '11qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqc8247j',
+  'split1checkupstagehandshakeupstreamerranterredcaperred2y9e3w', '?1ezyfcl'];
+const BECH32M_VALID = ['A1LQFN3A', 'a1lqfn3a', 'an83characterlonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11sg7hg6',
+  'abcdef1l7aum6echk45nj3s0wdvt2fg8x9yrzpqzd3ryx', '11llllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllllludsr8',
+  'split1checkupstagehandshakeupstreamerranterredcaperredlc445v', '?1v759aa'];
+const STRING_INVALID = [
+  ['\x201nwldj5', 'range'], ['\x7f1axkwrx', 'range'], ['\x801eym55h', 'range'],
+  ['an84characterslonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1569pvx', 'length'],
+  ['pzry9x0s0muk', 'separator'], ['1pzry9x0s0muk', 'separator'], ['x1b4n0q5v', 'charset'], ['li1dgmt3', 'short'],
+  ['de1lg7wt\xff', 'range'], ['A1G7SGD8', 'checksum'], ['10a06t8', 'separator'], ['1qzzfhee', 'separator'],
+  ['\x201xj0phk', 'range'], ['\x7f1g6xzxy', 'range'], ['\x801vctc34', 'range'],
+  ['an84characterslonghumanreadablepartthatcontainsthetheexcludedcharactersbioandnumber11d6pts4', 'length'],
+  ['qyrz8wqd2c9m', 'separator'], ['1qyrz8wqd2c9m', 'separator'], ['y1b0jsk6g', 'charset'], ['lt1igcx5c0', 'charset'],
+  ['in1muywd', 'short'], ['mm1crxm3i', 'charset'], ['au1s5cgom', 'charset'], ['M1VUXWEZ', 'checksum'], ['16plkw9', 'separator'], ['1p2gdwpf', 'separator'],
+];
+// BIP-350's valid addresses, with the output script each pays.
+const SEGWIT_VALID = [
+  ['bc', 'BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4', '0014751e76e8199196d454941c45d1b3a323f1433bd6'],
+  ['tb', 'tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7', '00201863143c14c5166804bd19203356da136c985678cd4d27a1b8c6329604903262'],
+  ['bc', 'bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kt5nd6y', '5128751e76e8199196d454941c45d1b3a323f1433bd6751e76e8199196d454941c45d1b3a323f1433bd6'],
+  ['bc', 'BC1SW50QGDZ25J', '6002751e'],
+  ['bc', 'bc1zw508d6qejxtdg4y5r3zarvaryvaxxpcs', '5210751e76e8199196d454941c45d1b3a323'],
+  ['tb', 'tb1qqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesrxh6hy', '0020000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433'],
+  ['tb', 'tb1pqqqqp399et2xygdj5xreqhjjvcmzhxw4aywxecjdzew6hylgvsesf3hn0c', '5120000000c4a5cad46221b2a187905e5266362b99d5e91c6ce24d165dab93e86433'],
+  ['bc', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', '512079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'],
+];
+// BIP-173's and BIP-350's invalid addresses. The first four BIP-173 ones that were valid before BIP-350 are refused now.
+const SEGWIT_INVALID = [
+  ['tb', 'tc1qw508d6qejxtdg4y5r3zarvary0c5xw7kg3g4ty', 'hrp'],
+  ['bc', 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5', 'checksum'],
+  ['bc', 'BC13W508D6QEJXTDG4Y5R3ZARVARY0C5XW7KN40WF2', 'version'],
+  ['bc', 'bc1rw5uspcuh', 'program_length'],
+  ['bc', 'bc10w508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7kw5rljs90', 'program_length'],
+  ['bc', 'BC1QR508D6QEJXTDG4Y5R3ZARVARYV98GJ9P', 'v0_length'],
+  ['tb', 'tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sL5k7', 'mixed_case'],
+  ['bc', 'bc1zw508d6qejxtdg4y5r3zarvaryvqyzf3du', 'padding'],
+  ['tb', 'tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3pjxtptv', 'padding'],
+  ['bc', 'bc1gmk9yu', 'program_length'],
+  ['tb', 'tc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq5zuyut', 'hrp'],
+  ['bc', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqh2y7hd', 'checksum_type'],
+  ['tb', 'tb1z0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqglt7rf', 'checksum_type'],
+  ['bc', 'BC1S0XLXVLHEMJA6C4DQV22UAPCTQUPFHLXM9H8Z3K2E72Q4K9HCZ7VQ54WELL', 'checksum_type'],
+  ['bc', 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kemeawh', 'checksum_type'],
+  ['tb', 'tb1q0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq24jc47', 'checksum_type'],
+  ['bc', 'bc1p38j9r5y49hruaue7wxjce0updqjuyyx0kh56v8s25huc6995vvpql3jow4', 'charset'],
+  ['bc', 'BC130XLXVLHEMJA6C4DQV22UAPCTQUPFHLXM9H8Z3K2E72Q4K9HCZ7VQ7ZWS8R', 'version'],
+  ['bc', 'bc1pw5dgrnzv', 'program_length'],
+  ['bc', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7v8n0nx0muaewav253zgeav', 'program_length'],
+  ['tb', 'tb1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vq47Zagq', 'mixed_case'],
+  ['bc', 'bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7v07qwwzcrf', 'padding'],
+  ['tb', 'tb1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vpggkg4j', 'padding'],
+  ['bc', 'bc1pw508d6qejxtdg4y5r3zarvary0c5xw7kw508d6qejxtdg4y5r3zarvary0c5xw7k7grplx', 'checksum_type'],
+  ['bc', 'BC1SW50QA3JX3S', 'checksum_type'],
+  ['bc', 'bc1zw508d6qejxtdg4y5r3zarvaryvg6kdaj', 'checksum_type'],
+];
+const refusedWith = (fn, code) => assert.throws(fn, (err) => err instanceof AddressError && err.code === code && !/^\s*at /m.test(err.message), `refused for ${code}`);
+
+test('bech32 strings: BIP-173 and BIP-350 vectors, each valid one under its own checksum constant only, each invalid one for its reason', () => {
+  for (const text of BECH32_VALID) assert.equal(bech32Decode(text).spec, 'bech32', text);
+  for (const text of BECH32M_VALID) assert.equal(bech32Decode(text).spec, 'bech32m', text);
+  for (const [text, code] of STRING_INVALID) refusedWith(() => bech32Decode(text), code);
+  refusedWith(() => bech32Decode(42), 'not_text');
+  // Every character of a valid string matters: one changed is a checksum that no longer matches.
+  const text = 'abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw';
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '1') continue;
+    const swapped = `${text.slice(0, i)}${text[i] === 'q' ? 'p' : 'q'}${text.slice(i + 1)}`;
+    assert.throws(() => bech32Decode(swapped), AddressError, swapped);
+  }
+});
+
+test('segwit addresses: BIP-350 valid vectors decode to their scripts and encode back; every invalid vector is refused for its reason', () => {
+  const network = { bc: 'mainnet', tb: 'testnet4' };
+  for (const [hrp, address, spk] of SEGWIT_VALID) {
+    assert.equal(toHex(decodeSegwit(hrp, address)), spk, address);
+    assert.equal(toHex(addressToSpk(network[hrp], address)), spk, address);
+    const bytes = fromHex(spk);
+    const version = bytes[0] === 0 ? 0 : bytes[0] - 0x50;
+    assert.equal(segwitAddress(network[hrp], version, bytes.slice(2)), address.toLowerCase(), 'and encodes back');
+  }
+  for (const [hrp, address, code] of SEGWIT_INVALID) refusedWith(() => decodeSegwit(hrp, address), code);
+  // The same strings through the door every caller uses.
+  for (const [hrp, address] of SEGWIT_INVALID) assert.throws(() => addressToSpk(network[hrp], address), Error, address);
+  // The exact hrp for the network: a regtest address is not a signet one, and the reverse.
+  const program = new Uint8Array(20).fill(7);
+  refusedWith(() => decodeSegwit('tb', segwitAddress('regtest', 0, program)), 'hrp');
+  refusedWith(() => decodeSegwit('bcrt', segwitAddress('mutinynet', 0, program)), 'hrp');
+  refusedWith(() => decodeSegwit('bc', segwitAddress('regtest', 0, program)), 'hrp');
+});
+
+test('an address with anything in front of it is refused: the whole string is the address, not the part after the last 1', () => {
+  const tail = segwitAddress('mutinynet', 0, new Uint8Array(20).fill(7));
+  const head = segwitAddress('mutinynet', 0, new Uint8Array(20).fill(9));
+  assert.equal(toHex(addressToSpk('mutinynet', tail)), `0014${'07'.repeat(20)}`, 'control: the tail alone is a good address');
+  for (const text of [`${head}${tail}`, `tb1qqqqqqqqq${tail}`, `tb1${tail}`, `${tail.slice(0, 3)}x${tail.slice(3)}`]) {
+    assert.throws(() => addressToSpk('mutinynet', text), AddressError, text);
+    assert.throws(() => addressToSpk('regtest', text), Error, text);
+  }
+  // Junk whose own checksum is valid: a whole bech32 string with a longer hrp. Refused for the hrp, not by luck.
+  const longer = segwitAddress('mutinynet', 0, new Uint8Array(20).fill(7)).replace(/^tb1/, '');
+  const forged = (() => {
+    const CHARSET = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
+    const hrp = 'tb1qqqqtb';
+    const data = Array.from(longer.slice(0, -6), (c) => CHARSET.indexOf(c));
+    const expand = [...Array.from(hrp, (c) => c.charCodeAt(0) >> 5), 0, ...Array.from(hrp, (c) => c.charCodeAt(0) & 31)];
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const v of [...expand, ...data, 0, 0, 0, 0, 0, 0]) {
+      const top = chk >>> 25;
+      chk = (((chk & 0x1ffffff) << 5) ^ v) >>> 0;
+      for (let i = 0; i < 5; i += 1) if ((top >>> i) & 1) chk = (chk ^ GEN[i]) >>> 0;
+    }
+    chk ^= 1;
+    return `${hrp}1${longer.slice(0, -6)}${Array.from({ length: 6 }, (_, i) => CHARSET[(chk >>> (5 * (5 - i))) & 31]).join('')}`;
+  })();
+  assert.equal(bech32Decode(forged).hrp, 'tb1qqqqtb', 'a well-formed string with a longer hrp');
+  refusedWith(() => addressToSpk('mutinynet', forged), 'hrp');
+  refusedWith(() => addressToSpk('mutinynet', `${tail} `), 'range');
+  assert.throws(() => addressToSpk('mutinynet', undefined), AddressError);
+});
+
+test('escape.mjs refuses an address with junk in front in plain words, and prints no stack', () => {
+  const rec = file('junk.json', makeRecovery('mutinynet', 'junk', 6));
+  const utxos = file('junk-u.json', JSON.stringify(coinsOf(1, 'junk')));
+  const tail = segwitAddress('mutinynet', 0, new Uint8Array(20).fill(7));
+  const ok = tool('escape.mjs', ['--recovery', rec, '--utxos', utxos, '--to', tail, '--fee', '1000']);
+  assert.equal(ok.status, 0, `control: ${ok.stderr}`);
+  const r = tool('escape.mjs', ['--recovery', rec, '--utxos', utxos, '--to', `tb1qqqqqqqqq${tail}`, '--fee', '1000']);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.match(r.stderr, /destination refused on mutinynet: its checksum does not match, so a character is wrong/);
+  assert.doesNotMatch(r.stderr, /^\s+at /m, 'no stack trace');
 });
 
 test('base58 round-trips, with leading zeros', () => {
