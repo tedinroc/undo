@@ -154,6 +154,20 @@ No critical or high finding. An owner lens and a spec lens, on the real wasm. A 
 
 Two more mutants have no test on purpose, because no input can tell them from the real code. Dropping the test-coin floor on `t_new_unguarded_ms` changes nothing, because that delay may not be below `t_new_ms`, whose own floor is the same. Dropping the first `max_inputs == 0` check in `execute` changes nothing on the wasm, because the same error comes a few lines later and a panic rolls back what came between. The core harness rolls back an error the same way, so a core mutant of it lived too, and `execute_needs_at_least_one_input` stays as the rule's test.
 
+## Authorization audit (round 5)
+
+A defensive authorization audit of the contract and the core, two reviewers per finding. No high or medium finding in this lane. Core tests are in `crates/undo-core/props/tests/round5.rs`, sandbox tests in `tests/tests/review5.rs`, and each failed on the build before it. The first `review5` test runs the sandbox clock a little over a day: under a minute on the nodes `scripts/protocol-check.sh` starts, and about 50 minutes on near-workspaces' own sandbox.
+
+| Finding | Test | Result expected now |
+|---|---|---|
+| C1, low: a known destination's 24 h cap counted from propose, so two full caps could reach signing five minutes apart on the proof preset | `round5: a_pending_request_holds_its_outflow_for_as_long_as_it_lives`, `an_executed_request_counts_for_a_day_from_its_signature_on_test_coins`, `a_hold_cannot_stretch_the_cap`, `a_week_long_expiry_cannot_queue_three_caps`, `a_half_signed_spend_counts_from_its_last_signature_request_and_closes_a_day_after_its_first`, `the_window_counts_from_the_last_signature_to_land`, `a_superseded_or_pruned_spend_still_counts_for_its_day`, `review5: outflow_counts_until_a_day_after_signing_on_the_wasm` | A pending request holds its outflow while it lives. After execute it counts for a day from the last signature request or the last signature. A request that pays out takes no signatures a day after its first execute, so a half-signed one cannot finish inside a later request's window, and `reclaim` is its way out. |
+| C1, what the fix must not break | `round5: an_execute_moves_only_its_own_entry`, `a_self_spend_can_still_retry_after_a_day`, `a_rotation_or_freeze_releases_pending_outflow_and_keeps_what_is_signing`, `scenarios: the_outflow_window_leaves_the_row_after_a_day` | Self-spends retry as before. A rotation or freeze releases only pending reservations. The row still drops an entry after its day. |
+| C2, low: the guard line said "doubled" whatever the policy | `round5: the_guard_line_names_the_real_delays`, `review5: status_prints_the_real_delays_and_the_freeze_rule` | Both delays are printed, and equal ones are called the same. |
+| C3, low: the freeze line named only grants, and the recovery line counted cancels a freeze holds | `round5: the_freeze_line_says_exactly_what_is_blocked`, `the_recovery_line_says_a_freeze_holds_the_passkeys_cancels`, `review5: status_prints_the_real_delays_and_the_freeze_rule` | The line names proposals, reclaims, execute and every passkey action but cancel, and says cancel has nothing to stop. |
+| C4, low, one of two reviewers: a reclaim deleted a Signed request with no log | `review5: reclaim_logs_the_signed_transaction_it_supersedes` | `undo:superseded request=<id> tx=<hex>`, the same bytes `final_tx` gave, at 16 inputs. The supersede itself is unchanged. |
+
+Mutants: 15 more in `crates/undo-core/props/mutation-check.py` (`outflow:` and the new `status:` ones) and 2 in `scripts/shell-mutants.py` (the reclaim log).
+
 ## Section 11, the last methods
 
 Every method is on both protocols through `scripts/protocol-check.sh`, with a positive and a negative in `tests/tests/surface.rs`:

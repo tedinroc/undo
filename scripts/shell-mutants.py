@@ -238,6 +238,9 @@ MUTANTS = [
     ("an intent does not bind its contract", AUTH, 'contract: &env::current_account_id(),', 'contract: &"xx".parse::<AccountId>().unwrap(),', "review4", "passkey_assertion_binds"),
     ("an intent does not bind its vault", AUTH, '        vault,\n        method,\n        args_hash: env::sha256_array(borsh::to_vec(args).unwrap()),', '        vault: &[0; 32],\n        method,\n        args_hash: env::sha256_array(borsh::to_vec(args).unwrap()),', "review4", "passkey_assertion_binds"),
     ("an intent does not bind its tag", AUTH, 'let bytes = IntentBytes {\n        tag,', 'let bytes = IntentBytes {\n        tag: { let _ = tag; "t" },', "review4", "passkey_assertion_binds"),
+    # Round 5, the authorization audit. A reclaim that supersedes a Signed request logs its transaction.
+    ("reclaim forgets the signed transaction it supersedes", LIB, '        if let Some((owner, tx)) = superseded {\n            env::log_str(&format!("undo:superseded request={owner} tx={}", tx.map(hex::encode).unwrap_or_default()));\n        }\n', '        let _ = superseded;\n', "review5", "reclaim_logs"),
+    ("reclaim logs a superseded request's transaction without its signatures", LIB, 'superseded = Some((owner, btc::final_tx(vault, r)));', 'superseded = Some((owner, None::<Vec<u8>>.or_else(|| { let _ = (vault, r); None })));', "review5", "reclaim_logs"),
     ("an intent does not bind its expiry", AUTH, '        expires_at,\n        nonce,\n    };\n    env::sha256_array(borsh::to_vec(&bytes)', '        expires_at: { let _ = expires_at; 0 },\n        nonce,\n    };\n    env::sha256_array(borsh::to_vec(&bytes)', "review4", "passkey_assertion_binds"),
 ]
 

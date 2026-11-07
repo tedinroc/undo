@@ -60,6 +60,15 @@ async fn gas_and_storage() -> Result<()> {
         println!("MEASURE gas on_signed inputs={inputs} max={:.2}T", callback_max(&res, &c));
         let view = h.vault_view(&v).await?;
         println!("MEASURE storage signed inputs={inputs} row_bytes={} reserved_bytes={}", view["row_bytes"], view["reserved_bytes"]);
+        if inputs == 16 {
+            // A reclaim that supersedes a Signed request logs its transaction, and this is the largest.
+            let t_stuck = view["policy"]["t_stuck_ms"].as_u64().unwrap();
+            h.advance_to(h.now_ms().await? + t_stuck + 1).await?;
+            let args = h.reclaim_args(&v, &real[0], 500, v.spend_nonce);
+            let res = h.relayer.call(h.undo.id(), "reclaim").args_json(args).gas(gas(100)).transact().await?;
+            res.clone().into_result()?;
+            line("reclaim superseding_signed_inputs=16", &res, &c, Some("undo:superseded"));
+        }
     }
 
     // Smallest prepaid gas: the contract refuses below it with a message, and it is enough above it.
@@ -333,6 +342,10 @@ fn griefed(name: &str, r: ExecutionFinalResult) -> Result<()> {
 
 /// The worst row the rules allow: 32 known destinations of the longest script, a full list of grants with
 /// the longest account names, and the 24 h windows full at the rate floor. Thief here has K_s, K_u and K_p.
+/// A request's outflow counts for a day after its last signature request, and a paying request's retries
+/// close a day after its first execute, so the outflow window can hold two days of spends. A landing
+/// rotation clears the fee window and not the outflow window, so one gets the row to that size inside one
+/// sandbox day.
 async fn worst_row(h: &Harness, label: &str, guard: &str) -> Result<Vault> {
     let k = keys(label);
     let mut call = h.create_call(&k, 6);
@@ -368,16 +381,28 @@ async fn worst_row(h: &Harness, label: &str, guard: &str) -> Result<Vault> {
         h.passkey_call(&v, &v.passkey, "set_guard", &name, json!({"guard": name}), v.passkey_nonce, expires_at).await?.into_result()?;
         v.passkey_nonce += 1;
     }
-    let c = coins(&format!("{label}-win"), 31, 5_000);
     let known = known.unwrap();
-    for chunk in c.chunks(3) {
-        let mut ids = vec![];
-        for coin in chunk {
-            ids.push(h.propose(&mut v, std::slice::from_ref(coin), &known, 5_000 - 161, None).await?);
+    for day in 0..2 {
+        if day == 1 {
+            let (r, new) = rotate_at_owner_attach(h, &v, &format!("{label}-second-day")).await?;
+            r.into_result()?;
+            v.passkey_nonce += 1;
+            let grant = h.vault_view(&v).await?["grants"].as_array().unwrap().last().unwrap().as_u64().unwrap();
+            let t_known = h.vault_view(&v).await?["policy"]["t_known_ms"].as_u64().unwrap();
+            h.advance_to(h.now_ms().await? + t_known + 1).await?;
+            h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": grant})).gas(gas(OWNER_ATTACH_TGAS)).transact().await?.into_result()?;
+            v.k_s = new;
         }
-        for id in ids {
-            h.wait_unlock(&v, id).await?;
-            h.execute_and_respond(&v, id, 1, false).await?.into_result()?;
+        let c = coins(&format!("{label}-win-{day}"), 31, 5_000);
+        for chunk in c.chunks(3) {
+            let mut ids = vec![];
+            for coin in chunk {
+                ids.push(h.propose(&mut v, std::slice::from_ref(coin), &known, 5_000 - 161, None).await?);
+            }
+            for id in ids {
+                h.wait_unlock(&v, id).await?;
+                h.execute_and_respond(&v, id, 1, false).await?.into_result()?;
+            }
         }
     }
     let view = h.vault_view(&v).await?;
