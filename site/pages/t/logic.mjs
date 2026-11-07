@@ -55,6 +55,7 @@ export function relaySentence(status) {
   if (!status.reachable || status.general?.why === 'relay_down') return 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.';
   if (status.general?.up || status.general?.calls_fit) return null;
   if (status.general?.why === 'daily_ceiling') return 'The relay hit today\'s limit, so this tab can\'t ask the NEAR contract or call execute.';
+  if (status.general?.why === 'relay_reserve') return 'The relay is keeping what it has left for cancels, so this tab can\'t ask the NEAR contract or call execute.';
   return `The relay can't send for this tab right now: ${status.general?.why ?? 'no reason given'}`;
 }
 

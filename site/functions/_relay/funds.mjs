@@ -158,6 +158,11 @@ export async function fundsHandler(relay, request) {
   if (!fundsConfigured(relay)) throw new Refusal('relay_not_configured', { message: 'the dispenser is not set' });
   const { vault } = body;
   if (!checkPow(fundsPowTarget(vault), body.pow, relay.powBits)) throw new Refusal('pow_bad', { message: 'that proof of work does not solve this vault' });
+  // Anyone can make a vault straight on the contract, free of this relay's limits, and name this relay as its guard.
+  // So a coin goes only to a vault this relay sent the create_vault for.
+  const made = await relay.madeRow(vault);
+  if (made === undefined) throw new Refusal('state_store_down', { message: 'the state store is not answering' });
+  if (made === null) throw new Refusal('would_refuse', { message: 'this relay only funds vaults it made' });
   let row;
   try {
     row = await relay.reader().view(relay.contract, 'vault', { vault });
@@ -166,8 +171,6 @@ export async function fundsHandler(relay, request) {
   }
   if (row === null) throw new Refusal('bad_request', { message: 'no such vault' });
   if (!row.active) throw new Refusal('bad_request', { message: 'that vault is not active' });
-  // Anyone can make a vault directly, free of this relay's limits, and name whatever guard they like.
-  if (row.guard !== relay.account) throw new Refusal('would_refuse', { message: 'this relay only funds vaults it guards' });
 
   const conf = settings(relay);
   const dispenser = dispenserOf(relay);

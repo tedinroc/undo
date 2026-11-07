@@ -2,7 +2,7 @@
 // Needs UNDO_TOOLS_CHECK_BIN, the binary from tools/rust-check, which recomputes everything with other
 // code. Test keys come from public labels, or are throwaways generated here. Nothing is committed.
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -423,4 +423,117 @@ test('NEAR transactions sign deterministically and encode the expected enum tags
   assert.equal(action.transfer(1n)[0], 3);
   assert.equal(action.addFullKey(key.pub)[0], 5);
   assert.equal(action.deleteKey(key.pub)[0], 6);
+});
+
+// ---------------------------------------------------------------- cancel.mjs: a signed cancel, from your own account
+
+/** A JSON-RPC stand-in for a NEAR node, answering what cancel.mjs asks. `views` maps a view name to its answer. */
+async function fakeNode({ chainId = 'testnet', nowMs = 1_900_000_000_000, views = {} } = {}) {
+  const { createServer } = await import('node:http');
+  const asked = [];
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      const { id, method, params } = JSON.parse(body);
+      const name = params?.method_name ?? params?.request_type ?? null;
+      asked.push(name ? `${method}:${name}` : method);
+      const reply = (result) => res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+      if (method === 'status') return reply({ chain_id: chainId });
+      if (method === 'block') return reply({ header: { hash: base58Encode(sha256(utf8('block'))), timestamp_nanosec: `${nowMs}000000` } });
+      if (method === 'query' && params.request_type === 'call_function') return reply({ result: [...utf8(JSON.stringify(views[params.method_name] ?? null))], logs: [] });
+      return res.end(JSON.stringify({ jsonrpc: '2.0', id, error: { name: 'HANDLER_ERROR', cause: { name: 'NOT_IN_THIS_FAKE' } } }));
+    });
+  });
+  await new Promise((r) => { server.listen(0, '127.0.0.1', r); });
+  return { url: `http://127.0.0.1:${server.address().port}`, asked, close: () => new Promise((r) => { server.close(r); }) };
+}
+
+const toolAsync = (name, args, input = '') => new Promise((resolveRun) => {
+  // No key folder of this machine's: a key, if one is looked for, is looked for here, and there is none.
+  const env = { ...process.env, NEAR_CREDENTIALS_DIR: join(work, 'no-credentials') };
+  const child = spawn('node', [join(TOOLS, name), ...args], { stdio: ['pipe', 'pipe', 'pipe'], env });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (c) => { stdout += c; });
+  child.stderr.on('data', (c) => { stderr += c; });
+  child.on('close', (status) => resolveRun({ status, stdout, stderr }));
+  child.stdin.end(input);
+});
+
+test('cancel.mjs: only a signed cancel, in the shape the contract takes, and never on mainnet or past its time', async () => {
+  const now = 1_900_000_000_000;
+  const webauthn = { authenticator_data: '00'.repeat(37), client_data_json: '7b7d', signature: '00'.repeat(64) };
+  const rotate = { vault: VAULT, new_k_s: 'aa'.repeat(32), nonce: 3, expires_at: now + 600_000, assertion: webauthn };
+  const owner = (over = {}) => file(`call-${Math.random().toString(16).slice(2)}.json`, JSON.stringify({ format: 'undo-owner-call-v1', contract: CONTRACT, method: 'cancel_all_and_rotate', args: rotate, ...over }));
+  const signed = signColdIntent({ cold: sha256(utf8('cancel-tool-cold')), contract: CONTRACT, vault: VAULT, method: 'cancel', fields: { request: 7 }, expiresAt: now + 600_000 });
+  const cold = { vault: VAULT, request: 7, expires_at: now + 600_000, auth: { Cold: signed.signature } };
+  const coldFile = (over = {}) => file(`cold-${Math.random().toString(16).slice(2)}.json`, JSON.stringify({ format: 'undo-cold-intent-v1', contract: CONTRACT, method: 'cancel', args: cold, digest: signed.digest, k_e_intent: signed.k_e_intent, ...over }));
+  const node = await fakeNode({ nowMs: now, views: { vault: { passkey_nonce: 3 }, request: { status: 'Pending' } } });
+  const run = (path, extra = [], input = 'no\n', rpc = node.url) => toolAsync('cancel.mjs', ['--file', path, '--account', 'me.testnet', '--rpc', rpc, ...extra], input);
+  try {
+    assert.equal((await toolAsync('cancel.mjs', [])).status, 2);
+    assert.equal((await toolAsync('cancel.mjs', ['--file', owner(), '--account', 'Not An Account'])).status, 2);
+    assert.equal((await toolAsync('cancel.mjs', ['--file', owner(), '--account', 'me.testnet', '--digest', 'ab'])).status, 2, 'an unknown flag');
+    const refusedBeforeReading = [
+      [file('nope.json', 'not json'), /not JSON/],
+      [file('rec.json', JSON.stringify({ format: 'undo-recovery-v1' })), /not a signed cancel/],
+      [owner({ method: 'set_policy' }), /only cancel or cancel_all_and_rotate/],
+      [coldFile({ method: 'freeze' }), /only cancel from a file/],
+      [owner({ contract: 'Not A Contract' }), /names no contract/],
+      [owner({ args: { ...rotate, assertion: { ...webauthn, user_handle: '00' } } }), /not the shape/],
+      [coldFile({ args: { ...cold, auth: { Passkey: webauthn, Cold: signed.signature } } }), /not the shape/],
+      [owner({ args: { ...rotate, receiver_id: 'someone.testnet' } }), /not the shape/],
+    ];
+    for (const [path, words] of refusedBeforeReading) {
+      const r = await run(path);
+      assert.equal(r.status, 1, r.stdout + r.stderr);
+      assert.match(r.stderr, words);
+    }
+    assert.deepEqual(node.asked, [], 'none of those asked the chain anything');
+
+    const main = await fakeNode({ chainId: 'mainnet', nowMs: now, views: { vault: { passkey_nonce: 3 } } });
+    try {
+      const r = await run(owner(), ['--yes'], '', main.url);
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /mainnet/);
+      assert.deepEqual(main.asked, ['status'], 'it read the network and stopped');
+    } finally {
+      await main.close();
+    }
+
+    const late = await run(owner({ args: { ...rotate, expires_at: now - 1 } }));
+    assert.match(late.stderr, /expired/);
+    const used = await run(owner({ args: { ...rotate, nonce: 2 } }));
+    assert.match(used.stderr, /was used already/);
+    const gone = await fakeNode({ nowMs: now, views: { vault: { passkey_nonce: 3 }, request: null } });
+    try {
+      assert.match((await run(coldFile(), [], 'no\n', gone.url)).stderr, /is gone/);
+    } finally {
+      await gone.close();
+    }
+    const none = await fakeNode({ nowMs: now, views: { vault: null } });
+    try {
+      assert.match((await run(owner(), [], 'no\n', none.url)).stderr, /holds no vault/);
+    } finally {
+      await none.close();
+    }
+
+    node.asked.length = 0;
+    const no = await run(coldFile());
+    assert.equal(no.status, 1);
+    assert.match(no.stdout, /signed by\s+the cold key/);
+    assert.match(no.stdout, /Nothing sent/);
+    assert.ok(!node.asked.some((a) => a.startsWith('send_tx') || a.includes('view_access_key')), 'answering no sends nothing and reads no key');
+    const shown = await run(owner());
+    assert.match(shown.stdout, /method\s+cancel_all_and_rotate/);
+    assert.match(shown.stdout, /passkey nonce\s+3 \(the vault reads 3\)/);
+    const noKey = await run(owner(), ['--yes', '--key-file', join(work, 'no-such-key.json')]);
+    assert.equal(noKey.status, 1);
+    assert.match(noKey.stderr, /no key for me\.testnet/);
+    const noFile = await run(owner(), ['--yes']);
+    assert.match(noFile.stderr, /no key for me\.testnet: ENOENT/, 'near-cli\'s file, under the folder this test names');
+  } finally {
+    await node.close();
+  }
 });

@@ -1,10 +1,14 @@
 // The phone page's senses, in Node with a made-up window, and the page's rules a reader can check without a browser.
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BLOCKED_MS, classifyPasskeyError, inAppBrowser, isMobile, passkeyProblem, sensePasskeys } from '../pages/p/sense.mjs';
+import { OWN_PATH_LINE, ownCancelFile, ownCancelFileName, ownCancelWords, relayIsWhy, relayRefusedIt } from '../pages/p/own-cancel.mjs';
+import { relayBodyProblem } from '../lib/relay-table.mjs';
+import { build, importGraph } from '../build.mjs';
 
 const PAGES = join(dirname(fileURLToPath(import.meta.url)), '../pages');
 const read = (path) => readFileSync(join(PAGES, path), 'utf8');
@@ -94,4 +98,52 @@ test('the button says only what the design allows, and no text on the page says 
   assert.match(read('p/h7.mjs'), /label: 'operator'/);
   assert.equal(/\b5:00\b/.test(page), false, 'no fixed clock text');
   assert.equal(/Date\.now\(\)\s*[-+]\s*\d{5}/.test(page), false);
+});
+
+test('AUDIT-1: a cancel the relay will not send stays on the page as a file tools/cancel.mjs sends, and the page says how', () => {
+  for (const code of ['not_this_relays', 'daily_ceiling', 'rate_limited', 'relay_down', 'rpc_down', 'tx_refused', 'relay_reserve']) assert.equal(relayRefusedIt(code), true, code);
+  for (const code of ['assertion_refused', 'already_sent', 'bad_request', 'would_refuse']) assert.equal(relayRefusedIt(code), false, `${code} says the cancel itself would not work`);
+  for (const why of ['daily_ceiling', 'not_this_relays', 'relay_down', 'owner_key_low']) assert.equal(relayIsWhy(why), true, why);
+  for (const why of ['no_passkey_here', 'origin_not_allowed', 'wrong_site_for_passkey', 'frozen', 'not_cancellable']) assert.equal(relayIsWhy(why), false, why);
+  const args = { vault: 'cd'.repeat(32), new_k_s: 'aa'.repeat(32), nonce: 3, expires_at: Date.UTC(2026, 10, 7, 13, 5), assertion: { authenticator_data: '00'.repeat(37), client_data_json: '7b7d', signature: '00'.repeat(64) } };
+  const file = JSON.parse(ownCancelFile({ contract: 'tmp.example', method: 'cancel_all_and_rotate', args }));
+  assert.deepEqual(Object.keys(file), ['format', 'contract', 'method', 'args']);
+  assert.equal(file.format, 'undo-owner-call-v1', 'the format tools/cancel.mjs reads');
+  assert.equal(relayBodyProblem({ method: file.method, args: file.args }), null, 'in the shape the relay and the contract take');
+  assert.equal(ownCancelFileName(args.vault), 'undo-cancel-cdcdcdcd.json');
+  const words = ownCancelWords({ expiresAt: args.expires_at, vaultHex: args.vault });
+  assert.match(words, /until 13:05 UTC/);
+  assert.match(words, /node tools\/cancel\.mjs --file undo-cancel-cdcdcdcd\.json --account YOUR-ACCOUNT/);
+  assert.match(OWN_PATH_LINE, /tools\/cancel\.mjs/);
+  assert.match(OWN_PATH_LINE, /tools\/freeze\.mjs --method cancel/);
+  const page = read('p/phone.mjs');
+  assert.match(page, /if \(signed && relayRefusedIt\(err\.code\)\) P\.signed = signed;/, 'a refused tap keeps its signed call');
+  assert.match(page, /onRelayRefused\(err, \{ method: 'cancel_all_and_rotate', args: callArgs/);
+  assert.match(page, /'Save the signed cancel'/);
+  assert.match(page, /'Sign a cancel to send yourself'/);
+  assert.match(page, /ownCancelNodes\(\),\n\s+h\('button', \{ id: 'cancel'/, 'the request screen shows it too, after a refused tap');
+});
+
+test('first paint: the HTML shows the chip and a loading line before any module, and the build preloads every module the page loads', () => {
+  const html = read('p/index.html');
+  assert.match(html, /<main id="screen"><p class="small" id="boot-line">Loading the page\. It reads the contract next\.<\/p>/, 'a line on screen before any script runs');
+  assert.match(html, /<div id="chip" class="chip">signet test coins<\/div>/);
+  const out = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'undo-phone-build-'));
+  try {
+    const config = JSON.parse(readFileSync(join(PAGES, '../config/testnet.json'), 'utf8'));
+    build({ configObject: { ...config, contract: 'v1.s.undo-btc.testnet' }, out });
+    const built = readFileSync(join(out, 'p/index.html'), 'utf8');
+    const links = [...built.matchAll(/<link rel="modulepreload" href="([^"]+)">/g)].map((m) => m[1]);
+    const reached = importGraph([join(PAGES, 'p/phone.mjs')], PAGES);
+    assert.equal(links.length, reached.size - 1, 'one link for each module phone.mjs reaches, from the build\'s own walk');
+    assert.ok(links.length > 40, `${links.length} links`);
+    for (const url of links) assert.ok(existsSync(join(out, url)), `${url} is in the build`);
+    assert.ok(links.includes('/site/lib/index.mjs') && links.includes('/p/kit.mjs') && links.includes('/tools/lib/bytes.mjs'));
+    assert.ok(built.lastIndexOf('modulepreload') < built.indexOf('<script type="module" src="/p/phone.mjs">'), 'every link comes before the script');
+    assert.equal(built, readFileSync(join(out, 'phone/index.html'), 'utf8'), 'the two addresses still serve one page');
+    assert.equal(built.replace(/<link rel="modulepreload" href="[^"]+">\n/g, ''), html, 'and nothing else in it changed');
+    assert.match(readFileSync(join(out, '_headers'), 'utf8'), /script-src 'self';/, 'same-origin links, under the same CSP');
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
 });

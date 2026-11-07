@@ -1,18 +1,24 @@
 // /api/relay and /api/funds. The page names a method from a short table, and this builds the transaction itself,
 // with its own gas, against the one contract in its environment: never a free-form relay. Two keys with two
-// nonce rows and two ceilings, so no amount of general traffic can stop a cancel. Logs nothing of a body, an
-// address or a vault. Reads its keys only from the environment, and has no default for any of them.
+// nonce rows and two ceilings, and general sends stop short of the balance a day of cancels needs, so general
+// traffic cannot spend what a cancel needs. The owner key sends only for vaults this relay made, once per signed call.
+// The owner ceiling is still one ceiling, shared by every vault made here: enough of them can fill it, and so can
+// anyone's real calls on their own. The relay is a convenience, so then a cancel goes from any account, and the refusal
+// says how. Logs nothing of a body, an address or a vault. Reads its keys only from the environment, and has no
+// default for any of them.
 import { fromHex, toHex } from '../../../tools/lib/bytes.mjs';
 import { argBytes, createDigest, intentDigest, SPEND_TAG } from '../../../tools/lib/intent.mjs';
 import { vaultIdOfCreateArgs } from '../../lib/intents.mjs';
 import { callAction, milliNear } from '../../lib/near-tx.mjs';
 import { NearReader } from '../../lib/near-read.mjs';
 import { checkPow } from '../../lib/pow.mjs';
-import { CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, executeTgas, GENERAL, OWNER, RELAY_METHODS, relayBodyProblem } from '../../lib/relay-table.mjs';
+import {
+  CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, executeTgas, GENERAL, OWN_ACCOUNT_PATH, OWNER, OWNER_FLOOR_YOCTO, ownerReserveYocto, ownerRunwayDays, RELAY_METHODS, relayBodyProblem,
+} from '../../lib/relay-table.mjs';
 import { ed25519Verifies, hashIp, json, numberOr, readBody, Refusal, refused, workerFetch } from './answer.mjs';
 import { fundsHandler, fundsStatus } from './funds.mjs';
 import { NearSender, relayKey } from './near-send.mjs';
-import { ownerRefusal } from './owner-check.mjs';
+import { ownerCallKey, ownerQuickRefusal, ownerRefusal } from './owner-check.mjs';
 import { StateClient, StateDown } from './state-client.mjs';
 
 const DEFAULT_CEILINGS = { general: 600_000, owner: CEILING_OWNER_DEFAULT_MICRO };
@@ -23,8 +29,21 @@ const KEY_CACHE_MS = 30_000;
 // A status read must stay well inside the page's 8 s wait: a dead RPC here must not read as a dead relay.
 const KEY_READ_MS = 1500;
 // Under this a send can't be paid for: a 30 Tgas send holds about 0.031 NEAR until its refund lands.
-const KEY_FLOOR_YOCTO = 50_000_000_000_000_000_000_000n;
+const KEY_FLOOR_YOCTO = OWNER_FLOOR_YOCTO;
 const STORAGE_YOCTO_PER_BYTE = 10_000_000_000_000_000_000n;
+// What a send holds of the balance until its refund lands, measured: 30.92 mN at 30 Tgas, 40.92 at 40. Plus its deposit.
+const HOLD_YOCTO_PER_TGAS = 1_000_000_000_000_000_000_000n;
+const HOLD_YOCTO_BASE = 1_000_000_000_000_000_000_000n;
+const holdYocto = (tgas, deposit = 0n) => BigInt(tgas) * HOLD_YOCTO_PER_TGAS + HOLD_YOCTO_BASE + deposit;
+const createHold = () => holdYocto(RELAY_METHODS.create_vault.tgas + RELAY_METHODS.create_vault.heartbeatTgas, milliNear(RELAY_METHODS.create_vault.depositMilli));
+const executeHold = (inputs, instance) => holdYocto(executeTgas(inputs, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas }));
+// Status calls general up only when a new vault, which is what a page offers on it, and an execute of this many
+// inputs both fit above the owner key's reserve. These are the sums reserveCheck makes on each send, so the two agree.
+// A bigger execute is decided by its own send, which reads its input count first.
+const STATUS_EXECUTE_INPUTS = 4;
+// What scripts/go-live/10-deploy-instance.mjs sets, for a status that could not read the instance in time.
+const DEFAULT_GAS = { sign_tgas: 30, callback_tgas: 10 };
+const NOT_THIS_RELAYS = `this relay sends cancels only for vaults it made. ${OWN_ACCOUNT_PATH}`;
 const CANNOT_PAY = /NotEnoughAllowance|NotEnoughBalance|LackBalanceForState|AccessKeyNotFound|InvalidAccessKeyError/;
 // The relay's clock against the chain's. The contract decides at the edge.
 const EXPIRY_GRACE_MS = 60_000;
@@ -96,44 +115,88 @@ class Relay {
 
   // ------------------------------------------------------------ status
 
-  /** Null, or why the owner key cannot pay for a send. A read that fails claims nothing. */
+  /** The account's balance less what its storage locks, or null when the answer has no balance. */
+  static freeOf(account) {
+    if (!account || account.nodeError || account.error || account.amount === undefined) return null;
+    return BigInt(account.amount) - BigInt(account.storage_usage ?? 0) * STORAGE_YOCTO_PER_BYTE;
+  }
+
+  /** `{ why, free }`: null or why the owner key cannot pay for a send, and the free balance. A failed read claims nothing. */
   async readOwnerKey() {
     let key;
     try {
       key = await relayKey(this.keyText(OWNER), this.account);
     } catch {
-      return 'relay_not_configured';
+      return { why: 'relay_not_configured', free: null };
     }
     const sender = this.sender({ callTimeoutMs: KEY_READ_MS });
     const [access, account] = await Promise.all([
       sender.ask('query', { request_type: 'view_access_key', account_id: this.account, public_key: key.publicKey, finality: 'optimistic' }),
       sender.ask('query', { request_type: 'view_account', account_id: this.account, finality: 'optimistic' }),
     ]);
-    if (access.nodeError || access.error || account.nodeError || account.error) return 'owner_key_missing';
+    const free = Relay.freeOf(account);
+    if (access.nodeError || access.error || account.nodeError || account.error) return { why: 'owner_key_missing', free };
     const allowance = access.permission?.FunctionCall?.allowance;
-    if (allowance !== undefined && allowance !== null && BigInt(allowance) < KEY_FLOOR_YOCTO) return 'owner_key_low';
-    if (account.amount !== undefined && BigInt(account.amount) - BigInt(account.storage_usage ?? 0) * STORAGE_YOCTO_PER_BYTE < KEY_FLOOR_YOCTO) return 'owner_key_low';
-    return null;
+    if (allowance !== undefined && allowance !== null && BigInt(allowance) < KEY_FLOOR_YOCTO) return { why: 'owner_key_low', free };
+    if (free !== null && free < KEY_FLOOR_YOCTO) return { why: 'owner_key_low', free };
+    return { why: null, free };
   }
 
-  async ownerKeyProblem() {
+  /** `{ why, free }`, cached. A read that times out or fails keeps what was known. */
+  async ownerKey() {
     const now = this.nowFn();
-    if (this.keyCacheMs && this.keyCache && now - this.keyCache.at < this.keyCacheMs) return this.keyCache.why;
-    let why = this.keyCache?.why ?? null;
+    if (this.keyCacheMs && this.keyCache && now - this.keyCache.at < this.keyCacheMs) return this.keyCache;
+    let { why = null, free = null } = this.keyCache ?? {};
     let timer;
     try {
       const out = await Promise.race([
         this.readOwnerKey(),
         new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), KEY_READ_MS + 500); }),
       ]);
-      if (out !== undefined) why = out;
+      if (out !== undefined) ({ why, free } = out);
     } catch {
       // Nothing was learned, so nothing changes.
     } finally {
       clearTimeout(timer);
     }
-    this.keyCache = { why, at: now };
-    return why;
+    this.keyCache = { why, free, at: now };
+    return this.keyCache;
+  }
+
+  /**
+   * What general sends must leave on the account for the owner key. It holds against general traffic only: owner
+   * sends are not checked against it, so they drain it, and only a top-up refills it.
+   */
+  get ownerReserve() {
+    return ownerReserveYocto(this.ceilings.owner);
+  }
+
+  /** The instance's gas settings for status, as far as a short read gets them: a slow RPC leaves the last known. */
+  async statusGas() {
+    let timer;
+    try {
+      const value = await Promise.race([
+        this.instance(this.reader()),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), KEY_READ_MS + 500); }),
+      ]);
+      return value ?? this.instanceCache?.value ?? DEFAULT_GAS;
+    } catch {
+      return this.instanceCache?.value ?? DEFAULT_GAS;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Null when general sends fit above the owner key's reserve, else what status says: relay_reserve, and calls_fit when
+   * a proposal and a one-input execute still fit, so a page mid-film does not say it can't send.
+   */
+  reserveStatus(free, gas) {
+    if (free === null) return null;
+    const fits = (hold) => free - hold >= this.ownerReserve;
+    if (fits(createHold()) && fits(executeHold(STATUS_EXECUTE_INPUTS, gas))) return null;
+    const callsFit = fits(holdYocto(RELAY_METHODS.propose_btc.tgas)) && fits(executeHold(1, gas));
+    return { up: false, why: 'relay_reserve', ...(callsFit ? { calls_fit: true } : {}) };
   }
 
   async readStatus() {
@@ -156,21 +219,29 @@ class Relay {
     const read = await this.readStatus();
     const owner = { up: true, why: null, degraded: false, resets_at: null };
     const general = { up: true, why: null, resets_at: null };
-    if (!this.keyText(OWNER)) Object.assign(owner, { up: false, why: 'relay_not_configured' });
+    let free = null;
+    const [key, gas] = await Promise.all([this.keyText(OWNER) ? this.ownerKey() : null, this.statusGas()]);
+    if (!key) Object.assign(owner, { up: false, why: 'relay_not_configured' });
     else {
-      const problem = await this.ownerKeyProblem();
-      if (problem) Object.assign(owner, { up: false, why: problem });
+      free = key.free ?? null;
+      if (key.why) Object.assign(owner, { up: false, why: key.why });
     }
     if (!this.bucketConfigured(GENERAL)) Object.assign(general, { up: false, why: 'relay_not_configured' });
+    // A new vault or a typical execute would eat into what the owner key keeps for cancels.
+    else Object.assign(general, this.reserveStatus(free, gas));
+    const callsCost = RELAY_METHODS.propose_btc.costMicro + RELAY_METHODS.execute.costMicro;
     if (read === null) {
       if (owner.up) owner.degraded = true;
       if (general.up) Object.assign(general, { up: false, why: 'state_store_down' });
+      // Nothing general goes out with the state store down.
+      delete general.calls_fit;
     } else {
+      if (general.calls_fit && read.spent.general + callsCost > this.ceilings.general) delete general.calls_fit;
       if (owner.up && read.spent.owner + RELAY_METHODS.cancel_all_and_rotate.costMicro > this.ceilings.owner) Object.assign(owner, { up: false, why: 'daily_ceiling', resets_at: read.resets_at });
       // Up means a new vault still fits: making one is what a page offers on this. `charge` decides each call.
       if (general.up && read.spent.general + RELAY_METHODS.create_vault.costMicro > this.createCeiling()) {
         // A vault no longer fits, but one proposal and its execute may. A page mid-film must not say it can't send.
-        const callsFit = read.spent.general + RELAY_METHODS.propose_btc.costMicro + RELAY_METHODS.execute.costMicro <= this.ceilings.general;
+        const callsFit = read.spent.general + callsCost <= this.ceilings.general;
         Object.assign(general, { up: false, why: 'daily_ceiling', resets_at: read.resets_at }, callsFit ? { calls_fit: true } : null);
       }
     }
@@ -181,6 +252,9 @@ class Relay {
       pow_bits: this.powBits,
       owner,
       general,
+      // Days of a full owner ceiling the free balance above the floor still pays for. Owner sends spend it, nothing
+      // here refills it, and general sends stop at 1. Null when the balance could not be read.
+      owner_runway_days: ownerRunwayDays(free, this.ceilings.owner),
       funds: fundsStatus(this, read),
     });
   }
@@ -203,8 +277,26 @@ class Relay {
       if (!(await ed25519Verifies(fromHex(args.k_s), fromHex(args.pop_s), digest))) throw new Refusal('would_refuse', { message: 'that creation is not signed by its spend key' });
     }
     if (spec.key === OWNER) {
-      const problem = await ownerRefusal({ method, args, contract: this.contract, now: this.nowFn(), read: (name, a) => reader.view(this.contract, name, a) });
+      const quick = ownerQuickRefusal({ method, args, contract: this.contract, now: this.nowFn() });
+      if (quick) throw new Refusal('assertion_refused', { message: quick });
+      // Anyone can make vaults straight on the contract, as many as they like, and fill the owner ceiling with them.
+      const made = await this.madeRow(args.vault);
+      if (made === null) throw new Refusal('not_this_relays', { message: NOT_THIS_RELAYS });
+      const { problem, checked } = await ownerRefusal({ method, args, contract: this.contract, now: this.nowFn(), made, read: (name, a) => reader.view(this.contract, name, a) });
       if (problem) throw new Refusal('assertion_refused', { message: problem });
+      return { checked, call: ownerCallKey(method, args) };
+    }
+    return null;
+  }
+
+  /** What this relay kept when it made `vault`: its row, null if it made no such vault, undefined with the store down. */
+  async madeRow(vault) {
+    if (!this.state) return undefined;
+    try {
+      return (await this.state.call('madeVault', { vault })).row ?? null;
+    } catch (err) {
+      if (err instanceof StateDown) return undefined;
+      throw err;
     }
   }
 
@@ -227,6 +319,7 @@ class Relay {
       case 'create_vault': {
         const vault = toHex(vaultIdOfCreateArgs(this.contract, args));
         if ((await view('vault', { vault })) !== null) throw new Refusal('would_refuse', { message: 'that vault exists' });
+        charged.hold = createHold();
         return [
           callAction('create_vault', { args }, spec.tgas, milliNear(spec.depositMilli)),
           callAction('heartbeat', { vault }, spec.heartbeatTgas),
@@ -242,6 +335,7 @@ class Relay {
       case 'execute': return this.executeChecks(args, view, reader, charged);
       default:
     }
+    charged.hold = holdYocto(spec.tgas);
     return [callAction(method, args, spec.tgas)];
   }
 
@@ -278,6 +372,7 @@ class Relay {
     }
     await this.chargeInputs(args, request.inputs.length, charged);
     const tgas = executeTgas(request.inputs.length, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
+    charged.hold = executeHold(request.inputs.length, instance);
     return [callAction('execute', args, tgas)];
   }
 
@@ -300,13 +395,17 @@ class Relay {
     return { degraded: true };
   }
 
-  /** Returns { ok, degraded }. A cancel goes out even with the state store down; nothing else does. */
-  async charge(method, args, request) {
+  /**
+   * Returns { degraded, ticket }. A cancel goes out even with the state store down; nothing else does. `ownerCall`
+   * is what refuseBeforeCharge found: whether the signature was checked, and the call's own row.
+   */
+  async charge(method, args, request, ownerCall = null) {
     const spec = RELAY_METHODS[method];
     const owner = spec.key === OWNER;
     const ceiling = method === 'create_vault' ? this.createCeiling() : this.ceilings[spec.key];
     const body = { key: spec.key, method, vault: args.vault ?? null, now: this.nowFn(), ceiling };
     if (!owner) body.ipHash = await hashIp(this.env.IP_SALT, request.headers.get('cf-connecting-ip'));
+    else Object.assign(body, { checked: ownerCall?.checked !== false, call: ownerCall?.call ?? null });
     let out;
     try {
       out = await this.state.call('charge', body);
@@ -320,13 +419,23 @@ class Relay {
     }
     if (!out.ok) {
       throw new Refusal(out.code, {
-        message: out.code === 'daily_ceiling' ? `the ${out.bucket} key is at today's limit` : 'too many calls',
+        message: owner ? Relay.ownerWords(out) : out.code === 'daily_ceiling' ? `the ${out.bucket} key is at today's limit` : 'too many calls',
         retryAfterS: out.retry_after_s ?? null,
         bucket: out.bucket ?? null,
         resetsAt: out.resets_at ?? null,
       });
     }
-    return { degraded: false };
+    return { degraded: false, ticket: out.ticket ?? null };
+  }
+
+  /** A refused owner call says, in plain words, why, and how to cancel without this relay. */
+  static ownerWords(out) {
+    if (out.code === 'not_this_relays') return NOT_THIS_RELAYS;
+    if (out.code === 'already_sent') return 'this relay already sent that signed call once. Read the vault, and if it still needs a cancel, sign a new one.';
+    if (out.code === 'daily_ceiling') return `the ${out.bucket} key is at today's limit, which calls on every vault this relay made count against. ${OWN_ACCOUNT_PATH}`;
+    if (out.unchecked) return `the relay can't read this vault right now, and sends only a few calls it can't check. ${OWN_ACCOUNT_PATH}`;
+    if (out.code === 'rate_limited') return `too many calls on this vault. ${OWN_ACCOUNT_PATH}`;
+    return out.code;
   }
 
   /** With the state store down only this isolate can count, and that is still better than no limit on the owner key. */
@@ -341,9 +450,47 @@ class Relay {
     if (seen > spec.perVaultMinute) throw new Refusal('rate_limited', { message: 'too many calls', retryAfterS: 60 });
   }
 
-  async refund(method, units = 1) {
+  /**
+   * Gives back what a call was charged. `sendFailed` means the transaction never reached the chain, so the per-vault
+   * counts, the owner call's row and a vault row this call wrote come back as well. A per-IP count stays.
+   */
+  async refund(method, charged, { sendFailed = false } = {}) {
     const spec = RELAY_METHODS[method];
-    await this.state?.call('refund', { bucket: spec.key, cost: spec.costMicro * units, now: this.nowFn() }).catch(() => {});
+    const ticket = charged.ticket ? { ...charged.ticket, made: charged.made ?? null } : null;
+    await this.state?.call('refund', { bucket: spec.key, cost: spec.costMicro * charged.units, now: this.nowFn(), ticket, counters: sendFailed }).catch(() => {});
+  }
+
+  /**
+   * Both keys spend one account's balance. A general send that would leave less than the owner key's reserve is
+   * refused, so general traffic never takes what a day of cancels needs. A read that fails claims nothing.
+   */
+  async reserveCheck(charged) {
+    let account;
+    try {
+      account = await this.sender({ callTimeoutMs: KEY_READ_MS }).ask('query', { request_type: 'view_account', account_id: this.account, finality: 'optimistic' });
+    } catch {
+      return;
+    }
+    const free = Relay.freeOf(account);
+    if (free === null) return;
+    if (free - (charged.hold ?? holdYocto(0)) < this.ownerReserve) {
+      throw new Refusal('relay_reserve', { message: 'the relay is keeping what is left on its account for cancels, so it sends nothing else until someone tops it up' });
+    }
+  }
+
+  /** The vault a create_vault is about to make, so its owner gets the owner key and its test coins. */
+  async recordMade(args, charged) {
+    const vault = toHex(vaultIdOfCreateArgs(this.contract, args));
+    let out;
+    try {
+      out = await this.state.call('made', { vault, passkey: args.passkey.pubkey, k_e_intent: args.k_e_intent, now: this.nowFn() });
+    } catch {
+      throw new Refusal('state_store_down', { message: 'the state store is not answering' });
+    }
+    if (!out.ok) throw new Refusal('bad_request', { message: 'that vault cannot be recorded' });
+    // Two sends of one create: the second sends nothing, so the row stays with the send that can land.
+    if (out.busy) throw new Refusal('already_sent', { message: 'this relay is sending that create_vault now. Read the vault in a moment.' });
+    if (out.made) charged.made = vault;
   }
 
   /** A heartbeat makes a vault read guard online, so it answers only to the one holding this binding. */
@@ -372,14 +519,19 @@ class Relay {
       throw new Refusal('relay_not_configured', { message: 'this key cannot be read' });
     }
     const reader = this.reader();
-    await this.refuseBeforeCharge(method, args, body, reader);
-    const { degraded } = this.state ? await this.charge(method, args, request) : this.chargeWithoutState(args, spec);
-    const charged = { units: 1 };
+    const ownerCall = await this.refuseBeforeCharge(method, args, body, reader);
+    const { degraded, ticket = null } = this.state ? await this.charge(method, args, request, ownerCall) : this.chargeWithoutState(args, spec);
+    const charged = { units: 1, ticket };
     let actions;
     try {
-      actions = spec.key === OWNER ? [callAction(method, args, spec.tgas)] : await this.chainChecks(method, args, reader, charged);
+      if (spec.key === OWNER) actions = [callAction(method, args, spec.tgas)];
+      else {
+        actions = await this.chainChecks(method, args, reader, charged);
+        await this.reserveCheck(charged);
+        if (method === 'create_vault') await this.recordMade(args, charged);
+      }
     } catch (err) {
-      await this.refund(method, charged.units);
+      await this.refund(method, charged);
       throw err;
     }
     const sender = this.sender();
@@ -387,8 +539,9 @@ class Relay {
     try {
       sent = await this.withNonces(sender, key, actions, spec.key === OWNER && !degraded, degraded);
     } catch (err) {
-      if (err instanceof Refusal && err.code !== 'relay_not_configured' && !degraded) await this.refund(method, charged.units);
-      if (spec.key === OWNER && err instanceof Refusal && err.code === 'tx_refused' && CANNOT_PAY.test(err.verbatim ?? '')) this.keyCache = { why: 'owner_key_low', at: this.nowFn() };
+      // Every Refusal here means the chain never had the transaction: it was never signed, or a node refused it.
+      if (!degraded && (err instanceof StateDown || (err instanceof Refusal && err.code !== 'relay_not_configured'))) await this.refund(method, charged, { sendFailed: true });
+      if (spec.key === OWNER && err instanceof Refusal && err.code === 'tx_refused' && CANNOT_PAY.test(err.verbatim ?? '')) this.keyCache = { why: 'owner_key_low', free: this.keyCache?.free ?? null, at: this.nowFn() };
       if (err instanceof StateDown) throw new Refusal('state_store_down', { message: 'the state store is not answering' });
       throw err;
     }

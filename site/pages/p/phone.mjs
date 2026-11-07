@@ -12,7 +12,9 @@ import { fromHex, toHex } from '/tools/lib/bytes.mjs';
 import { randomBytes } from '/tools/lib/crypto.mjs';
 import { buildRecovery } from '/tools/lib/recovery.mjs';
 import { runH7 } from './h7.mjs';
+import { runOperatorCheck } from './operator-check.mjs';
 import { ClockFace, h, hashBlock, satsText, screen, setState, show, sumInputs } from './kit.mjs';
+import { OWN_PATH_LINE, ownCancelFile, ownCancelFileName, ownCancelWords, relayIsWhy, relayRefusedIt } from './own-cancel.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
 import { parsePhoneFragment, recallCredential, recallSeen, rememberCredential, rememberSeen, writeFragment } from './phone-fragment.mjs';
 import { openElsewhere, passkeyProblem, problemWords, screenAwake, sensePasskeys } from './sense.mjs';
@@ -42,6 +44,8 @@ const P = {
   credential: null, credentialTrusted: false, blocked: false, rpBad: false, frozenText: null, stampLive: false, coinStill: false, coinCheckedAt: 0,
   coinFacts: new Map(), coinFactsAt: 0, coinsDown: false, tooLateTxid: null, tooLateUnsent: false, finalAt: 0, face: null, skewAt: 0, statusAt: 0, timer: null, touch: null, seed: null, cold: null,
   balance: null, fundedTxid: null, stopped: false, sheetNote: null, hang: false, tx: null, txSent: null, ksSeen: null, frozenBy: {}, pin: null,
+  // A cancel this page signed and the relay did not send, for tools/cancel.mjs. And whether this relay refused this vault.
+  signed: null, notOurs: false,
 };
 let ctx;
 
@@ -68,6 +72,12 @@ async function main() {
     ctx.credentials = await credentialsFor(config, { browser, soft: config.softPasskey ? { secret: randomBytes(32), origin: location.origin } : null });
   } catch {
     ctx.credentials = null;
+  }
+  // Needs no contract and no relay: the contract this config names may already be gone when a deploy asks for it.
+  const asked = parsePhoneFragment(location.hash);
+  if (asked.opproof && asked.opfor) {
+    runOperatorCheck(ctx, { nonce: asked.opproof, instance: asked.opfor });
+    return;
   }
   P.relay = await ctx.relay.status();
   P.statusAt = Date.now();
@@ -313,7 +323,7 @@ function judge() {
       if (P.tap) render(P.tap.phase);
       else {
         P.button = cancelButton({
-          state: s, relay: P.relay, passkey: passkeyState(), originAllowed: ctx.instance.origins.includes(location.origin),
+          state: s, relay: P.notOurs ? { ...P.relay, owner: { up: false, why: 'not_this_relays' } } : P.relay, passkey: passkeyState(), originAllowed: ctx.instance.origins.includes(location.origin),
           frozen: vault.frozen_until !== null && vault.frozen_until > chainNow(),
         });
         if (P.button.show) ensurePrep();
@@ -453,12 +463,13 @@ async function readBalance() {
 
 // ---------------------------------------------------------------- the tap
 
-function onCancelTap() {
+/** `own`: sign the cancel for tools/cancel.mjs, and send nothing to the relay. */
+function onCancelTap(own = false) {
   if (P.tap || !P.vault) return;
   const prep = ensurePrep();
   P.notice = null;
   P.hang = false;
-  P.tap = { phase: 'tapped', sentAt: null };
+  P.tap = { phase: 'tapped', sentAt: null, own: own === true };
   window.undoTimings = { tap: performance.now(), touch: P.touch, assertion: null, sent: null, included: null, readCancelled: null, sForm: null, sheet: null };
   // Straight to the browser: no await may come before this, or iOS Safari drops the gesture.
   const asking = askAssertion(ctx, { digest: prep.digest, credentialId: P.credential, onHang: () => { P.hang = true; render(P.tap?.phase ?? P.screen, true); } });
@@ -504,6 +515,15 @@ async function finishTap(asking, prep) {
     rememberCredential(P.v, credentialB64());
     saveFragment({ c: credentialB64() });
   }
+  const callArgs = rotateArgs({ vaultHex: P.v, newKs: prep.newKs, nonce: prep.nonce, expiresAt: prep.expiresAt, assertion: assertion.args });
+  if (P.tap.own) {
+    P.tap = null;
+    P.prep = null;
+    P.signed = { method: 'cancel_all_and_rotate', args: callArgs, expiresAt: prep.expiresAt };
+    P.notice = { say: 'Signed. This page sent it nowhere.', words: null };
+    judge();
+    return;
+  }
   P.tap.phase = 'sending';
   P.tap.sentAt = Date.now();
   render('sending');
@@ -512,9 +532,9 @@ async function finishTap(asking, prep) {
   P.txSent = true; // Holds the hash's slot on the stamp, if the stamp lands before the relay answers.
   let sent;
   try {
-    sent = await ctx.relay.call('cancel_all_and_rotate', rotateArgs({ vaultHex: P.v, newKs: prep.newKs, nonce: prep.nonce, expiresAt: prep.expiresAt, assertion: assertion.args }));
+    sent = await ctx.relay.call('cancel_all_and_rotate', callArgs);
   } catch (err) {
-    onRelayRefused(err);
+    onRelayRefused(err, { method: 'cancel_all_and_rotate', args: callArgs, expiresAt: prep.expiresAt });
     return;
   }
   timings.included = performance.now();
@@ -553,11 +573,14 @@ function onTapFailed(err) {
   judge();
 }
 
-function onRelayRefused(err) {
+/** `signed` is the call the relay was given. When the relay, not the cancel, was the problem, the page keeps it. */
+function onRelayRefused(err, signed = null) {
   P.tap = null;
   P.prep = null;
   P.txSent = null;
   if (err instanceof RelayRefused) {
+    if (signed && relayRefusedIt(err.code)) P.signed = signed;
+    if (err.code === 'not_this_relays') P.notOurs = true;
     if (err.code === 'relay_down') P.relay = { ...P.relay, reachable: false, owner: { up: false, why: 'relay_down' } };
     else if (err.code === 'daily_ceiling') P.relay = { ...P.relay, owner: { up: false, why: 'daily_ceiling', resets_at: err.resetsAt } };
     else if (err.code === 'rate_limited') P.notice = { warn: true, say: `Not cancelled. Too many tries on this vault. Wait ${err.retryAfterS ?? 10} s and tap again.`, words: null };
@@ -635,11 +658,39 @@ const NO_BUTTON_WORDS = {
   owner_key_missing: 'The relay\'s key can\'t pay for a cancel right now, so this page can\'t send one.',
   relay_not_configured: 'The relay is not set up, so this page can\'t send a cancel.',
   daily_ceiling: 'The relay hit today\'s limit.',
+  not_this_relays: 'This relay sends cancels only for vaults it made.',
   no_passkey_here: 'This phone doesn\'t hold this vault\'s passkey.',
   origin_not_allowed: 'This page isn\'t allowed to cancel for this vault.',
   wrong_site_for_passkey: 'This page isn\'t allowed to cancel for this vault.',
   frozen: 'The cold key has frozen this vault.',
 };
+
+/** The signed call this page holds, while the contract would still take it. */
+function heldSigned() {
+  if (P.signed && P.signed.expiresAt <= chainNow()) P.signed = null;
+  return P.signed;
+}
+
+function ownCancelNodes() {
+  const held = heldSigned();
+  if (!held) return null;
+  return [
+    h('p', { class: 'small', id: 'own-path' }, ownCancelWords({ expiresAt: held.expiresAt, vaultHex: P.v })),
+    h('button', { class: 'go quiet', type: 'button', id: 'save-cancel', onclick: saveSigned }, 'Save the signed cancel'),
+  ];
+}
+
+function saveSigned() {
+  const held = heldSigned();
+  if (!held) return;
+  const text = ownCancelFile({ contract: ctx.config.contract, method: held.method, args: held.args });
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  const link = h('a', { href: url, download: ownCancelFileName(P.v) });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
 
 function noButtonWords() {
   const { why } = P.button;
@@ -776,18 +827,23 @@ const drawers = {
     const under = s.kind === 'unlocked' ? h('p', { class: 'notice', id: 'at-zero' }, 'Anyone can send it now. Cancel works until they do.') : null;
     return [
       askedBlock(P.lastKnown), h('div', { class: 'grow' }), clockBlock(s), under, noticeNodes(), h('div', { class: 'grow' }),
-      h('button', { id: 'cancel', type: 'button', onclick: onCancelTap }, 'Cancel'),
+      ownCancelNodes(),
+      h('button', { id: 'cancel', type: 'button', onclick: () => onCancelTap() }, 'Cancel'),
     ];
   },
   no_button() {
     const words = noButtonWords();
     const showTool = P.button.why !== 'not_cancellable';
     const retry = P.blocked ? h('button', { class: 'go quiet', type: 'button', id: 'retry-passkey', onclick: () => { P.blocked = false; judge(); } }, 'Try the passkey again') : null;
+    // The relay is the only thing in the way, and this phone holds the passkey: sign it here, send it from any account.
+    const signHere = !heldSigned() && relayIsWhy(P.button.why) && passkeyState().canAssert && passkeyState().rpMatches && ctx.instance.origins.includes(location.origin);
     return [
       askedBlock(P.lastKnown), clockBlock(P.rs), noticeNodes(), h('div', { class: 'grow' }),
       h('p', { class: 'say', id: 'why', 'data-why': P.button.why }, words),
       resetLine() ? h('p', { class: 'line' }, resetLine()) : null,
-      showTool ? h('p', { class: 'small', id: 'tool' }, 'If you hold this vault\'s recovery file, any NEAR testnet account can send the cancel: tools/freeze.mjs --method cancel') : null,
+      ownCancelNodes(),
+      showTool && !heldSigned() ? h('p', { class: 'small', id: 'tool' }, relayIsWhy(P.button.why) ? OWN_PATH_LINE : 'If you hold this vault\'s recovery file, any NEAR testnet account can send the cancel: tools/freeze.mjs --method cancel') : null,
+      signHere ? h('button', { class: 'go quiet', type: 'button', id: 'sign-own', onclick: () => onCancelTap(true) }, 'Sign a cancel to send yourself') : null,
       retry,
     ];
   },
@@ -862,7 +918,7 @@ const drawers = {
 
 function render(id, force = false) {
   const asked = P.lastKnown && P.vault ? `${P.r}|${coinWords(P.lastKnown)}|${P.moreWaiting}|${P.alreadySigned}|${keyIsStopped()}|${needsThatPhone()}|${nodeLooksStuck()}|${P.txSent}|${P.tooLateUnsent}` : '';
-  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.readWords}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}`;
+  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.readWords}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}|${heldSigned()?.expiresAt ?? ''}`;
   if (!force && key === P.renderKey) return;
   P.renderKey = key;
   P.screen = id;
@@ -895,6 +951,7 @@ function drawNoVault(words = null) {
 function generalDownWords() {
   const why = P.relay.general?.why;
   if (why === 'daily_ceiling') return 'The relay hit today\'s limit, so this page can\'t make a vault right now.';
+  if (why === 'relay_reserve') return 'The relay is keeping what it has left for cancels, so this page can\'t make a vault right now.';
   return 'The relay is down, so this page can\'t make a vault right now.';
 }
 

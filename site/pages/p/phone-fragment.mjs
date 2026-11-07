@@ -2,21 +2,20 @@
 // parser. These are the page's own, and they are just as strict. No field here is a key of anything that holds a coin:
 // `k` is only written in the test mode, whose vault holds made-up coins.
 //
-// Anyone can write a link, so nothing a screen claims about a request lives in the fragment. `r` is only a place to
-// look, and what this page saw and sent stays in sessionStorage, which a link cannot write.
+// Anyone can write a link, so nothing a screen claims lives in the fragment. `r` is only a place to look, and what
+// this page saw and sent stays in sessionStorage, which a link cannot write. That holds for the test mode's report
+// too: the tries, the passkey flags and the operator passkey it made are kept there, never in the link.
 import { parseFragment } from '/site/lib/index.mjs';
+
+const CREDENTIAL_ID = /^[A-Za-z0-9_-]{1,512}$/;
 
 const EXTRA = {
   h7: /^1$/,                                // test mode
-  op: /^(02|03)[0-9a-f]{64}$/,              // test mode: the operator passkey's public key. It cannot be asked for twice
-  opc: /^[A-Za-z0-9_-]{1,512}$/,            // test mode: its credential id
-  log: /^[A-Za-z0-9.~_-]{0,4000}$/,         // test mode: what each tap did
-  q: /^[a-z]{0,8}\.?[a-z]{0,8}$/,           // test mode: the two answers only a person can give
-  aw: /^(on|refused|none)$/,                 // test mode: whether the screen could be kept on
-  pk: /^[a-z0-9.]{0,16}$/,                  // test mode: the first passkey's backup flags and the proof tap's S form
+  opproof: /^[0-9a-f]{64}$/,                // operator check: the deploy's fresh nonce
+  opfor: /^[a-z0-9][a-z0-9._-]{1,62}[a-z0-9]$/, // operator check: the instance the deploy will create
 };
 
-const ORDER = ['h7', 'v', 'r', 'c', 'k', 'to', 'pk', 'aw', 'log', 'op', 'opc', 'q'];
+const ORDER = ['h7', 'v', 'r', 'c', 'k', 'to', 'opproof', 'opfor'];
 
 export function parsePhoneFragment(hash) {
   const out = parseFragment(hash);
@@ -51,6 +50,40 @@ export function writeFragment(fields, win = globalThis) {
 
 const STORE_PREFIX = 'undo.passkey.';
 const SEEN_PREFIX = 'undo-phone:';
+const H7_KEY = 'undo-h7';
+const H7_FIELDS = {
+  v: /^[0-9a-f]{64}$/,                      // the test vault this tab made
+  op: /^(02|03)[0-9a-f]{64}$/,              // the operator passkey this tab made. It cannot be asked for twice
+  opc: CREDENTIAL_ID,                       // its credential id
+  log: /^[A-Za-z0-9.~_-]{0,4000}$/,         // what each tap did, read back from the contract
+  q: /^[a-z]{0,8}\.?[a-z]{0,8}$/,           // the two answers only a person can give
+  aw: /^(on|refused|none)$/,                 // whether the screen could be kept on
+  pk: /^[a-z0-9.]{0,16}$/,                  // the first passkey's backup flags and the proof tap's S form
+};
+
+/** What this tab's test run made and saw. Only what this tab wrote, so a link cannot put words in the report. */
+export function recallH7(win = globalThis) {
+  let raw;
+  try {
+    raw = JSON.parse(win.sessionStorage.getItem(H7_KEY) ?? 'null');
+  } catch {
+    return {};
+  }
+  const out = {};
+  for (const [name, rule] of Object.entries(H7_FIELDS)) if (typeof raw?.[name] === 'string' && rule.test(raw[name])) out[name] = raw[name];
+  return out;
+}
+
+export function rememberH7(value, win = globalThis) {
+  const out = {};
+  for (const name of Object.keys(H7_FIELDS)) if (typeof value?.[name] === 'string' && value[name] !== '') out[name] = value[name];
+  try {
+    win.sessionStorage.setItem(H7_KEY, JSON.stringify(out));
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** What this tab saw of a vault's requests and sent itself: { seen, tx, frozen, ks }. Absent in a private window. */
 export function recallSeen(vaultHex, win = globalThis) {
@@ -86,7 +119,7 @@ export function rememberCredential(vaultHex, credentialB64, win = globalThis) {
 export function recallCredential(vaultHex, win = globalThis) {
   try {
     const value = win.localStorage.getItem(STORE_PREFIX + vaultHex);
-    return value && EXTRA.opc.test(value) ? value : null;
+    return value && CREDENTIAL_ID.test(value) ? value : null;
   } catch {
     return null;
   }

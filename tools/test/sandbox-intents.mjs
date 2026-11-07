@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from '../lib/args.mjs';
 import { p2wshAddress } from '../lib/btc.mjs';
-import { fromHex, toHex } from '../lib/bytes.mjs';
+import { base58Encode, fromHex, toHex } from '../lib/bytes.mjs';
 import { randomBytes } from '../lib/crypto.mjs';
 import { signSecp } from '../lib/intent.mjs';
 import { action, failureOf, keyFromSecret, loadKeyFile, milliNear, NEAR, Near, returnValue, TGAS } from '../lib/near.mjs';
@@ -124,10 +124,20 @@ async function main() {
     const leafSigned = await near.sendAndWait(relay, undo.accountId, [action.call('cancel', { ...intent.args, auth: { Cold: toHex(signSecp(leafDigest, keys.leaf.secret)) } }, 40n * TGAS, 0n)]);
     check('control: the leaf key cannot cancel', refused(leafSigned.result, 'bad K_e signature'), failureOf(leafSigned.result));
 
-    const relayed = await near.sendAndWait(relay, undo.accountId, [action.call('cancel', intent.args, 40n * TGAS, 0n)]);
-    check('a cancel signed offline by freeze.mjs and relayed by a stranger is accepted', !failureOf(relayed.result), failureOf(relayed.result));
+    // A stranger relays it with tools/cancel.mjs, from their own account, with no relay at all. Its own account, so
+    // this process's nonce for the relay's key stays right.
+    const stranger = await account('stranger', 5);
+    const strangerKey = join(work, 'stranger-key.json');
+    writeFileSync(strangerKey, JSON.stringify({ account_id: stranger.accountId, private_key: `ed25519:${base58Encode(stranger.secret)}` }), { mode: 0o600 });
+    const { NODE_USE_SYSTEM_CA: _ca, ...toolEnv } = process.env;
+    const ownCancel = (file) => spawnSync('node', [join(TOOLS, 'cancel.mjs'), '--file', file, '--account', stranger.accountId, '--key-file', strangerKey, '--rpc', a.rpc, '--yes'], { encoding: 'utf8', env: toolEnv, timeout: 120_000 });
+    const sentOwn = ownCancel(outFile);
+    check('a cancel signed offline by freeze.mjs and sent by a stranger with tools/cancel.mjs is accepted', sentOwn.status === 0 && /The contract took it/.test(sentOwn.stdout), `${sentOwn.stdout}${sentOwn.stderr}`);
+    check('cancel.mjs printed no key', !`${sentOwn.stdout}${sentOwn.stderr}`.includes(base58Encode(stranger.secret)));
     const gone = await near.view(undo.accountId, 'request', { vault: vault.hex, request });
     check('the request is gone', gone === null);
+    const twice = ownCancel(outFile);
+    check('cancel.mjs refuses to send it again, since the request is gone', twice.status === 1 && /is gone/.test(twice.stderr), `${twice.stdout}${twice.stderr}`);
 
     // ---- passkey intents with a software authenticator
     const p = await client.selfSpendArgs(vault, fakeCoins(1, 100_000), 950);

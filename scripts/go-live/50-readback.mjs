@@ -8,7 +8,8 @@
 //   node scripts/go-live/50-readback.mjs --network sandbox --rpc URL --site http://127.0.0.1:PORT --config FILE --live …
 //
 // Checks: GET /api/relay and its headers; view_access_key for the three relay keys; the instance view (and code hash,
-// with --wasm); /undo-config.json against the repo's config; refused POSTs; the CSP and other headers on every page,
+// with --wasm); /undo-config.json against the repo's config; refused POSTs, among them an owner call and a funding for
+// a vault this relay did not make and the shapes the contract cannot parse; the CSP and other headers on every page,
 // equal to what site/build.mjs writes for that config; no source map behind any module a page loads; the landing
 // page's name and chip. A network failure reads SKIP (network), never PASS. Exit 0 only when no line is FAIL or SKIP.
 import { readFileSync } from 'node:fs';
@@ -30,6 +31,8 @@ const ZERO_VAULT = '00'.repeat(32);
 const TIMEOUT_MS = 20_000;
 // What a 30 Tgas owner send can hold until its refund lands: below this a cancel cannot be paid for.
 const KEY_FLOOR = NEAR / 20n;
+// Owner sends spend the relay account's balance and nothing refills it, so a short runway is a top-up to do soon.
+const RUNWAY_WARN_DAYS = 3;
 
 class NetworkSkip extends Error {}
 
@@ -56,9 +59,15 @@ async function http(site, path, { method = 'GET', headers = {}, body } = {}) {
   return { status: res.status, headers: res.headers, text, json };
 }
 
-/** Each refused call: what to send, and the status and codes that count as refused. */
-export function refusals() {
+/**
+ * Each refused call: what to send, and the status and codes that count as refused, and words the answer must hold.
+ * `now` sets the expiry of the calls that must get past it, and `fundsPow` solves the funds proof of work for the
+ * all-zero vault, so those two reach the rule they test.
+ */
+export function refusals({ now = Date.now(), fundsPow = 0 } = {}) {
   const relayPost = (body, extra = {}) => ({ method: 'POST', path: '/api/relay', headers: { 'content-type': 'application/json', ...extra }, body: typeof body === 'string' ? body : JSON.stringify(body) });
+  const later = now + 10 * 60_000;
+  const webauthn = { authenticator_data: '00'.repeat(37), client_data_json: '7b7d', signature: '00'.repeat(64) };
   return [
     { name: 'a browser Origin that is not this site', ...relayPost({ method: 'activate', args: { vault: ZERO_VAULT } }, { origin: 'https://example.com' }), status: 403, codes: ['bad_origin'] },
     { name: 'a method off the list', ...relayPost({ method: 'upgrade_apply', args: {} }), status: 400, codes: ['unknown_method'] },
@@ -67,10 +76,24 @@ export function refusals() {
     { name: 'a body over the cap', ...relayPost(JSON.stringify({ method: 'activate', args: { vault: ZERO_VAULT }, pad: 'x'.repeat(25 * 1024) })), status: 400, codes: ['bad_request'] },
     { name: 'create_vault with no arguments', ...relayPost({ method: 'create_vault', args: {} }), status: 400, codes: ['bad_request'] },
     { name: 'a cold-key cancel on a vault that does not exist', ...relayPost({ method: 'cancel', args: { vault: ZERO_VAULT, request: 0, expires_at: 0, auth: { Cold: '00'.repeat(65) } } }), status: 422, codes: ['assertion_refused', 'would_refuse'] },
+    {
+      name: 'an owner call for a vault this relay did not make',
+      ...relayPost({ method: 'cancel', args: { vault: ZERO_VAULT, request: 0, expires_at: later, auth: { Cold: '00'.repeat(65) } } }),
+      status: 422, codes: ['not_this_relays'], words: ['tools/cancel.mjs', 'tools/freeze.mjs --method cancel'],
+    },
+    { name: 'a WebAuthn assertion with a field the contract does not have', ...relayPost({ method: 'cancel_all_and_rotate', args: { vault: ZERO_VAULT, new_k_s: '00'.repeat(32), nonce: 0, expires_at: later, assertion: { ...webauthn, user_handle: '00' } } }), status: 400, codes: ['bad_request'] },
+    { name: 'a cancel naming both the passkey and the cold key', ...relayPost({ method: 'cancel', args: { vault: ZERO_VAULT, request: 0, expires_at: later, auth: { Passkey: webauthn, Cold: '00'.repeat(65) } } }), status: 400, codes: ['bad_request'] },
     { name: 'PUT on the relay', method: 'PUT', path: '/api/relay', headers: {}, body: undefined, status: 405, codes: ['bad_request'] },
     { name: 'GET on funds', method: 'GET', path: '/api/funds', headers: {}, body: undefined, status: 405, codes: ['bad_request'] },
     { name: 'funds with no vault', method: 'POST', path: '/api/funds', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: 'zz' }), status: 400, codes: ['bad_request'] },
+    { name: 'funds for a vault this relay did not make', method: 'POST', path: '/api/funds', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: ZERO_VAULT, pow: fundsPow }), status: 422, codes: ['would_refuse'], words: ['only funds vaults it made'] },
   ];
+}
+
+/** The funds proof of work for the all-zero vault at the relay's own bits, with the page's own solver. */
+async function zeroVaultPow(bits) {
+  const pow = await import(pathToFileURL(join(REPO, 'site', 'lib', 'pow.mjs')).href);
+  return pow.solvePow(pow.fundsPowTarget(ZERO_VAULT), bits);
 }
 
 /** Module and stylesheet paths a page loads, from its own HTML. */
@@ -110,6 +133,7 @@ async function main() {
 
   const { near } = await connect(network, a.rpc);
   const { buildModule, config } = await loadBuild(configPath);
+  let powBits = null;
   const guarded = async (name, fn) => {
     try {
       await fn();
@@ -123,11 +147,15 @@ async function main() {
   await guarded('GET /api/relay', async () => {
     const r = await http(site, '/api/relay');
     const j = r.json ?? {};
+    powBits = Number.isSafeInteger(j.pow_bits) ? j.pow_bits : null;
     say(r.status === 200 && j.ok === true ? 'PASS' : 'FAIL', label, `GET /api/relay answers ${r.status} ok=${j.ok}`);
     say(j.relay_account === relay ? 'PASS' : 'FAIL', label, `relay_account is ${j.relay_account}`);
     say(j.contract === contract ? 'PASS' : 'FAIL', label, `contract is ${j.contract}`);
     for (const bucket of ['owner', 'general']) say(j[bucket]?.up === true ? 'PASS' : 'FAIL', label, `${bucket}: up=${j[bucket]?.up} why=${j[bucket]?.why ?? null}${j[bucket]?.degraded ? ' degraded' : ''}`);
     say(j.funds?.up === true ? 'PASS' : 'WARN', label, `funds: up=${j.funds?.up} why=${j.funds?.why ?? null} sats=${j.funds?.sats}`);
+    const runway = j.owner_runway_days;
+    const longEnough = typeof runway === 'number' && runway >= RUNWAY_WARN_DAYS;
+    say(longEnough ? 'PASS' : 'WARN', label, `owner key runway: ${runway ?? 'unknown'} days of a full owner ceiling above the 0.05 NEAR floor${longEnough ? '' : `, under ${RUNWAY_WARN_DAYS}: top up the relay account`}`);
     say(r.headers.get('cache-control') === 'no-store' ? 'PASS' : 'FAIL', label, `/api/relay Cache-Control is ${r.headers.get('cache-control')}`);
     say(r.headers.get('access-control-allow-origin') === null ? 'PASS' : 'FAIL', label, `/api/relay sends ${r.headers.get('access-control-allow-origin') === null ? 'no' : 'a'} CORS header`);
   });
@@ -175,12 +203,15 @@ async function main() {
   });
 
   // ---------------------------------------------------------------- refused POSTs, and the keys signed nothing
-  for (const r of refusals()) {
+  const sent = refusals({ now: Date.now(), fundsPow: powBits === null ? 0 : await zeroVaultPow(powBits) });
+  for (const r of sent) {
     await guarded(r.name, async () => {
       const out = await http(site, r.path, { method: r.method, headers: r.headers, body: r.body });
       const code = out.json?.code ?? null;
-      const ok = out.status === r.status && r.codes.includes(code);
-      say(ok ? 'PASS' : 'FAIL', label, `refused ${r.name}: ${out.status} ${code}${ok ? '' : `, expected ${r.status} ${r.codes.join(' or ')}`}`);
+      const missing = (r.words ?? []).filter((w) => !String(out.json?.message ?? '').includes(w));
+      const ok = out.status === r.status && r.codes.includes(code) && missing.length === 0;
+      const why = missing.length ? `, its message lacks "${missing.join('", "')}"` : `, expected ${r.status} ${r.codes.join(' or ')}`;
+      say(ok ? 'PASS' : 'FAIL', label, `refused ${r.name}: ${out.status} ${code}${ok ? '' : why}`);
     });
   }
   for (const name of ['RELAY_GENERAL_KEY', 'RELAY_OWNER_KEY']) {

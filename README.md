@@ -25,6 +25,8 @@ A cancel button for Bitcoin: if your spend key is stolen, Bitcoin refuses that k
 
 **Why not 2-of-3?** If one key is stolen and nobody is watching, 2-of-3 is safer: that thief gets nothing, and Undo's thief gets the coins after the wait. Undo makes a different trade. Spending needs no second device or hardware, so people use it every day; a public contract holds the second signature, not a company; a phone can cancel during the wait; a cold key leaves alone if NEAR is gone. If you can keep two keys in reach for every spend, use 2-of-3.
 
+**The relay is a convenience.** The phone page sends its cancel through a relay that pays the gas. Its daily limits are shared by everyone who uses it, so it can be full or down when you need it. The contract takes the same passkey-signed cancel from any NEAR testnet account: `tools/cancel.mjs` sends one the phone page signed, and the cold key in the recovery file always works, relay or not.
+
 **Privacy.** The queue is public: anyone can read each vault's pending amounts and destinations, its cancels and their timing, before Bitcoin moves. Vault ids are hashes, not names. This version claims no privacy.
 
 **Test networks only.** NEAR testnet and Mutinynet test coins, addresses starting `tb1`. Nothing here runs on NEAR mainnet or holds real bitcoin. The code is unaudited.

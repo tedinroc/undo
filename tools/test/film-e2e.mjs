@@ -666,6 +666,14 @@ async function runCeiling() {
   currentRun = 'run3';
   apiWorker = 'film3';
   const v = await makeVaultFromPhone({ reopen: true });
+  // 'low' stands for the same relay later in its day, so it holds the row run 3's relay wrote when it made the vault.
+  // Without it the owner key would answer not_this_relays: it sends only for vaults its own state store recorded.
+  const ns = await mf.getDurableObjectNamespace('UNDO_STATE', 'undo-cron');
+  const doCall = async (name, op, body) => (await ns.get(ns.idFromName(name)).fetch(`https://do/${op}`, { method: 'POST', body: JSON.stringify(body) })).json();
+  const { row } = await doCall('film3', 'madeVault', { vault: v.vaultHex });
+  must('run 3\'s relay recorded the vault it made', row !== null && row !== undefined, JSON.stringify(row));
+  const copied = await doCall('low', 'made', { vault: v.vaultHex, passkey: row.passkey, k_e_intent: row.k_e_intent, now: Date.now() });
+  must('the low-ceiling relay holds the same row', copied.ok === true, JSON.stringify(copied));
   apiWorker = 'low';
   await sleep(10_500); // The relay's status cache.
   const near = await (await fetch(`${stage.origin}/api/relay`)).json();
@@ -682,8 +690,7 @@ async function runCeiling() {
   check('an execute before the unlock is refused by the relay, with nothing sent', early.every((o) => o.body.code === 'would_refuse') && (await keyNonce(stage.relay.publicKey)) === generalAtStart, early.map((o) => o.body.code).join(' '));
 
   // What is left goes as a day's traffic would have used it, and then the general key is refused.
-  const ns = await mf.getDurableObjectNamespace('UNDO_STATE', 'undo-cron');
-  const filled = await (await ns.get(ns.idFromName('low')).fetch('https://do/addCost', { method: 'POST', body: JSON.stringify({ key: 'general', cost: RELAY_METHODS.execute.costMicro, now: Date.now(), ceiling: 1e12 }) })).json();
+  const filled = await doCall('low', 'addCost', { key: 'general', cost: RELAY_METHODS.execute.costMicro, now: Date.now(), ceiling: 1e12 });
   must('the rest of the general ceiling is spent', filled.ok === true, JSON.stringify(filled));
   const burst = await Promise.all(Array.from({ length: 6 }, () => general('execute', { vault: v.vaultHex, request: requestId })));
   const codes = burst.map((o) => o.body.code ?? 'sent');

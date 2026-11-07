@@ -13,7 +13,7 @@ import { randomBytes } from '/tools/lib/crypto.mjs';
 import { decodeTries, encodeTry, reportText, sFormSentence } from './h7-report.mjs';
 import { ClockFace, h, hashBlock, setState, show } from './kit.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
-import { recallCredential, rememberCredential, writeFragment } from './phone-fragment.mjs';
+import { recallCredential, recallH7, rememberCredential, rememberH7, writeFragment } from './phone-fragment.mjs';
 import { openElsewhere, passkeyProblem, problemWords } from './sense.mjs';
 import { chainNowOf, confirmVault, prepareVault, sendVault } from './vault-make.mjs';
 
@@ -22,10 +22,16 @@ const INTENT_MS = 10 * 60_000;
 const PROPOSE_WINDOW_MS = 30 * 60_000;
 const READ_WAIT_MS = 20_000;
 
+/**
+ * `kept` is what this tab made and saw, from sessionStorage, which a link cannot write: the report says only that.
+ * The link holds where to look (the vault, its credential, the test seed), and claims nothing.
+ */
 export function runH7(ctx, fragment, relayStatus) {
+  const kept = recallH7();
+  const ours = Boolean(kept.v && kept.v === fragment.v);
   const st = {
-    ctx, f: fragment, relay: relayStatus, problems: [], tries: decodeTries(fragment.log), answers: answersOf(fragment.q), seed: fragment.k ? fromHex(fragment.k) : null,
-    credential: null, passkeyFlags: flagsOf(fragment.pk), proofS: proofOf(fragment.pk), face: null, drawing: false, raf: null,
+    ctx, f: fragment, kept, relay: relayStatus, problems: [], tries: decodeTries(kept.log), answers: answersOf(kept.q), seed: fragment.k ? fromHex(fragment.k) : null,
+    credential: null, passkeyFlags: ours ? flagsOf(kept.pk) : null, proofS: ours ? proofOf(kept.pk) : null, face: null, drawing: false, raf: null,
   };
   const known = fragment.c ?? (fragment.v ? recallCredential(fragment.v) : null);
   if (known) st.credential = fromBase64Url(known);
@@ -44,9 +50,21 @@ const flagsOf = (pk) => {
 const proofOf = (pk) => (pk && pk.endsWith('.h') ? 'h' : pk && pk.endsWith('.l') ? 'l' : null);
 
 function save(st) {
-  st.f.log = st.tries.map(encodeTry).join('~');
+  st.kept.log = st.tries.map(encodeTry).join('~');
+  rememberH7(st.kept);
   st.f.h7 = '1';
   writeFragment(st.f);
+}
+
+/** Another test vault: the tries so far count, nothing else carries over. */
+function startOver(st) {
+  st.f = { h7: '1', refused: [] };
+  st.kept = { log: st.kept.log };
+  st.passkeyFlags = null;
+  st.proofS = null;
+  rememberH7(st.kept);
+  writeFragment(st.f);
+  route(st);
 }
 
 function copyLine(st) {
@@ -56,7 +74,7 @@ function copyLine(st) {
 function report(st) {
   return reportText({
     sense: st.ctx.sense, config: st.ctx.config, passkeyFlags: st.passkeyFlags, proofS: st.proofS, tries: st.tries,
-    operator: st.f.op ? { pub: st.f.op, cred: st.f.opc } : null, answers: st.answers, vault: st.f.v ?? null, problems: st.problems, awake: st.f.aw ?? null,
+    operator: st.kept.op ? { pub: st.kept.op, cred: st.kept.opc } : null, answers: st.answers, vault: st.kept.v ?? null, problems: st.problems, awake: st.kept.aw ?? null,
   });
 }
 
@@ -131,22 +149,14 @@ async function route(st) {
     }
     const vault = await views.vault(st.f.v);
     if (!vault) {
-      stopped(st, 'That test vault is not on this contract. Start again.', null, () => {
-        st.f = { h7: '1', refused: [], log: st.f.log };
-        writeFragment(st.f);
-        route(st);
-      });
+      stopped(st, 'That test vault is not on this contract. Start again.', null, () => startOver(st));
       return;
     }
     st.vault = vault;
-    if (st.f.op) drawReport(st);
+    if (st.kept.op) drawReport(st);
     else if (vault.k_s_suspended) drawOperator(st);
     else if (!st.seed) {
-      stopped(st, 'This test vault\'s spend key is gone, so it can\'t ask again. Start another.', null, () => {
-        st.f = { h7: '1', refused: [], log: st.f.log };
-        writeFragment(st.f);
-        route(st);
-      });
+      stopped(st, 'This test vault\'s spend key is gone, so it can\'t ask again. Start another.', null, () => startOver(st));
     } else await drawTry(st);
   } catch (err) {
     stoppedBy(st, err, () => route(st));
@@ -238,10 +248,8 @@ async function makeVault(st, built) {
     st.seed = st.prepared.keys.seed;
     const cred = credentialToFragment(st.credential);
     rememberCredential(vault.id, cred);
-    Object.assign(st.f, {
-      v: vault.id, c: cred, k: toHex(st.seed),
-      pk: `be${st.passkeyFlags?.be ? 1 : 0}.bs${st.passkeyFlags?.bs ? 1 : 0}.${st.proofS}`,
-    });
+    Object.assign(st.f, { v: vault.id, c: cred, k: toHex(st.seed) });
+    Object.assign(st.kept, { v: vault.id, pk: `be${st.passkeyFlags?.be ? 1 : 0}.bs${st.passkeyFlags?.bs ? 1 : 0}.${st.proofS}` });
     save(st);
     route(st);
   } catch (err) {
@@ -384,7 +392,7 @@ async function finishTry(st, asking, { argsFor, last, request, t0 }) {
     st.tries.push({
       m: last ? 'r' : 'c', s: assertion.highS ? 'h' : 'l', sheetMs, includedMs, readMs, hidden: evidence.hidden, blurred: evidence.blurred, pagehide: evidence.pagehide, stallMs: evidence.stallMs, hash: sent.hash,
     });
-    st.f.aw = st.ctx.awake.state;
+    st.kept.aw = st.ctx.awake.state;
     save(st);
     st.busy = false;
     stopDrawing(st);
@@ -418,8 +426,8 @@ function tapOperator(st) {
   setState('h7_wait');
   show(h('p', { class: 'say big' }, 'Waiting for your passkey'), h('p', { class: 'line dim' }, 'The sheet should say operator.'));
   asking.then(({ passkey }) => {
-    st.f.op = toHex(passkey.pubkey);
-    st.f.opc = credentialToFragment(passkey.credentialId);
+    st.kept.op = toHex(passkey.pubkey);
+    st.kept.opc = credentialToFragment(passkey.credentialId);
     save(st);
     drawReport(st);
   }, (err) => stoppedBy(st, err, () => drawOperator(st)));
@@ -436,7 +444,7 @@ function answerRow(st, field, question, options) {
       'data-answer': `${field}:${value}`,
       onclick: () => {
         st.answers[field] = value;
-        st.f.q = `${st.answers.recording ?? ''}.${st.answers.gestures ?? ''}`;
+        st.kept.q = `${st.answers.recording ?? ''}.${st.answers.gestures ?? ''}`;
         save(st);
         drawReport(st);
       },

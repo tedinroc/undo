@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Builds the Pages output from the one config value. No bundler: it walks the import graph from the pages
 // and site/lib, and copies exactly what is reached, at the same relative paths the files have in the repo,
-// so a page runs the same bytes as tools/ with no rewriting.
+// so a page runs the same bytes as tools/ with no rewriting. Only a page's HTML gains a modulepreload link per module
+// it loads, from the same walk.
 //
 //   node site/build.mjs --config site/config/testnet.json [--out site/dist] [--allow-unfilled]
 //
@@ -17,6 +18,7 @@ const SITE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(SITE, '..');
 const ALLOWED = ['site/lib/', 'tools/lib/', 'tools/vendor/noble/'];
 const IMPORT = /^\s*(?:import|export|\})[^'"\n]*\bfrom\s+['"]([^'"]+)['"]|^\s*import\s+['"]([^'"]+)['"]|\bimport\(\s*['"]([^'"]+)['"]\s*\)/gm;
+const MODULE_SCRIPT = /<script type="module" src="(\/[^"]+)"><\/script>/g;
 
 export class BuildRefused extends Error {}
 
@@ -54,6 +56,23 @@ export function importGraph(roots, pagesDir) {
   return seen;
 }
 
+/** Where a page loads a file from: a page's own files at the site's root, everything else at its repo path. */
+const urlOf = (file, pagesDir) => (file.startsWith(pagesDir + sep) ? `/${relative(pagesDir, file).split(sep).join('/')}` : `/${toRepo(file)}`);
+
+/**
+ * A page's HTML with a modulepreload link, before each module script, for every module that script reaches. Without
+ * them a browser finds the graph one import level at a time, and a phone shows little for seconds. The list comes
+ * from the same walk the copy uses, so no list is kept by hand. Same-origin links, so the CSP needs nothing new.
+ */
+export function withPreloads(html, pagesDir) {
+  return html.replace(MODULE_SCRIPT, (tag, src) => {
+    const inPages = join(pagesDir, src);
+    const entry = existsSync(inPages) ? inPages : join(REPO, src);
+    const urls = [...importGraph([entry], pagesDir)].filter((f) => f !== entry).map((f) => urlOf(f, pagesDir)).sort();
+    return [...urls.map((u) => `<link rel="modulepreload" href="${u}">`), tag].join('\n');
+  });
+}
+
 const originOf = (url) => new URL(url).origin;
 
 export function headersFor(config) {
@@ -89,7 +108,14 @@ export function build({ configPath, out = join(SITE, 'dist'), allowUnfilled = fa
     mkdirSync(dirname(to), { recursive: true });
     copyFileSync(from, to);
   };
-  for (const file of pageFiles) copy(file, join(out, relative(pagesDir, file)));
+  for (const file of pageFiles) {
+    const to = join(out, relative(pagesDir, file));
+    if (!file.endsWith('.html')) copy(file, to);
+    else {
+      mkdirSync(dirname(to), { recursive: true });
+      writeFileSync(to, withPreloads(readFileSync(file, 'utf8'), pagesDir));
+    }
+  }
   for (const file of graph) {
     if (!file.startsWith(pagesDir + sep)) copy(file, join(out, toRepo(file)));
   }

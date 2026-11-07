@@ -10,13 +10,13 @@ import { sha256 } from '../../tools/lib/crypto.mjs';
 import { addressToSpk } from '../../tools/lib/btc.mjs';
 import { signColdIntent } from '../../tools/lib/cold-intent.mjs';
 import { buildFunding, loadDispenser } from '../../tools/lib/dispenser.mjs';
-import { action, failureOf, Near, returnValue, TGAS } from '../../tools/lib/near.mjs';
+import { action, failureOf, returnValue, TGAS } from '../../tools/lib/near.mjs';
 import { sendEverything } from '../lib/bitcoin.mjs';
 import { base64ToBytes } from './phone-helpers.mjs';
 import { buildCreateArgs, buildPropose, newVaultKeys, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
 import { NearReader } from '../lib/near-read.mjs';
 import { fundsPowTarget, solvePow } from '../lib/pow.mjs';
-import { CREATE_DEPOSIT_MILLI, executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
+import { executeTgas } from '../lib/relay-table.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
 import { stageAvailable, startStage } from './stage.mjs';
@@ -42,7 +42,8 @@ const emptyAuthenticator = () => cdp.send('WebAuthn.clearCredentials', { authent
 
 before(async () => {
   if (skip) return;
-  stage = await startStage({ miner: false, softPasskey: false, relayEnv: { STATUS_CACHE_MS: 0 } });
+  // Every vault here is made through the relay, so its general ceiling must hold a whole file's worth of them.
+  stage = await startStage({ miner: false, softPasskey: false, relayEnv: { STATUS_CACHE_MS: 0, CEILING_GENERAL_MICRO: 10_000_000 } });
   reader = new NearReader({ urls: stage.config.rpc, timeoutMs: 15_000 });
   views = contractViews(reader, stage.contract);
   instance = await views.instance();
@@ -153,9 +154,13 @@ async function intercept(pattern, answer, body) {
 
 // ---------------------------------------------------------------- the chain's side, as the thief tab would do it
 
-/** A vault whose passkey lives in Chrome's virtual authenticator, and whose keys Node holds, so Node can be the thief. */
-async function makeVault(name, { keepKeys = false, relayGuards = false } = {}) {
-  const guard = relayGuards ? stage.relay : stage.payer;
+/**
+ * A vault whose passkey lives in Chrome's virtual authenticator, and whose keys Node holds, so Node can be the thief.
+ * Made through the relay's own create_vault, as the page makes one: the relay sends cancels and test coins only for
+ * vaults it made. Each comes from its own address, because the relay takes 3 creates an hour from one address, and
+ * the page's own creates in this file come from 127.0.0.1.
+ */
+async function makeVault(name, { keepKeys = false } = {}) {
   if (!keepKeys) await emptyAuthenticator();
   await go('/p/', {});
   await waitFor('a page', async () => (await stateOf()) !== 'boot');
@@ -169,19 +174,17 @@ async function makeVault(name, { keepKeys = false, relayGuards = false } = {}) {
   const km = await derivedKey(reader, { signer: instance.signer, domainId: instance.domain_id, contract: stage.contract, vaultHex });
   const chainNow = (await reader.blockTime()).blockMs;
   const built = await buildCreateArgs({
-    contract: stage.contract, keys, passkeyPub, rpIdHash: rpIdHashOf(stage.rpId), km, guard: guard.accountId, policy: instance.policy, csv: 6, expiresAt: chainNow + 30 * 60_000,
+    contract: stage.contract, keys, passkeyPub, rpIdHash: rpIdHashOf(stage.rpId), km, guard: stage.relay.accountId, policy: instance.policy, csv: 6, expiresAt: chainNow + 30 * 60_000,
     assert: async (digest) => cdp.page(`const lib = await import('/site/lib/index.mjs');
       const a = await lib.getAssertion({ credentials: navigator.credentials, digest: lib.fromBase64('${Buffer.from(digest).toString('base64')}'), rpId: 'localhost', credentialId: lib.fromBase64Url('${passkey.cred}') });
       return a.args;`),
   });
-  const spec = RELAY_METHODS.create_vault;
-  // The relay's own sends move that key's nonce behind this client's back, so a fresh client reads it from the chain.
-  const near = relayGuards ? new Near(stage.config.rpc, { timeoutMs: 30_000 }) : stage.near;
-  const sent = await near.sendAndWait(guard, stage.contract, [
-    action.call('create_vault', { args: built.args }, BigInt(spec.tgas) * TGAS, stage.milliNear(CREATE_DEPOSIT_MILLI)),
-    action.call('heartbeat', { vault: vaultHex }, BigInt(spec.heartbeatTgas) * TGAS, 0n),
-  ]);
-  assert.equal(failureOf(sent.result), null);
+  const powBits = (await (await fetch(`${stage.origin}/api/relay`)).json()).pow_bits;
+  const pow = await solvePow(vaultHex, powBits);
+  const ip = `10.${(counter >> 16) & 255}.${(counter >> 8) & 255}.${counter & 255}`;
+  const sent = await stage.api('/api/relay', { method: 'create_vault', args: built.args, pow }, { ip });
+  assert.equal(sent.status, 200, `the relay made the vault: ${JSON.stringify(sent.body)}`);
+  await waitFor('the vault on the chain', async () => (await views.vault(vaultHex)) !== null);
   return { vaultHex, keys, cred: passkey.cred, passkeyPub };
 }
 
@@ -197,14 +200,14 @@ async function thiefProposes(v, coin = { txid: toHex(label(`coin-${counter += 1}
   return { id: returnValue(sent.result), spend, coin };
 }
 
-/** A real coin from the relay's dispenser, as the phone page asks for one. The vault must be one the relay guards. */
+/** A real coin from the relay's dispenser, as the phone page asks for one. The vault must be one the relay made. */
 async function fundFromRelay(v) {
   const powBits = (await (await fetch(`${stage.origin}/api/relay`)).json()).pow_bits;
   const pow = await solvePow(fundsPowTarget(v.vaultHex), powBits);
   return (await fetch(`${stage.origin}/api/funds`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ vault: v.vaultHex, pow }) })).json();
 }
 
-/** A real coin straight from the dispenser, for a vault the relay does not guard. */
+/** A real coin straight from the dispenser, with no relay, so this file stays inside the relay's two fundings an hour per address. */
 async function fundDirect(v) {
   const vault = await views.vault(v.vaultHex);
   const dispenser = loadDispenser(stage.rig.info.dispenser, 'regtest');
@@ -253,7 +256,7 @@ const noScrollAtAll = () => cdp.page('return document.documentElement.scrollHeig
 // ---------------------------------------------------------------- the film's path
 
 test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap stamps it, the contract agrees, a reload stays stamped. [mock-signer] [virtual authenticator]', { skip, timeout: 120_000 }, async (t) => {
-  const v = await makeVault('hero', { relayGuards: true });
+  const v = await makeVault('hero');
   // A real coin, from the relay's dispenser on regtest, so `The coin never moved` has something to check.
   const paid = await fundFromRelay(v);
   t.diagnostic(`funds: ${JSON.stringify({ ok: paid.ok, value: paid.value, code: paid.code })}`);
@@ -974,14 +977,15 @@ test('the fragment and report functions, in the page that ships them', { skip, t
   await go('/p/', {});
   const out = await cdp.page(`const f = await import('/p/phone-fragment.mjs'); const r = await import('/p/h7-report.mjs');
     const parsed = f.parsePhoneFragment('#v=${'a'.repeat(64)}&tx=8gZ1dzfAhVn1jZ1dzfAhVn1jZ1dzfAhVn1jZ&f=0:07.9&h7=1&log=c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x&junk=1&q=blank.one');
-    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz&log=<');
-    const tries = r.decodeTries(parsed.log);
+    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz&log=<&opproof=zz');
+    const tries = r.decodeTries('c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x');
     const again = tries.map(r.encodeTry).join('~');
     return { parsed, bad, tries, again, built: f.buildPhoneFragment({ v: 'b', tx: 'x', f: '0:01.0', r: 3 }), s0: r.sFormSentence([]), s8: r.sFormSentence(Array(8).fill({ s: 'l' })), s3: r.sFormSentence([{ s: 'l' }, { s: 'l' }, { s: 'h' }]) };`);
   assert.equal(out.parsed.f, undefined, 'a link says nothing about what happened');
   assert.equal(out.parsed.tx, undefined);
   assert.equal(out.parsed.junk, undefined);
-  assert.deepEqual(out.bad.refused.sort(), ['log', 'op']);
+  assert.equal(out.parsed.log, undefined, 'nor what the test mode did: that is kept in sessionStorage');
+  assert.deepEqual(out.bad.refused.sort(), ['opproof']);
   assert.equal(out.again, 'c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x');
   assert.equal(out.tries[0].blurred, true);
   assert.equal(out.tries[1].hash, null);

@@ -16,6 +16,9 @@ export const CREATE_DEPOSIT_MILLI = 30;
  * tgas: attached, unused gas comes back. costMicro: what a call counts for against its key's daily
  * ceiling in millionths of a NEAR, from burnt gas in docs/measurements.md at 1e-4 NEAR per Tgas, rounded up.
  * perIpHour: limit per hashed IP. perVaultMinute: limit per vault. perVaultDay: shared across a key's methods.
+ * unchecked*: the owner key's own, smaller limits for a call the relay could not check, because its read of the vault
+ * failed and the signature did not match the keys the vault was made with. They are counted apart, so such calls can
+ * never use up what a checked cancel on the same vault may send.
  * operatorOnly: off the public list. A stranger could otherwise make a vault read guard online, which halves
  * its wait, so it answers only to the BEAT_TOKEN binding, and with none set not at all.
  */
@@ -26,9 +29,46 @@ export const RELAY_METHODS = Object.freeze({
   propose_btc: { key: GENERAL, tgas: 40, costMicro: 1200, perIpHour: 10 },
   execute: { key: GENERAL, tgas: null, costMicro: 3000, perIpHour: 20, perVaultMinute: 30 },
   // No per-IP limit: a phone on a shared address must still be able to cancel.
-  cancel: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12 },
-  cancel_all_and_rotate: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12 },
+  cancel: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12, uncheckedPerVaultMinute: 2, uncheckedPerVaultDay: 4 },
+  cancel_all_and_rotate: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12, uncheckedPerVaultMinute: 2, uncheckedPerVaultDay: 4 },
 });
+
+/**
+ * Calls the relay could not check may take at most this share of the owner ceiling, so they never stop a checked cancel.
+ * A vault's first such call of the day may go up to twice this, so junk on other vaults cannot use up the one cancel of
+ * an owner whose new passkey the relay has not seen. Twice this is the most they ever take.
+ */
+export const OWNER_UNCHECKED_SHARE = 0.1;
+
+/**
+ * What the relay keeps of its account's balance for the owner key's cancels: the status floor, plus a whole day of
+ * owner sends at the owner ceiling. The two keys sit on one account, so a general send that would leave less than
+ * this is refused, and no amount of general traffic can spend what a cancel needs. In yoctoNEAR.
+ *
+ * It guards against general traffic only. Owner sends are not checked against it, because they are what it is for,
+ * so owner sends drain it: real cancels, and a full owner ceiling of calls on vaults made here, which about 42 such
+ * vaults can send every day and which burns about 0.2 NEAR of real gas a day against the 0.3 NEAR it keeps. The cron key's canary heartbeat,
+ * when one is set, does not check it either. Nothing refills it but a top-up, so status reports owner_runway_days.
+ */
+export const OWNER_FLOOR_YOCTO = 50_000_000_000_000_000_000_000n;
+export const ownerReserveYocto = (ownerCeilingMicro) => OWNER_FLOOR_YOCTO + BigInt(Math.ceil(ownerCeilingMicro)) * 1_000_000_000_000_000_000n;
+
+/**
+ * How many days of owner sends at a full owner ceiling the free balance above the floor still pays for, to a tenth,
+ * or null when the balance is unknown. General sends stop at 1; below that only owner sends spend it.
+ */
+export function ownerRunwayDays(freeYocto, ownerCeilingMicro) {
+  if (freeYocto === null || freeYocto === undefined || !(ownerCeilingMicro > 0)) return null;
+  const day = BigInt(Math.ceil(ownerCeilingMicro)) * 1_000_000_000_000_000_000n;
+  const tenths = ((BigInt(freeYocto) - OWNER_FLOOR_YOCTO) * 10n) / day;
+  return tenths > 0n ? Number(tenths) / 10 : 0;
+}
+
+/**
+ * Where a cancel goes when this relay will not send it: from any NEAR testnet account, with no relay at all. The relay
+ * is a convenience, and its limits are shared, so the words say so and do not promise it will send.
+ */
+export const OWN_ACCOUNT_PATH = 'This relay is a convenience: any NEAR testnet account can send the cancel without it. tools/cancel.mjs sends a cancel this page signed, tools/freeze.mjs --method cancel signs one with the recovery file, and the cold key always works, relay or not.';
 
 /** Vaults may take this share of the general ceiling, so a day of them still leaves room for calls already under way. */
 export const CREATE_SHARE = 0.7;
@@ -68,6 +108,9 @@ export const RELAY_ERRORS = Object.freeze({
   stale_nonce: 503,
   tx_refused: 422,
   assertion_refused: 422,
+  not_this_relays: 422,
+  already_sent: 409,
+  relay_reserve: 503,
   relay_error: 500,
   dispenser_empty: 503,
   esplora_down: 503,
@@ -75,8 +118,13 @@ export const RELAY_ERRORS = Object.freeze({
 
 const isHex = (v, bytes) => typeof v === 'string' && /^([0-9a-f]{2})+$/.test(v) && (bytes === undefined || v.length === bytes * 2);
 const isU64 = (v) => Number.isSafeInteger(v) && v >= 0;
-const isWebAuthn = (a) => a && isHex(a.authenticator_data) && a.authenticator_data.length <= 2048 && isHex(a.client_data_json) && a.client_data_json.length <= 4096 && isHex(a.signature, 64);
 const only = (obj, fields) => obj && typeof obj === 'object' && !Array.isArray(obj) && Object.keys(obj).every((k) => fields.includes(k));
+// Exactly the contract's fields: a body it could not parse would still cost the owner key a send.
+const isWebAuthn = (a) => only(a, ['authenticator_data', 'client_data_json', 'signature']) && isHex(a.authenticator_data) && a.authenticator_data.length <= 2048
+  && isHex(a.client_data_json) && a.client_data_json.length <= 4096 && isHex(a.signature, 64);
+// One of the two, never both: the contract's enum takes exactly one.
+const isCancelAuth = (auth) => only(auth, ['Passkey', 'Cold']) && Object.keys(auth).length === 1
+  && (Object.hasOwn(auth, 'Passkey') ? isWebAuthn(auth.Passkey) : isHex(auth.Cold, 65));
 
 const MAX_INPUTS = 16;
 
@@ -96,7 +144,7 @@ const SHAPES = {
     && isU64(a.nonce) && isU64(a.expires_at) && isHex(a.spend_sig, 64) && (a.memo === null || (typeof a.memo === 'string' && a.memo.length <= 140)),
   execute: (a) => only(a, ['vault', 'request']) && isHex(a.vault, 32) && isU64(a.request),
   cancel: (a) => only(a, ['vault', 'request', 'expires_at', 'auth']) && isHex(a.vault, 32) && isU64(a.request) && isU64(a.expires_at)
-    && only(a.auth, ['Passkey', 'Cold']) && (isWebAuthn(a.auth?.Passkey) || isHex(a.auth?.Cold, 65)),
+    && isCancelAuth(a.auth),
   cancel_all_and_rotate: (a) => only(a, ['vault', 'new_k_s', 'nonce', 'expires_at', 'assertion']) && isHex(a.vault, 32) && isHex(a.new_k_s, 32) && isU64(a.nonce) && isU64(a.expires_at) && isWebAuthn(a.assertion),
 };
 

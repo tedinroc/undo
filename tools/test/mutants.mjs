@@ -38,6 +38,13 @@ const MUTANTS = [
   ['cold: expiry not bound', 'lib/intent.mjs', 'b.raw(sha256(args)),\n    b.u64(expiresAt),', 'b.raw(sha256(args)),\n    b.u64(0),'],
   ['cold: args not hashed in', 'lib/intent.mjs', 'b.raw(sha256(args)),', 'b.raw(sha256(new Uint8Array(0))),'],
   ['leaf proof: tag dropped', 'lib/intent.mjs', 'return sha256(concat(utf8(LEAF_POP_TAG), createDigestBytes));', 'return createDigestBytes;'],
+  ['cancel: mainnet allowed', 'cancel.mjs', "if (status.chain_id === 'mainnet') throw", 'if (false) throw'],
+  ['cancel: any method in the file', 'cancel.mjs', 'if (!methods.includes(file.method)) throw', 'if (false) throw'],
+  ['cancel: shape not checked', 'cancel.mjs', 'if (relayBodyProblem({ method: file.method, args: file.args })) throw', 'if (false) throw'],
+  ['cancel: an expired call sent', 'cancel.mjs', 'if (call.args.expires_at < now) throw', 'if (false) throw'],
+  ['cancel: a used nonce sent', 'cancel.mjs', 'call.args.nonce < vault.passkey_nonce', 'false'],
+  ['cancel: a gone request sent', 'cancel.mjs', 'if (request === null) throw', 'if (false) throw'],
+  ['cancel: sends without asking', 'cancel.mjs', "if (!a.yes && !(await askYes('Type yes to send:'))) {", 'if (false) {'],
   ['freeze: too-long freeze allowed', 'freeze.mjs', 'if (named !== undefined && fields.until > max) throw', 'if (false) throw'],
   ['freeze: the default stops at this clock plus the period', 'freeze.mjs', 'fields.until = named ?? expiresAt + period;', 'fields.until = named ?? max;'],
   ['freeze: digest flag ignored', 'freeze.mjs', "if (raw.includes('--digest')) throw new Error('this tool never signs a digest handed to it. Give it the fields');", "if (raw.includes('--digest')) raw.splice(raw.indexOf('--digest'), 2);"],
@@ -133,6 +140,8 @@ const freshCopy = () => {
   mkdirSync(join(repo, 'proofs'), { recursive: true });
   cpSync(TOOLS, join(repo, 'tools'), { recursive: true, filter: (p) => !p.includes('rust-check') });
   cpSync(join(REPO, 'scripts'), join(repo, 'scripts'), { recursive: true });
+  // cancel.mjs checks a body's shape with the relay's own table.
+  cpSync(join(REPO, 'site', 'lib'), join(repo, 'site', 'lib'), { recursive: true });
   return repo;
 };
 const runTests = (repo) => spawnSync('node', ['--test', join(repo, 'tools/test/offline.test.mjs'), join(repo, 'tools/test/g2-units.test.mjs'), join(repo, 'tools/test/human-scripts.test.mjs')], {

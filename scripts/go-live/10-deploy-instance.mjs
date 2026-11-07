@@ -3,30 +3,38 @@
 // view reads back. The origin, rp id and network are fixed at creation and the contract has no setter for them, so a
 // wrong value here means a new name.
 //
-//   node scripts/go-live/10-deploy-instance.mjs --dry-run --name v1 --operator-passkey FILE
-//   node scripts/go-live/10-deploy-instance.mjs --live    --name v1 --operator-passkey FILE
+//   node scripts/go-live/10-deploy-instance.mjs --dry-run --name v1 --operator-passkey FILE --operator-challenge
+//   node scripts/go-live/10-deploy-instance.mjs --dry-run --name v1 --operator-passkey FILE [--operator-proof PROOF]
+//   node scripts/go-live/10-deploy-instance.mjs --live    --name v1 --operator-passkey FILE --operator-proof PROOF
 //   node scripts/go-live/10-deploy-instance.mjs --live    --temp             a throwaway software operator key
+//
+// The real instance names the operator passkey in `new`, for good. So it takes only a key that has just signed: the
+// --operator-challenge run keeps a fresh nonce in the private folder and prints a link; the operator opens it on the
+// phone and taps once with the operator passkey; the page shows a signed check; that, saved as PROOF, must pass the
+// contract's own WebAuthn rules against FILE's key for this instance and this nonce, or nothing is sent. A deploy
+// uses its challenge up.
 //   node scripts/go-live/10-deploy-instance.mjs --network sandbox --rpc URL --parent A --signer M --live --temp
 //
 // Refuses to overwrite code: an account that already holds code is only read back, and other code than this wasm
 // stops the run. Exit 0: deployed or already there, every readback line PASS. 1: a readback line failed. 2: usage.
 // 3: refused before any write. A dry run sends nothing and exits 0 when its plan could run.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, UsageError } from '../../tools/lib/args.mjs';
 import { action, failureOf, NEAR, TGAS } from '../../tools/lib/near.mjs';
 import { PATH_PREFIX, throwawayOperatorPasskey } from '../../tools/lib/vault-client.mjs';
 import {
-  checkLabel, connect, defaultWasm, describe, EMPTY_CODE, formatNear, line, modeOf, nearOf, note, plan, planTx, privateDir,
-  readJson, readOperatorPasskey, Refused, REPO, signingKey, SITE, TEMP_PREFIX, utcStamp, wasmFacts, writePrivate,
+  challengeLink, challengePath, checkLabel, connect, defaultWasm, describe, EMPTY_CODE, formatNear, line, makeChallenge, modeOf, nearOf, note, operatorProofProblem,
+  plan, planTx, privateDir, readJson, readOperatorPasskey, Refused, REPO, signingKey, SITE, TEMP_PREFIX, utcStamp, wasmFacts, writePrivate,
 } from './lib.mjs';
 import { readBack } from './checks.mjs';
 
 const USAGE = `usage: 10-deploy-instance.mjs (--dry-run | --live) (--operator-passkey FILE | --temp) [--name LABEL]
-  [--network testnet|sandbox] [--rpc URL] [--parent ACCOUNT] [--signer ACCOUNT] [--wasm FILE] [--fund-near N]
-  [--sign-tgas N] [--outflow-cap SATS] [--record FILE] [--offline]
-  --name is the sub-account label: v1 makes v1.<parent>. --temp names it ${TEMP_PREFIX}<utc stamp> unless given.`;
+  [--operator-challenge | --operator-proof FILE] [--network testnet|sandbox] [--rpc URL] [--parent ACCOUNT]
+  [--signer ACCOUNT] [--wasm FILE] [--fund-near N] [--sign-tgas N] [--outflow-cap SATS] [--record FILE] [--offline]
+  --name is the sub-account label: v1 makes v1.<parent>. --temp names it ${TEMP_PREFIX}<utc stamp> unless given.
+  The real instance needs --operator-proof at --live: a check the operator passkey signed for --operator-challenge.`;
 
 const STORAGE_YOCTO_PER_BYTE = 10n ** 19n;
 // What `new` writes, the account row and its key, and gas for the deploy, on top of the code's own bytes.
@@ -71,10 +79,13 @@ async function main() {
   const a = parseArgs(process.argv.slice(2), {
     'dry-run': 'flag', live: 'flag', network: 'text', rpc: 'text', parent: 'text', signer: 'text', name: 'text', temp: 'flag',
     'operator-passkey': 'text', wasm: 'text', 'fund-near': 'text', 'sign-tgas': 'int', 'outflow-cap': 'int', record: 'text', offline: 'flag',
+    'operator-challenge': 'flag', 'operator-proof': 'text',
   });
   const { network, live, defaults } = modeOf(a, USAGE);
   if (live && a.offline) throw new Refused('--offline is for a dry run');
   if (Boolean(a.temp) === Boolean(a['operator-passkey'])) throw new Refused(`give --operator-passkey FILE or --temp, one of them\n${USAGE}`);
+  if (a.temp && (a['operator-challenge'] || a['operator-proof'])) throw new Refused('a temporary instance has a throwaway operator key, which nobody can sign with');
+  if (a['operator-challenge'] && (live || a['operator-proof'])) throw new Refused('--operator-challenge only makes the check: give it with --dry-run, and nothing else of the proof');
   const parent = a.parent ?? defaults.parent;
   const signer = a.signer ?? defaults.signer;
   if (!parent || !signer) throw new Refused('--network sandbox needs --parent and --signer');
@@ -86,6 +97,22 @@ async function main() {
   const wasm = a.wasm ?? defaultWasm();
   const facts = wasmFacts(wasm);
   const operatorPasskey = temp ? throwawayOperatorPasskey(SITE.rpId) : readOperatorPasskey(a['operator-passkey'], SITE.rpId);
+  if (a['operator-challenge']) {
+    const challenge = makeChallenge({ contract, operatorPasskey });
+    console.log(`10-deploy-instance: OPERATOR CHALLENGE for ${contract}, nothing sent`);
+    line('KEPT', defaults.label, `a fresh nonce for operator passkey ${operatorPasskey.pubkey}, in ${challengePath(contract)}`);
+    console.log('On the phone that made the operator passkey, open this link, tap Sign the check, pick the passkey labelled operator:');
+    console.log(`  ${challengeLink(challenge)}`);
+    console.log('Then save what the page shows as a file, and pass it here as --operator-proof FILE. A new challenge replaces this one.');
+    return;
+  }
+  let proven = false;
+  if (!temp && a['operator-proof']) {
+    const problem = await operatorProofProblem({ proofPath: a['operator-proof'], contract, operatorPasskey });
+    if (problem) throw new Refused(problem);
+    line('PASS', defaults.label, `operator passkey ${operatorPasskey.pubkey} signed this deploy's fresh check for ${contract}`);
+    proven = true;
+  }
   const signTgas = a['sign-tgas'] ?? SIGN_TGAS;
   const outflowCap = a['outflow-cap'] ?? OUTFLOW_CAP_SATS;
   const fund = a['fund-near'] ? nearOf(a['fund-near']) : fundFor(facts.size);
@@ -135,9 +162,12 @@ async function main() {
   plan(`then: read back the instance view, and record ${contract} in ${recordPath}`);
 
   if (!live) {
+    if (!temp && !proven) note('WAIT --live refuses until the operator passkey signs a fresh check: run with --operator-challenge, then pass --operator-proof');
     console.log('DRY RUN: nothing sent.');
     return;
   }
+  // `new` names the operator passkey for good, and only an upgrade can change it.
+  if (!temp && !proven) throw new Refused('the real instance takes only an operator passkey that has just signed a check for it: run with --operator-challenge, have the operator sign on the phone, then pass --operator-proof FILE');
 
   if (network === 'testnet') {
     console.log('Outward check on the exact wasm:');
@@ -156,6 +186,8 @@ async function main() {
   if (failureOf(deployed.result)) throw new Error(`deploy failed: ${failureOf(deployed.result)}`);
   sent.deploy_tx = deployed.hash;
   line('SENT', label, `deploy and new on ${contract}: ${network === 'testnet' ? 'NEAR testnet' : 'local NEAR sandbox'} tx ${deployed.hash}`);
+  // One deploy per check: the same signature cannot stand in for another.
+  if (!temp) rmSync(challengePath(contract), { force: true });
   record(recordPath, { account: contract, temp, network, code_hash: facts.codeHash, wasm_sha256: facts.sha256, operator_passkey: operatorPasskey.pubkey, created_at: new Date().toISOString(), ...sent });
 
   // The code hash reads at final, a block or two behind the deploy.

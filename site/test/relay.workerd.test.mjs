@@ -4,7 +4,8 @@
 // (NEAR_SANDBOX_BIN_PATH, UNDO_WASM_DIR, UNDO_BITCOIN_BIN) and UNDO_WRANGLER_MODULES.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -16,7 +17,7 @@ import { sendEverything } from '../lib/bitcoin.mjs';
 import { buildCreateArgs, buildPropose, cancelArgs, cancelDigest, newVaultKeys, rotateArgs, rotateDigest, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
 import { NearReader } from '../lib/near-read.mjs';
 import { checkPow, fundsPowTarget, solvePow } from '../lib/pow.mjs';
-import { CREATE_DEPOSIT_MILLI, executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
+import { CREATE_DEPOSIT_MILLI, executeTgas, OWNER_FLOOR_YOCTO, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { requestState } from '../lib/request-state.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
@@ -41,6 +42,7 @@ let instance;
 let ownerKey;
 let cronKey;
 let canary;
+let reserveCeiling;
 let nextIp = 1;
 const gas = {};
 
@@ -86,6 +88,26 @@ async function makeVault(name, on = 'main', opts = {}) {
   v.tx = out.body.hash;
   // The relay answers at inclusion. The contract has run it only when its receipts have.
   v.result = await settled(v.tx);
+  return v;
+}
+
+/**
+ * The relay `on` keeps its own state store. Its create share here is too small for a vault, so a vault made on main
+ * is written into its store, as its own create_vault would have done. Production has one relay and one store.
+ */
+async function adopt(on, v) {
+  const ns = await mf.getDurableObjectNamespace('UNDO_STATE', 'undo-cron');
+  const res = await ns.get(ns.idFromName(on)).fetch('https://do/made', { method: 'POST', body: JSON.stringify({ vault: v.vaultHex, passkey: v.args.passkey.pubkey, k_e_intent: v.args.k_e_intent, now: Date.now() }) });
+  assert.equal((await res.json()).ok, true);
+}
+
+/** A vault made straight on the contract, not through this relay, naming the relay as its guard, paid by the payer. */
+async function makeDirect(name) {
+  const v = await buildVault(name);
+  const sent = await stage.near.sendAndWait(stage.payer, stage.contract, [action.call('create_vault', { args: v.args }, 120n * TGAS, stage.milliNear(CREATE_DEPOSIT_MILLI))]);
+  assert.equal(failureOf(sent.result), null);
+  for (let i = 0; i < 40 && !(await views.vault(v.vaultHex))?.active; i += 1) await new Promise((r) => setTimeout(r, 250));
+  assert.equal((await views.vault(v.vaultHex)).active, true);
   return v;
 }
 
@@ -164,6 +186,11 @@ before(async () => {
   ]);
   assert.equal(failureOf(made.result), null);
 
+  // A relay whose owner ceiling asks it to keep more than its whole balance for cancels: general traffic must stop.
+  const relayAccount = await stage.near.account(stage.relay.accountId);
+  const free = BigInt(relayAccount.amount) - BigInt(relayAccount.storage_usage) * 10n ** 19n;
+  reserveCeiling = String((free - OWNER_FLOOR_YOCTO) / 10n ** 18n + 1n);
+
   bundles = bundleBoth();
   const dispenser = JSON.parse(readFileSync(stage.rig.info.dispenser, 'utf8')).secret;
   const poor = JSON.parse(readFileSync(stage.rig.poorDispenser().path, 'utf8')).secret;
@@ -193,6 +220,7 @@ before(async () => {
       low: { bindings: { ...common, UNDO_STATE_NAME: 'low', CEILING_GENERAL_MICRO: '2000', CEILING_FUNDS_SATS: '2000' } },
       poor: { bindings: { ...common, UNDO_STATE_NAME: 'poor', DISPENSER_SECRET: poor } },
       broken: { bindings: { ...common }, state: { className: 'Broken', scriptName: 'broken-state' } },
+      reserved: { bindings: { ...common, UNDO_STATE_NAME: 'reserved', CEILING_OWNER_MICRO: reserveCeiling } },
     },
     extra: [{
       name: 'broken-state',
@@ -225,7 +253,8 @@ test('bundles: wrangler 3 builds both from this tree, with no source map, no loc
 
 test('GET /api/relay: the shape the page reads, from the real Durable Object by script name', { skip }, async () => {
   const s = await status('main');
-  assert.deepEqual(Object.keys(s), ['ok', 'relay_account', 'contract', 'pow_bits', 'owner', 'general', 'funds']);
+  assert.deepEqual(Object.keys(s), ['ok', 'relay_account', 'contract', 'pow_bits', 'owner', 'general', 'owner_runway_days', 'funds']);
+  assert.ok(typeof s.owner_runway_days === 'number' && s.owner_runway_days > 3, `the stage relay's runway: ${s.owner_runway_days} days`);
   assert.equal(s.contract, stage.contract);
   assert.equal(s.relay_account, stage.relay.accountId);
   assert.equal(s.pow_bits, POW_BITS);
@@ -306,6 +335,7 @@ test('propose, heartbeat, execute: the contract takes each, on the general key a
 
 test('saturated general key: at its ceiling and refusing, a cancel_all_and_rotate still lands on the owner key, and the two states read differently', { skip, timeout: 90_000 }, async () => {
   const v = await makeVault('saturated');
+  await adopt('low', v);
   const { request } = await propose(v, 'low');
   const s0 = await status('low');
   assert.deepEqual([s0.general.up, s0.general.why], [false, 'daily_ceiling'], 'a new vault no longer fits');
@@ -541,9 +571,11 @@ test('funds: 2,000 sats on regtest to the contract\'s address, once. Limit, ceil
 
   // Same dispenser, another state store: it does not know main spent the coin, so a node refuses and it retries.
   const fourth = await makeVault('funded-4');
+  await adopt('low', fourth);
   const low = await funds('low', fourth.vaultHex);
   assert.equal(low.body.ok, true, low.text);
   const fifth = await makeVault('funded-5');
+  await adopt('low', fifth);
   const ceiling = await funds('low', fifth.vaultHex);
   assert.equal(ceiling.status, 429);
   assert.equal(ceiling.body.code, 'daily_ceiling');
@@ -552,15 +584,17 @@ test('funds: 2,000 sats on regtest to the contract\'s address, once. Limit, ceil
   assert.equal(ceiling.body.retry_after_s, null);
   assert.deepEqual([(await status('low')).funds.up, (await status('low')).funds.why], [false, 'daily_ceiling']);
 
+  await adopt('poor', fifth);
   const empty = await funds('poor', fifth.vaultHex);
   assert.equal(empty.status, 503);
   assert.equal(empty.body.code, 'dispenser_empty');
   assert.deepEqual([(await status('poor')).funds.up, (await status('poor')).funds.why], [false, 'dispenser_empty']);
-  assert.equal((await funds('main', 'ab'.repeat(32))).body.message, 'no such vault');
+  assert.equal((await funds('main', 'ab'.repeat(32))).body.message, 'this relay only funds vaults it made');
   assert.equal((await post('main', '/api/funds', { vault: fifth.vaultHex, to: 'bcrt1qsomeoneelse' })).body.code, 'bad_request');
 
   stage.rig.setRule(({ method, path }) => (method === 'GET' && path.endsWith('/utxo') ? { status: 502, body: 'Bad Gateway' } : null));
   const sixth = await makeVault('funded-6');
+  await adopt('poor', sixth);
   const down = await funds('poor', sixth.vaultHex);
   stage.rig.setRule(null);
   assert.equal(down.body.code, 'esplora_down');
@@ -605,6 +639,81 @@ test('the stage serves the same relay class over its node:sqlite shim, so page t
   assert.equal(out.ok, true, JSON.stringify(out));
   assert.equal(failureOf(await settled(out.hash)), null);
   assert.equal((await views.vault(v.vaultHex)).active, true);
+});
+
+test('AUDIT-1, AUDIT-3: a vault made straight on the contract gets neither the owner key nor test coins, and its owner cancels from their own account with tools/cancel.mjs', { skip, timeout: 120_000 }, async () => {
+  const v = await makeDirect('direct');
+  const { request } = await propose(v);
+  const ownerBefore = await keyNonce(ownerKey.publicKey);
+  const body = await rotateBody(v);
+  const refused = await relay('main', 'cancel_all_and_rotate', body);
+  assert.deepEqual([refused.status, refused.body.code], [422, 'not_this_relays'], refused.text);
+  assert.match(refused.body.message, /tools\/cancel\.mjs/);
+  const cold = signColdIntent({ cold: v.cold, contract: stage.contract, vault: v.vaultHex, method: 'cancel', fields: { request }, expiresAt: body.expires_at });
+  assert.equal((await relay('main', 'cancel', { vault: v.vaultHex, request, expires_at: body.expires_at, auth: { Cold: cold.signature } })).body.code, 'not_this_relays');
+  assert.equal(await keyNonce(ownerKey.publicKey), ownerBefore, 'the owner key signed nothing');
+  const coins = await funds('main', v.vaultHex);
+  assert.deepEqual([coins.status, coins.body.code, coins.body.message], [422, 'would_refuse', 'this relay only funds vaults it made']);
+
+  // The way that never needs the relay: the same signed body, from the payer's own account.
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'undo-own-cancel-'));
+  try {
+    const file = join(dir, 'cancel.json');
+    writeFileSync(file, JSON.stringify({ format: 'undo-owner-call-v1', contract: stage.contract, method: 'cancel_all_and_rotate', args: body }));
+    const keyFile = join(stage.rig.info.creds, 'sandbox', `${stage.payer.accountId}.json`);
+    const { NODE_USE_SYSTEM_CA: _unused, ...env } = process.env;
+    const own = () => spawnSync(process.execPath, [join(REPO, 'tools/cancel.mjs'), '--file', file, '--account', stage.payer.accountId, '--key-file', keyFile, '--rpc', stage.config.rpc.join(','), '--yes'], { encoding: 'utf8', env, timeout: 60_000 });
+    const run = own();
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /Sent\. The contract took it\./);
+    assert.match(run.stdout, /The rotation landed/);
+    const keyText = (({ private_key: a, secret_key: b }) => a ?? b)(JSON.parse(readFileSync(keyFile, 'utf8')));
+    assert.ok(keyText && !(run.stdout + run.stderr).includes(keyText), 'it never prints the key');
+    const again = own();
+    assert.equal(again.status, 1, 'the same body twice is refused before it is sent');
+    assert.match(again.stderr, /was used already/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const { vault, request: r } = await views.both(v.vaultHex, request);
+  assert.equal(vault.passkey_nonce, body.nonce + 1);
+  assert.equal(requestState({ request: r, vault, chainNow: (await reader.blockTime()).blockMs, lastKnown: r }).kind, 'cancelled');
+});
+
+test('AUDIT-1: a body one nonce ahead goes once. The contract refuses it, and the relay will not send it again', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('ahead');
+  const vault = await views.vault(v.vaultHex);
+  const newKs = ed25519.getPublicKey(label('ahead-new-ks'));
+  const expiresAt = (await reader.blockTime()).blockMs + 10 * 60_000;
+  const nonce = vault.passkey_nonce + 1;
+  const digest = rotateDigest({ contract: stage.contract, vaultHex: v.vaultHex, newKs, nonce, expiresAt });
+  const { args: assertion } = await getAssertion({ credentials: v.soft, digest, rpId: stage.rpId, credentialId: v.made.credentialId });
+  const body = rotateArgs({ vaultHex: v.vaultHex, newKs, nonce, expiresAt, assertion });
+  const before = await keyNonce(ownerKey.publicKey);
+  const first = await relay('main', 'cancel_all_and_rotate', body);
+  assert.equal(first.body.ok, true, first.text);
+  assert.match(String(failureOf(await settled(first.body.hash))), /nonce/i, 'the contract wants the exact nonce');
+  for (let i = 0; i < 5; i += 1) assert.equal((await relay('main', 'cancel_all_and_rotate', body)).body.code, 'already_sent');
+  assert.equal(await keyNonce(ownerKey.publicKey), before + 1, 'one send');
+  const shaped = { ...body, assertion: { ...body.assertion, user_handle: '00' } };
+  assert.equal((await relay('main', 'cancel_all_and_rotate', shaped)).body.code, 'bad_request', 'a field the contract lacks');
+});
+
+test('AUDIT-4: a relay that keeps its whole balance for cancels sends no general call, and the owner key still sends', { skip, timeout: 60_000 }, async () => {
+  const v = await makeVault('reserve');
+  await adopt('reserved', v);
+  const s = await status('reserved');
+  assert.deepEqual([s.general.up, s.general.why, s.owner.up], [false, 'relay_reserve', true]);
+  const generalBefore = await keyNonce(stage.relay.publicKey);
+  const beat = await relay('reserved', 'heartbeat', { vault: v.vaultHex });
+  assert.deepEqual([beat.status, beat.body.code], [503, 'relay_reserve'], beat.text);
+  assert.equal(await keyNonce(stage.relay.publicKey), generalBefore, 'the general key signed nothing');
+  const { request } = await propose(v);
+  const out = await relay('reserved', 'cancel_all_and_rotate', await rotateBody(v));
+  assert.equal(out.body.ok, true, out.text);
+  assert.equal(failureOf(await settled(out.body.hash)), null);
+  const { vault, request: r } = await views.both(v.vaultHex, request);
+  assert.equal(requestState({ request: r, vault, chainNow: (await reader.blockTime()).blockMs, lastKnown: r }).kind, 'cancelled');
 });
 
 test('measured gas, local, mock signer', { skip }, (t) => {

@@ -1,8 +1,9 @@
 // The relay's strongly consistent state: limits, daily ceilings, a nonce row per key, the dispenser's coins.
 // A plain class with no `cloudflare:` import, so site/test can run this same class over node:sqlite. Each
 // operation is one synchronous transaction, so nothing else runs between its reads and its writes. It stores
-// no address and no body: an IP only as a salted hash, and a vault id, which is public.
-import { RELAY_METHODS } from '../../../site/lib/relay-table.mjs';
+// no address and no body: an IP only as a salted hash, a vault id and that vault's two public keys, all of which the
+// chain shows, and for an owner call only which call it was, so one signed body is charged once.
+import { OWNER, OWNER_UNCHECKED_SHARE, RELAY_METHODS } from '../../../site/lib/relay-table.mjs';
 
 export const FUNDS = 'funds';
 export const FUNDS_PER_IP_HOUR = 2;
@@ -24,7 +25,15 @@ const SCHEMA = [
   'CREATE TABLE IF NOT EXISTS funded_vaults (vault TEXT PRIMARY KEY, txid TEXT, at INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS heartbeat_log (vault TEXT NOT NULL, at INTEGER NOT NULL, hash TEXT NOT NULL, PRIMARY KEY (vault, at))',
   'CREATE TABLE IF NOT EXISTS alert_state (class TEXT PRIMARY KEY, value TEXT, at INTEGER NOT NULL)',
+  // The vaults this relay sent a create_vault for, with the passkey and cold intent key they were made with. Only these
+  // get the owner key and test coins: anyone can make a vault straight on the contract, as many as they like.
+  'CREATE TABLE IF NOT EXISTS made_vaults (vault TEXT PRIMARY KEY, passkey TEXT NOT NULL, k_e_intent TEXT NOT NULL, at INTEGER NOT NULL)',
+  // One row per owner call sent: vault, method, signer, nonce or request, expiry. A body the contract would refuse
+  // cannot be sent twice, and one it would take cannot be charged twice.
+  'CREATE TABLE IF NOT EXISTS owner_sent (vault TEXT NOT NULL, call TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (vault, call))',
 ];
+
+export const UNCHECKED = `${OWNER}_unchecked`;
 
 const dayOf = (now) => Math.floor(now / DAY);
 const resetsAt = (now) => (dayOf(now) + 1) * DAY;
@@ -61,39 +70,63 @@ export class UndoState {
     this.sql.exec('DELETE FROM vault_counter WHERE window_start < ?', now - 2 * DAY);
     this.sql.exec('DELETE FROM daily_ceiling WHERE day < ?', dayOf(now) - 7);
     this.sql.exec('DELETE FROM heartbeat_log WHERE at < ?', now - DAY);
+    // A day's limits outlive this, and an old body is refused on its nonce or its request once read.
+    this.sql.exec('DELETE FROM owner_sent WHERE at < ?', now - 2 * DAY);
   }
 
-  /** A ceiling first, because it holds for everybody. Nothing is counted unless everything passes. */
-  chargeNow({ key, method, ipHash, vault, now, ceiling, cost, perIpHour, perVaultMinute, perVaultDay }) {
+  /**
+   * A ceiling first, because it holds for everybody. Nothing is counted unless everything passes. Returns a ticket:
+   * exactly what was counted, so a send that never reached the chain can give back each count it took. `share` is a
+   * second, smaller ceiling the call also counts against. `rows` name the per-vault counters, which differ for a call
+   * the relay could not check.
+   */
+  chargeNow({ key, method, ipHash, vault, now, ceiling, cost, perIpHour, share = null, rows = null }) {
     this.prune(now);
     const spent = this.spentToday(key, now);
     if (spent + cost > ceiling) return { ok: false, code: 'daily_ceiling', bucket: key, resets_at: resetsAt(now) };
+    if (share && this.spentToday(share.bucket, now) + cost > share.ceiling) return { ok: false, code: 'rate_limited', retry_after_s: 60, unchecked: true };
     const ipWindow = Math.floor(now / HOUR) * HOUR;
-    const vaultWindow = Math.floor(now / MINUTE) * MINUTE;
-    const vaultDay = dayOf(now) * DAY;
-    const dayCounter = `${key}:day`;
     if (perIpHour) {
       const seen = this.first('SELECT count FROM ip_counter WHERE ip_hash = ? AND method = ? AND window_start = ?', ipHash, method, ipWindow)?.count ?? 0;
       if (seen >= perIpHour) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((ipWindow + HOUR - now) / 1000) };
     }
-    if (perVaultMinute) {
-      const seen = this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ?', vault, method, vaultWindow)?.count ?? 0;
-      if (seen >= perVaultMinute) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((vaultWindow + MINUTE - now) / 1000) };
-    }
-    if (perVaultDay) {
-      const seen = this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ?', vault, dayCounter, vaultDay)?.count ?? 0;
-      if (seen >= perVaultDay) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((vaultDay + DAY - now) / 1000) };
+    const counters = [];
+    for (const { name, limit, span } of rows ?? []) {
+      if (!limit) continue;
+      const window = Math.floor(now / span) * span;
+      const seen = this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ?', vault, name, window)?.count ?? 0;
+      if (seen >= limit) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((window + span - now) / 1000) };
+      counters.push([vault, name, window]);
     }
     if (perIpHour) this.sql.exec('INSERT INTO ip_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', ipHash, method, ipWindow);
-    if (perVaultMinute) this.sql.exec('INSERT INTO vault_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', vault, method, vaultWindow);
-    if (perVaultDay) this.sql.exec('INSERT INTO vault_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', vault, dayCounter, vaultDay);
-    this.sql.exec('INSERT INTO daily_ceiling VALUES (?, ?, ?) ON CONFLICT DO UPDATE SET spent = spent + ?', dayOf(now), key, cost, cost);
-    return { ok: true, spent: spent + cost };
+    for (const [v, name, window] of counters) this.sql.exec('INSERT INTO vault_counter VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET count = count + 1', v, name, window);
+    const buckets = share ? [key, share.bucket] : [key];
+    for (const bucket of buckets) this.sql.exec('INSERT INTO daily_ceiling VALUES (?, ?, ?) ON CONFLICT DO UPDATE SET spent = spent + ?', dayOf(now), bucket, cost, cost);
+    return { ok: true, spent: spent + cost, ticket: { day: dayOf(now), buckets, cost, counters } };
   }
 
-  refundNow({ bucket, cost, now }) {
-    this.sql.exec('UPDATE daily_ceiling SET spent = MAX(0, spent - ?) WHERE day = ? AND bucket = ?', cost, dayOf(now), bucket);
+  /** Gives back a ceiling. With a ticket, on the day it was charged, and its per-vault counts too when `counters`. */
+  refundNow({ bucket, cost, now, ticket = null, counters = false }) {
+    if (!ticket) {
+      this.sql.exec('UPDATE daily_ceiling SET spent = MAX(0, spent - ?) WHERE day = ? AND bucket = ?', cost, dayOf(now), bucket);
+      return { ok: true };
+    }
+    const day = Number.isSafeInteger(ticket.day) ? ticket.day : dayOf(now);
+    const back = Number.isFinite(cost) ? cost : ticket.cost;
+    for (const b of Array.isArray(ticket.buckets) ? ticket.buckets : []) {
+      if (typeof b === 'string') this.sql.exec('UPDATE daily_ceiling SET spent = MAX(0, spent - ?) WHERE day = ? AND bucket = ?', back, day, b);
+    }
+    if (!counters) return { ok: true };
+    for (const [v, name, window] of Array.isArray(ticket.counters) ? ticket.counters : []) {
+      this.sql.exec('UPDATE vault_counter SET count = MAX(0, count - 1) WHERE vault = ? AND method = ? AND window_start = ?', v, name, window);
+    }
+    if (Array.isArray(ticket.sent)) this.sql.exec('DELETE FROM owner_sent WHERE vault = ? AND call = ?', ticket.sent[0], ticket.sent[1]);
+    if (typeof ticket.made === 'string') this.sql.exec('DELETE FROM made_vaults WHERE vault = ?', ticket.made);
     return { ok: true };
+  }
+
+  madeRow(vault) {
+    return this.first('SELECT passkey, k_e_intent FROM made_vaults WHERE vault = ?', vault);
   }
 
   // ------------------------------------------------------------ dispenser
@@ -111,10 +144,51 @@ export class UndoState {
   }
 
   static OPS = {
-    charge({ key, method, ipHash = null, vault = null, now, ceiling }) {
+    /**
+     * An owner call is charged only for a vault this relay made, and only once per signed call (`call`). One the relay
+     * could not check (`checked: false`) counts on its own per-vault rows and its own share of the owner ceiling: a
+     * tenth, and a fifth for a vault's first such call of the day.
+     */
+    charge({ key, method, ipHash = null, vault = null, now, ceiling, checked = true, call = null }) {
       const spec = RELAY_METHODS[method];
       if (!spec || spec.key !== key || !Number.isFinite(ceiling)) return { ok: false, code: 'bad_request' };
-      return this.chargeNow({ key, method, ipHash, vault, now, ceiling, cost: spec.costMicro, perIpHour: spec.perIpHour, perVaultMinute: spec.perVaultMinute, perVaultDay: spec.perVaultDay });
+      const owner = key === OWNER;
+      if (owner && (typeof vault !== 'string' || !this.madeRow(vault))) return { ok: false, code: 'not_this_relays' };
+      if (owner && (typeof call !== 'string' || !call)) return { ok: false, code: 'bad_request' };
+      if (owner && this.first('SELECT at FROM owner_sent WHERE vault = ? AND call = ?', vault, call)) return { ok: false, code: 'already_sent' };
+      const unchecked = owner && checked === false;
+      const rows = unchecked
+        ? [{ name: `${method}:unchecked`, limit: spec.uncheckedPerVaultMinute, span: MINUTE }, { name: `${key}:unchecked:day`, limit: spec.uncheckedPerVaultDay, span: DAY }]
+        : [{ name: method, limit: spec.perVaultMinute, span: MINUTE }, { name: `${key}:day`, limit: spec.perVaultDay, span: DAY }];
+      // A vault's first unchecked call of the day may go past the shared tenth, up to a fifth. Junk sprayed over other
+      // vaults then cannot use up a recovered owner's one cancel unless it reaches a tenth's worth of other vaults first.
+      const firstToday = unchecked && !this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ? AND count > 0', vault, `${key}:unchecked:day`, Math.floor(now / DAY) * DAY);
+      const share = unchecked ? { bucket: UNCHECKED, ceiling: Math.floor(ceiling * OWNER_UNCHECKED_SHARE) * (firstToday ? 2 : 1) } : null;
+      const out = this.chargeNow({ key, method, ipHash, vault, now, ceiling, cost: spec.costMicro, perIpHour: spec.perIpHour, share, rows });
+      if (out.ok && owner) {
+        this.sql.exec('INSERT INTO owner_sent VALUES (?, ?, ?)', vault, call, now);
+        out.ticket.sent = [vault, call];
+      }
+      return out;
+    },
+
+    /**
+     * A create_vault this relay is about to send. `made` says whether this call wrote the row, so only it takes the row
+     * back if its own send never reaches the chain. A row written in the last two minutes means another send of the same
+     * create is under way: `busy`, and the handler sends nothing, so a node refusing one of two sends cannot take away
+     * the row of the one that landed. An older row stays as it is, and is never this call's to take back.
+     */
+    made({ vault, passkey, k_e_intent: cold, now }) {
+      if (![vault, passkey, cold].every((v) => typeof v === 'string' && /^[0-9a-f]+$/.test(v))) return { ok: false, code: 'bad_request' };
+      const row = this.first('SELECT at FROM made_vaults WHERE vault = ?', vault);
+      if (row) return { ok: true, made: false, busy: now - row.at < CLAIM_MS };
+      this.sql.exec('INSERT INTO made_vaults VALUES (?, ?, ?, ?)', vault, passkey, cold, now);
+      return { ok: true, made: true };
+    },
+
+    /** Null for a vault this relay did not make. */
+    madeVault({ vault }) {
+      return { ok: true, row: typeof vault === 'string' ? this.madeRow(vault) : null };
     },
 
     /** The rest of a call whose size was only known after a read, such as an execute of several inputs. */
@@ -126,9 +200,13 @@ export class UndoState {
       return { ok: true };
     },
 
-    /** Gives back what a call charged when its transaction never ran. A per-IP count stays. */
-    refund({ bucket, cost, now }) {
-      return this.refundNow({ bucket, cost, now });
+    /**
+     * Gives back what a call charged when its transaction never ran. With `counters`, the send itself failed before
+     * the chain had it, so its per-vault counts, its owner call row and a vault row it wrote come back too. A per-IP
+     * count stays, so a flood from one address reaches the chain only as often as its limit.
+     */
+    refund({ bucket, cost, now, ticket = null, counters = false }) {
+      return this.refundNow({ bucket, cost, now, ticket, counters });
     },
 
     /** One row per key, so the general key's traffic can never hold up the owner key's. */

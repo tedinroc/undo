@@ -39,6 +39,7 @@ export function sheetSentence(tries) {
 
 export function reportText({ sense, config, passkeyFlags, proofS, tries, operator, answers, vault, problems = [], awake = null }) {
   const lines = ['Undo phone test report', `Page: ${config.labels.chip}, contract ${config.contract}, rp id ${config.rpId}`, `Browser: ${sense.ua}`];
+  lines.push('Everything below was made or seen in this browser tab. A link cannot add to it.');
   lines.push(`Opened inside an app: ${sense.inApp ?? 'no'}. Passkeys in this browser: ${yesNo(sense.api)}. Secure page: ${yesNo(sense.secure)}. Platform authenticator: ${yesNo(sense.platform)}.`);
   if (awake) lines.push(`Screen kept on during the wait: ${awake}.`);
   for (const p of problems) lines.push(`Problem seen: ${p}`);

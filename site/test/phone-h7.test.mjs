@@ -69,7 +69,8 @@ async function clickOn(selector) {
   await cdp.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: box.x, y: box.y, button: 'left', clickCount: 1 });
 }
 
-const logCount = () => cdp.page('return (new URLSearchParams(location.hash.slice(1)).get("log") ?? "").split("~").filter(Boolean).length;');
+// What the run did is kept in the tab's sessionStorage, never in the link.
+const logCount = () => cdp.page('return (JSON.parse(sessionStorage.getItem("undo-h7") ?? "{}").log ?? "").split("~").filter(Boolean).length;');
 
 test('no high-S in 8 tries: 7 cancels and the film\'s call, the report says the fixture has to cover it, and a reload midway loses nothing', { skip, timeout: 360_000 }, async (t) => {
   await cdp.send('WebAuthn.clearCredentials', { authenticatorId });
