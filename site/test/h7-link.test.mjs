@@ -65,7 +65,8 @@ globalThis.requestAnimationFrame = () => 0;
 globalThis.cancelAnimationFrame = () => {};
 globalThis.scrollTo = () => {};
 
-const { parsePhoneFragment, recallH7, rememberH7 } = await import('../pages/p/phone-fragment.mjs');
+const { parsePhoneFragment, recallCredential, recallH7, rememberH7 } = await import('../pages/p/phone-fragment.mjs');
+const { reportText, sFormSentence } = await import('../pages/p/h7-report.mjs');
 const { runH7 } = await import('../pages/p/h7.mjs');
 const { checkConfig } = await import('../lib/config.mjs');
 const { softCredentials } = await import('../lib/soft-authenticator.mjs');
@@ -161,4 +162,35 @@ test('AUDIT-5: the operator check signs only the deploy\'s own digest, which the
   const link = parsePhoneFragment(`#opproof=${nonce}&opfor=${instance}`);
   assert.deepEqual([link.opproof, link.opfor], [nonce, instance]);
   assert.equal(parsePhoneFragment('#opproof=zz&opfor=a').opproof, undefined);
+  for (const short of [nonce.slice(1), `${nonce}a`]) {
+    const out = parsePhoneFragment(`#opproof=${short}&opfor=${instance}`);
+    assert.deepEqual([out.opproof, out.refused], [undefined, ['opproof']], `a nonce of ${short.length} characters is not the deploy's`);
+  }
+});
+
+test('a stored credential id is used only in its own form: junk under the key cannot break Cancel', () => {
+  const kept = new Map();
+  const win = { localStorage: { getItem: (k) => kept.get(k) ?? null, setItem: (k, v) => kept.set(k, v) } };
+  assert.equal(recallCredential(VAULT, win), null);
+  kept.set(`undo.passkey.${VAULT}`, 'ownCred_1-x');
+  assert.equal(recallCredential(VAULT, win), 'ownCred_1-x');
+  for (const junk of ['bad id!', '<script>', '', 'a'.repeat(513)]) {
+    kept.set(`undo.passkey.${VAULT}`, junk);
+    assert.equal(recallCredential(VAULT, win), null, JSON.stringify(junk.slice(0, 20)));
+  }
+  assert.equal(recallCredential(VAULT, { get localStorage() { throw new Error('blocked'); } }), null, 'and storage that throws is no id');
+});
+
+test('the report says which call each try was and its S form, and claims no high-S result before eight tries', () => {
+  const tryOf = (m, s) => ({ m, s, sheetMs: 900, includedMs: 2100, readMs: 2600, hidden: false, blurred: false, pagehide: false, stallMs: 30, hash: null });
+  const base = { sense: { ua: 'node', inApp: null, api: true, secure: true, platform: true }, config, passkeyFlags: { be: true, bs: false }, operator: null, answers: {}, vault: VAULT };
+  const lines = (over) => reportText({ ...base, ...over }).split('\n');
+  const mixed = lines({ proofS: 'l', tries: [tryOf('c', 'l'), tryOf('r', 'h')] });
+  assert.ok(mixed.includes('Creation tap: low-S.'), mixed.join('\n'));
+  assert.ok(mixed.some((l) => l.startsWith('Try 1: cancel, low-S, contract took it.')), mixed.join('\n'));
+  assert.ok(mixed.some((l) => l.startsWith('Try 2: cancel_all_and_rotate, high-S, contract took it.')), mixed.join('\n'));
+  assert.ok(mixed.includes('A high-S signature appeared on try 2 of 2. The page sent it in low-S form and the contract took it.'));
+  assert.ok(lines({ proofS: 'h', tries: [] }).includes('Creation tap: high-S.'));
+  for (let n = 1; n < 8; n += 1) assert.equal(sFormSentence(Array(n).fill(tryOf('c', 'l'))), `${n} of 8 tries so far, no high-S yet.`);
+  assert.equal(sFormSentence(Array(8).fill(tryOf('c', 'l'))), 'No high-S signature in 8 tries. Fixtures cover high-S, and CLAIMS.md must say so.');
 });

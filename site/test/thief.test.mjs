@@ -55,6 +55,8 @@ describe('rules with no page around them', () => {
     assert.equal(toHex(parseSeed(` ${hex.slice(0, 30)}\n${hex.slice(30)} `)), hex);
     assert.equal(toHex(parseSeed(hex.toUpperCase())), hex);
     assert.equal(parseSeed('ab'.repeat(31)), null);
+    assert.equal(parseSeed('ab'.repeat(33)), null, 'not 64 characters out of a longer paste');
+    assert.equal(parseSeed(`key:${hex}`), null, 'nor out of junk around them');
     assert.equal(parseSeed('zz'.repeat(32)), null);
     assert.equal(parseSeed(''), null);
   });
@@ -101,6 +103,9 @@ describe('rules with no page around them', () => {
     assert.equal(await liveRequestIn([1, 2, 3], async (id) => ({ kind: kinds[id] })), 1);
     assert.equal(await liveRequestIn([2, 3], async (id) => ({ kind: kinds[id] })), null);
     assert.equal(await liveRequestIn([], async () => null), null);
+    const many = { 1: 'waiting', 2: 'unlocked', 3: 'cancelled', 4: 'signing', 5: 'expired' };
+    assert.equal(await liveRequestIn([1, 2, 3, 4, 5], async (id) => ({ kind: many[id] })), 4, 'newest first, and one still asking for signatures is live');
+    assert.equal(await liveRequestIn([3, 2, 1], async (id) => ({ kind: many[id] })), 2, 'whatever order the link\'s list is in');
   });
 
   test('while signing, execute goes again every interval, and stops once the request can no longer ask for signatures', async () => {
@@ -119,6 +124,8 @@ describe('rules with no page around them', () => {
         sleep: async (ms) => {
           slept.push(ms);
           at += 1;
+          // Every run here ends within a few waits. One that does not would otherwise spin until memory runs out.
+          if (slept.length > 20) throw new Error('resendWhileSigning did not stop');
         },
         everyMs: 30_000,
       });

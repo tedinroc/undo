@@ -47,9 +47,6 @@ const PF = 'site/pages/p/phone-fragment.mjs';
 const OC = 'site/pages/p/own-cancel.mjs';
 const HR = 'site/pages/p/h7-report.mjs';
 
-// Only phone.test.mjs reads the test mode's report, and it runs in Chrome.
-const H7_IN_CHROME = 'phone.test.mjs reads the report, in Chrome';
-
 // [name, file, old text, new text, a Chrome test that checks it]
 const MUTANTS = [
   // ---------------------------------------------------------------- the relay's front door
@@ -210,9 +207,10 @@ const MUTANTS = [
   ['thief: Send everything pays no fee', BT, 'const amount = total - fee;', 'const amount = total;'],
 
   // ---------------------------------------------------------------- links: what a fragment may say
-  ['link: fields taken unchecked', FR, "if (RULES[name].test(value)) out[name] = name === 'r' ? Number(value) : value;\n    else refused.push(name);", "out[name] = name === 'r' ? Number(value) : value;"],
+  ['link: fields taken unchecked', FR, "if (fits(name, value)) out[name] = name === 'r' ? Number(value) : value;\n    else refused.push(name);", "out[name] = name === 'r' ? Number(value) : value;"],
   ['link: a short vault id is taken', FR, 'v: /^[0-9a-f]{64}$/,          // vault id', 'v: /^[0-9a-f]{1,64}$/,          // vault id'],
-  ['link: a request id past 2^53 is taken', FR, 'r: /^(0|[1-9][0-9]{0,15})$/,', 'r: /^[0-9]{1,20}$/,'],
+  ['link: a request id with a leading zero is taken', FR, 'r: /^(0|[1-9][0-9]{0,15})$/,', 'r: /^[0-9]{1,20}$/,'],
+  ['link: a request id past 2^53 is taken', FR, " && (name !== 'r' || Number.isSafeInteger(Number(text)))", ''],
   ['link: a destination of any characters', FR, 'to: /^[a-z0-9]{14,90}$/,', 'to: /^.{14,90}$/,'],
   ['link: the seed stays in the address bar', FR, 'delete fields.k;', ''],
   ['phone link: its own fields taken unchecked', PF, 'if (EXTRA[name].test(value)) out[name] = value;\n    else out.refused.push(name);', 'out[name] = value;'],
@@ -221,10 +219,10 @@ const MUTANTS = [
   ['phone: a stored credential id read unchecked', PF, 'return value && CREDENTIAL_ID.test(value) ? value : null;', 'return value || null;'],
 
   // ---------------------------------------------------------------- the test mode's report
-  ['h7: the creation tap\'s S form swapped', HR, "proofS === 'h' ? 'high-S' : 'low-S'", "proofS === 'h' ? 'low-S' : 'high-S'", H7_IN_CHROME],
-  ['h7: each try\'s S form swapped', HR, "${t.s === 'h' ? 'high-S' : 'low-S'}", "${t.s === 'h' ? 'low-S' : 'high-S'}", H7_IN_CHROME],
-  ['h7: no high-S claimed after one try', HR, 'if (tries.length >= 8) return', 'if (tries.length >= 1) return', H7_IN_CHROME],
-  ['h7: the call names swapped', HR, "const call = t.m === 'r' ? 'cancel_all_and_rotate' : 'cancel';", "const call = t.m === 'r' ? 'cancel' : 'cancel_all_and_rotate';", H7_IN_CHROME],
+  ['h7: the creation tap\'s S form swapped', HR, "proofS === 'h' ? 'high-S' : 'low-S'", "proofS === 'h' ? 'low-S' : 'high-S'"],
+  ['h7: each try\'s S form swapped', HR, "${t.s === 'h' ? 'high-S' : 'low-S'}", "${t.s === 'h' ? 'low-S' : 'high-S'}"],
+  ['h7: no high-S claimed after one try', HR, 'if (tries.length >= 8) return', 'if (tries.length >= 1) return'],
+  ['h7: the call names swapped', HR, "const call = t.m === 'r' ? 'cancel_all_and_rotate' : 'cancel';", "const call = t.m === 'r' ? 'cancel' : 'cancel_all_and_rotate';"],
 ].map(([name, file, from, to, chrome = null]) => ({ name, file, from, to, chrome }));
 
 // ---------------------------------------------------------------- which tests
@@ -247,6 +245,7 @@ const NEAREST = [
   [TL, ['thief.test.mjs', 'thief-link.test.mjs']],
   [PF, ['h7-link.test.mjs', 'thief-link.test.mjs']],
   [OC, ['phone-unit.test.mjs']],
+  [HR, ['h7-link.test.mjs']],
 ];
 
 /** The tiers a mutant of `file` goes through, nearest tests first. */
@@ -357,7 +356,7 @@ function selfTest() {
     ['every tier passed', afterAllTiers({ chrome: null }, { stage: true }).verdict, 'SURVIVED'],
     ['the relay\'s mutants start at relay.test.mjs', tiersFor(H)[0].files.join(), `${SITE_TEST}/relay.test.mjs`],
     ['the site tier has no stage test', tiersFor(H)[1].files.some((f) => STAGE.includes(f)), false],
-    ['the stage tier is last', tiersFor(HR).map((t) => t.name).join(), 'site,stage'],
+    ['a file with no nearest tests starts at the site tier, and the stage tier is last', tiersFor('site/lib/clock.mjs').map((t) => t.name).join(), 'site,stage'],
   ];
   const wrong = cases.filter(([, got, want]) => got !== want);
   for (const [name, got, want] of wrong) console.log(`WRONG ${name}: ${got}, not ${want}`);
@@ -420,8 +419,8 @@ class Slots {
 
 const NODE_RUNS = new Slots(4);
 const STAGE_RUNS = new Slots(3);
-// The site tier takes under a minute. A mutant that makes a loop never end can take minutes to fail a test, when that
-// test's own array overflows: three minutes on an idle machine, over five on a busy one. This leaves room for that.
+// The site tier takes under a minute. A loop a mutant makes endless is stopped by its test's own cap (thief.test.mjs
+// caps resendWhileSigning's waits), so the limit only bounds a run that hangs, and leaves room for a busy machine.
 const TIME_LIMIT = { fast: 600_000, stage: 1_500_000 };
 
 /** One `node --test` in its own process group, so a time limit stops the sandbox, bitcoind and workerd it started too. */

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { sha256 } from '../../tools/lib/crypto.mjs';
 import { toHex } from '../../tools/lib/bytes.mjs';
 import { fromBase64, fromBase64Url, toBase64, toBase64Url } from '../lib/base64.mjs';
-import { postTxOnce } from '../lib/bitcoin.mjs';
+import { p2wshSpk, postTxOnce, scriptMatchesVault } from '../lib/bitcoin.mjs';
 import { clock, digits, SkewTracker } from '../lib/clock.mjs';
 import { btcAddressLabel, btcTxLabel, btcTxLink, checkConfig, ConfigError, loadConfig, nearTxLabel } from '../lib/config.mjs';
 import { buildFragment, parseFragment, withoutSecret } from '../lib/fragment.mjs';
@@ -254,6 +254,29 @@ test('fragment: round trip, and a malformed field is reported and not used', () 
   assert.throws(() => buildFragment({ query: '1' }));
 });
 
+test('fragment: each field is exactly its form. A request id reads back as itself, never rounded to another', () => {
+  const v = hex32('vault');
+  const cases = [
+    [`#v=${v.slice(1)}`, 'v'],
+    [`#v=${v}a`, 'v'],
+    ['#r=01', 'r'],
+    ['#r=99999999999999999', 'r'],
+    // Sixteen digits, but past 2^53: Number() would read 9007199254740992, another request.
+    ['#r=9007199254740993', 'r'],
+    ['#r=9999999999999999', 'r'],
+    ['#to=tb1q<aaaaaaaaaaaaaaaaaaaa', 'to'],
+    ['#to=TB1QAAAAAAAAAAAAAAAAAAAA', 'to'],
+    ['#to=tb1q%20aaaaaaaaaaaaaaaaaaa', 'to'],
+  ];
+  for (const [hash, field] of cases) {
+    const out = parseFragment(hash);
+    assert.deepEqual([out[field], out.refused], [undefined, [field]], hash);
+  }
+  assert.equal(parseFragment('#r=9007199254740991').r, Number.MAX_SAFE_INTEGER, 'the largest id a page can hold still reads');
+  assert.equal(parseFragment('#r=0').r, 0);
+  assert.throws(() => buildFragment({ r: 2 ** 53 }), /malformed/, 'and none is written');
+});
+
 test('fragment: a stolen seed can be taken back out of the address bar', () => {
   const v = hex32('vault');
   const hash = buildFragment({ v, k: hex32('stolen') });
@@ -422,6 +445,14 @@ test('postTxOnce: sends once, as text', async () => {
     return { status: 503, text: async () => '' };
   } });
   assert.deepEqual(calls, [{ url: 'http://x/tx', body: 'aabb', type: 'text/plain' }]);
+});
+
+test('scriptMatchesVault: the thief tab goes on only when the contract\'s script pays the vault\'s own address', () => {
+  const script = new TextEncoder().encode('undo-test-only:web:script-a');
+  const vault = { script_pubkey: toHex(p2wshSpk(script)) };
+  assert.equal(scriptMatchesVault(script, vault), true);
+  assert.equal(scriptMatchesVault(new TextEncoder().encode('undo-test-only:web:script-b'), vault), false, 'another vault\'s script');
+  assert.equal(scriptMatchesVault(script, { script_pubkey: `0014${'11'.repeat(20)}` }), false, 'a key hash, not this script');
 });
 
 // ---------------------------------------------------------------- views

@@ -10,13 +10,16 @@ const RULES = {
   k: /^[0-9a-f]{64}$/,          // the thief tab's stolen seed. Throwaway test coins, and only where a page asks for it
 };
 
+// Sixteen digits reach past 2^53, where Number() rounds an id to another request's, so `r` must also read back as itself.
+const fits = (name, text) => RULES[name].test(text) && (name !== 'r' || Number.isSafeInteger(Number(text)));
+
 export function parseFragment(hash) {
   const text = String(hash ?? '').replace(/^#/, '');
   const out = {};
   const refused = [];
   for (const [name, value] of new URLSearchParams(text)) {
     if (!Object.hasOwn(RULES, name)) continue;
-    if (RULES[name].test(value)) out[name] = name === 'r' ? Number(value) : value;
+    if (fits(name, value)) out[name] = name === 'r' ? Number(value) : value;
     else refused.push(name);
   }
   return { ...out, refused };
@@ -28,7 +31,7 @@ export function buildFragment(fields) {
     if (value === null || value === undefined) continue;
     if (!Object.hasOwn(RULES, name)) throw new Error(`no such fragment field: ${name}`);
     const text = String(value);
-    if (!RULES[name].test(text)) throw new Error(`fragment field ${name} is malformed`);
+    if (!fits(name, text)) throw new Error(`fragment field ${name} is malformed`);
     parts.push(`${name}=${text}`);
   }
   return `#${parts.join('&')}`;

@@ -12,17 +12,18 @@ import { base58Encode, fromBase64, fromHex, toHex, utf8 } from '../../tools/lib/
 import { signColdIntent } from '../../tools/lib/cold-intent.mjs';
 import { ed25519, p256, secp256k1, sha256 } from '../../tools/lib/crypto.mjs';
 import { buildFunding as originalFunding, parseDispenser } from '../../tools/lib/dispenser.mjs';
+import { argBytes, intentDigest, signEd25519, SPEND_TAG } from '../../tools/lib/intent.mjs';
 import { coldKeys } from '../../tools/lib/keys.mjs';
 import { action, keyFromSecret, milliNear, signTransaction, TGAS } from '../../tools/lib/near.mjs';
 import { canaryBeat } from '../../worker/undo-cron/src/index.mjs';
 import { UndoState } from '../../worker/undo-cron/src/undo-state.mjs';
-import { limitAddress, workerFetch } from '../functions/_relay/answer.mjs';
+import { ed25519Verifies, hashIp, limitAddress, workerFetch } from '../functions/_relay/answer.mjs';
 import { buildFunding, dispenserFromSecret } from '../functions/_relay/funding.mjs';
 import { makeRelay } from '../functions/_relay/handler.mjs';
 import { p256Uncompressed } from '../functions/_relay/owner-check.mjs';
 import { StateClient } from '../functions/_relay/state-client.mjs';
 import { cancelArgs, cancelDigest, rotateArgs, rotateDigest } from '../lib/intents.mjs';
-import { CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, OWNER_ALLOWANCE_NEAR, ownerAllowanceNeeded, RELAY_METHODS } from '../lib/relay-table.mjs';
+import { CEILING_OWNER_DEFAULT_MICRO, CREATE_SHARE, OWNER_ALLOWANCE_NEAR, ownerAllowanceNeeded, RELAY_METHODS, relayBodyProblem } from '../lib/relay-table.mjs';
 import { RelayClient } from '../lib/relay-client.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
@@ -460,6 +461,20 @@ test('relay: a missing binding says so. No fallback values, and a cancel needs o
   const refused = await badKey.relay('heartbeat', { vault: VAULT });
   assert.equal(refused.body.code, 'relay_not_configured');
   assert.ok(!JSON.stringify(refused.body).includes('notakey'));
+
+  // The general key alone is not enough: with no salt there is no per-address limit, and with no state store no limit
+  // or ceiling at all. Status says so, and nothing general goes.
+  for (const [what, extra] of [['salt', { IP_SALT: undefined }], ['state store', { UNDO_STATE: null }]]) {
+    const w = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow() } });
+    const half = relayWith(w, extra);
+    const st = (await half.status()).body;
+    assert.deepEqual([st.general.up, st.general.why], [false, 'relay_not_configured'], `status with no ${what}`);
+    for (const [method, args] of [['execute', { vault: VAULT, request: 1 }], ['heartbeat', { vault: VAULT }]]) {
+      const out = await half.relay(method, args);
+      assert.deepEqual([out.status, out.body.code], [503, 'relay_not_configured'], `${method} with no ${what}`);
+    }
+    assert.equal(w.sent.length, 0, `the general key signed nothing with no ${what}`);
+  }
 });
 
 // ---------------------------------------------------------------- handler: what gets sent
@@ -1251,7 +1266,13 @@ test('attack 5: vaults stop at their share of the general ceiling, and calls on 
   await r.state.call('charge', { key: 'general', method: 'create_vault', ipHash: 'x', vault: null, now: NOW, ceiling });
   const s = (await r.status()).body.general;
   assert.deepEqual([s.up, s.why, s.calls_fit], [false, 'daily_ceiling', true], 'no new vault fits, and calls do');
-  assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true);
+  // A second vault would still fit under the whole ceiling, but not under the vaults' share of it.
+  assert.ok(2 * create <= ceiling && 2 * create > Math.floor(ceiling * CREATE_SHARE));
+  const built = await createBody('share');
+  const refused = await r.relay('create_vault', built.args, { pow: 0 });
+  assert.deepEqual([refused.status, refused.body.code, refused.body.bucket], [429, 'daily_ceiling', 'general'], 'the create is refused at the share');
+  assert.equal(world.sent.length, 0, 'the general key signed no create');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true, 'and a call on a vault that exists still goes');
 });
 
 test('attack 6: status says when the owner key cannot pay, and a dead RPC claims nothing', async () => {
@@ -1292,7 +1313,8 @@ test('attack 6: a tap refused for allowance turns the status off, until a read s
 test('attack 7: heartbeat is off the public list. A stranger can\'t make a vault read guard online', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
   const r = relayWith(world);
-  for (const beat of [null, 'wrong', `${BEAT}x`]) {
+  // Of the token's own length too, wrong in its first or last character: knowing the length is not knowing the token.
+  for (const beat of [null, 'wrong', `${BEAT}x`, `x${BEAT.slice(1)}`, `${BEAT.slice(0, -1)}x`]) {
     const out = await r.relay('heartbeat', { vault: VAULT }, { beat });
     assert.deepEqual([out.status, out.body.code], [400, 'unknown_method'], String(beat));
   }
@@ -1379,6 +1401,30 @@ test('attack 12: a chunked body is read only up to the cap', async () => {
   assert.ok(pulled < 40, `read ${pulled} KB of 10,000 KB before stopping`);
   const fits = new Request('https://site.test/api/relay', { method: 'POST', body: new ReadableStream({ start(c) { c.enqueue(utf8('{"method":"x",')); c.enqueue(utf8('"args":{}}')); c.close(); } }), duplex: 'half' });
   assert.equal((await (await handler(fits)).json()).code, 'unknown_method', 'a body in pieces still reads whole');
+});
+
+test('attack 12: a declared length over the cap is refused before a byte is read, whatever follows it', async () => {
+  const world = fakeWorld();
+  const r = relayWith(world);
+  const handler = makeRelay(r.env, { fetchFn: world.fetchFn, nowFn: () => NOW });
+  const declared = (body) => new Request('https://site.test/api/relay', {
+    method: 'POST', headers: { 'content-type': 'application/json', 'content-length': '30000', 'x-undo-beat': BEAT }, body, duplex: 'half',
+  });
+  const short = await handler(declared(JSON.stringify({ method: 'heartbeat', args: { vault: VAULT } })));
+  assert.deepEqual([short.status, (await short.json()).message], [400, 'the body is too large'], 'a short body under a long claim');
+  let pulled = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulled += 1;
+      if (pulled > 100) controller.close();
+      else controller.enqueue(new Uint8Array(1024));
+    },
+  });
+  const res = await handler(declared(stream));
+  assert.deepEqual([res.status, (await res.json()).message], [400, 'the body is too large']);
+  assert.ok(pulled <= 1, `the stream filled its queue once, and nothing read it: pulled ${pulled} KB`);
+  assert.equal(world.sent.length, 0);
+  assert.equal(r.ns.calls.length, 0);
 });
 
 test('attack 13: a method is a string. An array or an object is not on the list, whatever it coerces to', async () => {
@@ -1500,9 +1546,12 @@ test('AUDIT-1: a WebAuthn object with a field the contract lacks, or a cancel na
   const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
   const both = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: { Passkey: args, Cold: 'ab'.repeat(65) } };
   const neither = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: {} };
+  // A P-256 signature is 64 bytes, r then s. With the vault read down, one of another length would go as an unchecked call.
+  const sigOf = (assertion, bytes) => ({ ...assertion, signature: 'ab'.repeat(bytes) });
+  const lengths = [63, 65].flatMap((n) => [['cancel_all_and_rotate', { ...good, assertion: sigOf(good.assertion, n) }], ['cancel', { ...both, auth: { Passkey: sigOf(args, n) } }]]);
   await r.ready();
   const callsBefore = r.ns.calls.length;
-  for (const [method, body] of [['cancel_all_and_rotate', padded], ['cancel', both], ['cancel', neither], ['cancel', { ...both, auth: { Passkey: { ...args, extra: '00' } } }]]) {
+  for (const [method, body] of [['cancel_all_and_rotate', padded], ['cancel', both], ['cancel', neither], ['cancel', { ...both, auth: { Passkey: { ...args, extra: '00' } } }], ...lengths]) {
     const out = await r.relay(method, body);
     assert.deepEqual([out.status, out.body.code], [400, 'bad_request'], JSON.stringify(Object.keys(body.auth ?? body.assertion)));
   }
@@ -1849,4 +1898,210 @@ test('AUDIT-4: status calls general up only when a new vault and a 4-input execu
   assert.deepEqual(await general(), [true, null, false]);
   assert.equal((await r.relay('create_vault', built.args, { pow: 0 })).body.ok, true, 'the create goes');
   assert.equal((await r.relay('execute', { vault: VAULT, request: 4 })).body.ok, true, 'and a 4-input execute');
+});
+
+// ---------------------------------------------------------------- what the relay mutants found
+
+/** A propose_btc body signed by `ks`, the shape relayBodyProblem takes, of `n` inputs. */
+function proposeArgs({ n = 1, ks = label('ks'), ...over } = {}) {
+  const inputs = Array.from({ length: n }, (_, i) => ({ txid: toHex(label(`coin-${i}`)), vout: 0, value: 2000 }));
+  const fields = { vault: VAULT, inputs, to: `0014${'11'.repeat(20)}`, amount: 1500, change: null, half_sigs: inputs.map(() => 'ab'.repeat(65)), nonce: 0, expires_at: NOW + 60_000, memo: null, ...over };
+  const digest = intentDigest({ tag: SPEND_TAG, contract: CONTRACT, vault: fromHex(fields.vault), method: 'propose_btc', args: argBytes.propose_btc({ inputs: fields.inputs, to: fromHex(fields.to), amount: fields.amount, change: fields.change, memo: fields.memo }), expiresAt: fields.expires_at, nonce: fields.nonce });
+  return { ...fields, spend_sig: toHex(signEd25519(digest, ks)) };
+}
+
+/** A namespace like localStateNamespace, where `rule(op, body)` may answer for the state store, or throw as a dead one. */
+function stateWith(rule) {
+  const ns = localStateNamespace();
+  const realGet = ns.get;
+  ns.get = (id) => {
+    const stub = realGet(id);
+    return {
+      fetch: async (url, init) => {
+        const answer = rule(new URL(url).pathname.slice(1), init?.body ? JSON.parse(init.body) : {});
+        return answer ?? stub.fetch(url, init);
+      },
+    };
+  };
+  return ns;
+}
+
+test('shape: at most sixteen inputs, and a creation takes the instance\'s policy, never its own. Refused before anything', async () => {
+  assert.equal(relayBodyProblem({ method: 'propose_btc', args: proposeArgs({ n: 16 }) }), null, 'sixteen is the most');
+  assert.equal(relayBodyProblem({ method: 'propose_btc', args: proposeArgs({ n: 17 }) }), 'bad_request');
+  const built = await createBody('own-policy');
+  assert.equal(relayBodyProblem({ method: 'create_vault', args: built.args, pow: 0 }), null);
+  // The relay checks the spend key's proof against the instance's policy. One the body chose would pass that check and
+  // be refused by the contract, after the general key paid for it.
+  assert.equal(relayBodyProblem({ method: 'create_vault', args: { ...built.args, policy: POLICY }, pow: 0 }), 'bad_request');
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world);
+  for (const [method, args] of [['propose_btc', proposeArgs({ n: 17 })], ['create_vault', { ...built.args, policy: POLICY }]]) {
+    const out = await r.relay(method, args, { pow: 0 });
+    assert.deepEqual([out.status, out.body.code], [400, 'bad_request'], method);
+  }
+  assert.equal(world.sent.length, 0);
+  assert.equal(world.reads, 0);
+  assert.equal(r.ns.calls.length, 0);
+});
+
+test('signature: a key or signature WebCrypto cannot read is no signature, and a vault row with such a key sends nothing', async () => {
+  const digest = sha256(utf8('undo-test-only:relay:message'));
+  const good = { key: ed25519.getPublicKey(label('ks')), sig: signEd25519(digest, label('ks')) };
+  assert.equal(await ed25519Verifies(good.key, good.sig, digest), true);
+  assert.equal(await ed25519Verifies(good.key.slice(0, 31), good.sig, digest), false, 'a key of 31 bytes');
+  assert.equal(await ed25519Verifies(good.key, good.sig.slice(0, 63), digest), false, 'a signature of 63 bytes');
+  // The relay takes a vault's spend key from the chain, so a node's answer decides what reaches this.
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ k_s: toHex(good.key.slice(0, 31)) }) } });
+  const r = relayWith(world);
+  const out = await r.relay('propose_btc', proposeArgs());
+  assert.deepEqual([out.status, out.body.code, out.body.message], [422, 'would_refuse', 'that proposal is not signed by this vault\'s spend key']);
+  assert.equal(world.sent.length, 0);
+  assert.equal(await spentGeneral(r), 0);
+});
+
+test('create: a create whose hash cannot be kept is not sent, and gives back its charge and its row', async () => {
+  const ns = stateWith((op) => (op === 'madeSent' ? new Response(JSON.stringify({ ok: false, code: 'not_this_relays' })) : null));
+  const world = fakeWorld();
+  const r = relayWith(world, { UNDO_STATE: ns });
+  const built = await createBody('unkept');
+  const out = await r.relay('create_vault', built.args, { pow: 0 });
+  assert.deepEqual([out.status, out.body.code, out.body.message], [503, 'state_store_down', 'that vault cannot be recorded']);
+  assert.equal(world.sent.length, 0, 'a vault whose create the relay could not later check would lock its owner out of relay cancels');
+  assert.equal(await spentGeneral(r), 0, 'the charge came back');
+  assert.equal((await r.state.call('madeVault', { vault: built.vaultHex })).row, null, 'and the row it wrote');
+});
+
+test('owner: a vault row whose passkey is on no curve cannot vouch for a call, so it goes as one the relay could not check', async () => {
+  // The contract checks a passkey when it takes one, so this is a node's answer, not a vault on the chain.
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ passkey: `02${'ff'.repeat(32)}` }) } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  const codes = [];
+  for (let i = 0; i < 3; i += 1) codes.push((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: NOW + 60_000 + i }))).body.code ?? 'sent');
+  assert.deepEqual(codes, ['sent', 'sent', 'rate_limited'], `${RELAY_METHODS.cancel_all_and_rotate.uncheckedPerVaultMinute} unchecked calls a minute, not ${RELAY_METHODS.cancel_all_and_rotate.perVaultMinute}`);
+});
+
+test('replay row: two cancels that differ only in their request are two calls, each sent and charged once', async () => {
+  const cold = label('cold-replay');
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ k_e_intent: toHex(coldKeys(cold).intent.pub) }) }, requests: { 1: requestRow(), 2: requestRow() } });
+  const r = relayWith(world);
+  await r.made(VAULT, { cold: toHex(coldKeys(cold).intent.pub) });
+  const expiresAt = NOW + 60_000;
+  const body = (request) => ({ vault: VAULT, request, expires_at: expiresAt, auth: { Cold: signColdIntent({ cold, contract: CONTRACT, vault: VAULT, method: 'cancel', fields: { request }, expiresAt }).signature } });
+  for (const request of [1, 2]) assert.equal((await r.relay('cancel', body(request))).body.ok, true, `the cancel of request ${request}, same expiry`);
+  for (const request of [1, 2]) assert.equal((await r.relay('cancel', body(request))).body.code, 'already_sent', `and request ${request}'s once only`);
+  assert.equal(world.sent.length, 2);
+  assert.equal(await ownerSpent(r), 2 * RELAY_METHODS.cancel.costMicro);
+});
+
+test('per-address: kept only as a hash under the salt, so a list of every IPv4 address cannot read it back', async () => {
+  const kept = async (salt) => {
+    const charges = [];
+    const ns = stateWith((op, body) => {
+      if (op === 'charge') charges.push(body);
+      return null;
+    });
+    const r = relayWith(fakeWorld(), { UNDO_STATE: ns, IP_SALT: salt });
+    assert.equal((await r.relay('heartbeat', { vault: VAULT }, { ip: '198.51.100.7' })).body.ok, true);
+    return charges[0].ipHash;
+  };
+  const a = await kept('undo-test-only:salt-a');
+  assert.equal(a, await hashIp('undo-test-only:salt-a', '198.51.100.7'));
+  assert.notEqual(a, await kept('undo-test-only:salt-b'), 'another salt, another hash');
+  for (const unsalted of ['198.51.100.7', '|198.51.100.7', 'undefined|198.51.100.7']) assert.notEqual(a, toHex(sha256(utf8(unsalted))), unsalted);
+});
+
+test('state down mid-send: a general send never falls back to a chain nonce. It is refused, and its charge comes back', async () => {
+  const ns = stateWith((op) => {
+    if (op === 'lease') throw new Error('gone');
+    return null;
+  });
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow() } });
+  const r = relayWith(world, { UNDO_STATE: ns });
+  for (const [method, args] of [['execute', { vault: VAULT, request: 1 }], ['heartbeat', { vault: VAULT }]]) {
+    const out = await r.relay(method, args);
+    assert.deepEqual([out.status, out.body.code, out.body.degraded], [503, 'state_store_down', undefined], method);
+  }
+  assert.equal(world.sent.length, 0, 'nothing general goes with the state store down');
+  assert.equal(await spentGeneral(r), 0);
+});
+
+test('state: the owner key is charged only for a vault this relay made, in the same step as the charge', async () => {
+  const state = new StateClient(localStateNamespace());
+  const charge = (vault, call = 'c1') => state.call('charge', { key: 'owner', method: 'cancel', vault, now: NOW, ceiling: 1e9, call });
+  assert.equal((await charge(VAULT)).code, 'not_this_relays');
+  assert.equal((await charge(null)).code, 'not_this_relays');
+  assert.equal((await state.call('status', { now: NOW })).spent.owner, 0);
+  await state.call('made', { vault: VAULT, passkey: passkey.hex, k_e_intent: DEFAULT_COLD, now: NOW });
+  assert.equal((await charge(VAULT)).ok, true);
+
+  // The handler asks first, and a store that failed that question but answers the charge still refuses.
+  const ns = stateWith((op) => {
+    if (op === 'madeVault') throw new Error('gone');
+    return null;
+  });
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world, { UNDO_STATE: ns });
+  const out = await r.relay('cancel_all_and_rotate', await rotateBody());
+  assert.deepEqual([out.status, out.body.code], [422, 'not_this_relays']);
+  assert.equal(world.sent.length, 0);
+});
+
+test('refund: a call refused after its charge gives back the ceiling, and its per-vault counts only when its send failed', async () => {
+  const state = new StateClient(localStateNamespace());
+  const cost = RELAY_METHODS.heartbeat.costMicro;
+  const beat = () => state.call('charge', { key: 'general', method: 'heartbeat', ipHash: 'a', vault: VAULT, now: NOW, ceiling: 1e9 });
+  const first = await beat();
+  assert.equal((await beat()).ok, true);
+  assert.equal((await beat()).code, 'rate_limited', `${RELAY_METHODS.heartbeat.perVaultMinute} a minute per vault`);
+  assert.deepEqual(await state.call('refund', { bucket: 'general', cost, now: NOW, ticket: first.ticket, counters: false }), { ok: true });
+  assert.equal((await state.call('status', { now: NOW })).spent.general, cost, 'the ceiling came back');
+  assert.equal((await beat()).code, 'rate_limited', 'the vault\'s count did not');
+  await state.call('refund', { bucket: 'general', cost, now: NOW, ticket: first.ticket, counters: true });
+  assert.equal((await beat()).ok, true, 'a send that never reached the chain gives it back');
+
+  // So a flood of executes that cannot run reaches the RPC only as often as the vault's limit, from any number of addresses.
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow({ unlock: NOW + 281_000 }) } });
+  const r = relayWith(world);
+  const codes = [];
+  for (let i = 0; i <= RELAY_METHODS.execute.perVaultMinute; i += 1) codes.push((await r.relay('execute', { vault: VAULT, request: 1 }, { ip: `198.51.100.${i + 1}` })).body.code);
+  assert.deepEqual(codes, [...Array(RELAY_METHODS.execute.perVaultMinute).fill('would_refuse'), 'rate_limited']);
+  assert.equal(await spentGeneral(r), 0);
+  assert.equal(world.sent.length, 0);
+});
+
+test('made-sends: an answer about an older send of the same create changes nothing', async () => {
+  const state = new StateClient(localStateNamespace());
+  await state.call('made', { vault: VAULT, passkey: passkey.hex, k_e_intent: DEFAULT_COLD, now: NOW });
+  await state.call('madeSent', { vault: VAULT, hash: 'hash-a' });
+  await state.call('madeSent', { vault: VAULT, hash: 'hash-b' });
+  for (const made of [false, true]) assert.deepEqual(await state.call('madeChecked', { vault: VAULT, hash: 'hash-a', made }), { ok: true, changed: false }, `hash-a, made ${made}`);
+  const row = { passkey: passkey.hex, k_e_intent: DEFAULT_COLD, hash: 'hash-b', confirmed: false };
+  assert.deepEqual((await state.call('madeVault', { vault: VAULT })).row, row, 'the row names the send that may have landed, unconfirmed');
+  assert.deepEqual(await state.call('madeChecked', { vault: VAULT, hash: 'hash-b', made: true }), { ok: true, changed: true });
+  assert.deepEqual((await state.call('madeVault', { vault: VAULT })).row, { ...row, confirmed: true });
+});
+
+test('replay row: a signed call stays sent for two days, past the ten-minute prune', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  let clock = NOW;
+  Object.defineProperty(world, 'now', { get: () => clock });
+  const once = await signedRotation({ expiresAt: NOW + 3 * 3_600_000 });
+  assert.equal((await r.relay('cancel_all_and_rotate', once)).body.ok, true);
+  clock += 11 * 60_000;
+  assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true, 'a later charge runs the prune');
+  clock += 60_000;
+  const again = await r.relay('cancel_all_and_rotate', once);
+  assert.deepEqual([again.status, again.body.code], [409, 'already_sent']);
+  assert.equal(world.sends().filter((t) => t.pub === toHex(OWNER.pub)).length, 1, 'the owner key signed it once');
+});
+
+test('state: a drop takes back only a claim that moved nothing. A paid vault stays paid', async () => {
+  const state = new StateClient(localStateNamespace());
+  const ask = () => state.call('funded', { vault: 'v1', ipHash: 'a', sats: 2000, ceiling: 40_000, now: NOW });
+  assert.deepEqual(await ask(), { ok: true, already: false });
+  await state.call('fundedDone', { vault: 'v1', txid: 'aa', now: NOW });
+  await state.call('fundedDrop', { vault: 'v1', sats: 2000, now: NOW });
+  assert.deepEqual(await ask(), { ok: true, already: true, txid: 'aa' }, 'a late drop does not forget what was paid');
 });
