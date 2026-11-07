@@ -201,7 +201,7 @@ try {
   await main();
 } catch (err) {
   if (err?.code === 'relay_down') skip(`(relay) the relay stopped answering mid-run: ${err.message}`);
-  if (err?.code === 'daily_ceiling' || err?.code === 'rate_limited') skip(`(relay) ${err.code}: ${err.message}`);
+  if (['daily_ceiling', 'rate_limited', 'relay_reserve'].includes(err?.code)) skip(`(relay) ${err.code}: ${err.message}`);
   say('FAIL', 'demo', net, `${err.code ? `${err.code}: ` : ''}${err.message}${err.verbatim ? ` | ${err.verbatim}` : ''}`);
 }
 console.log(fails ? `DEMO FAIL in ${seconds()}` : `DEMO PASS in ${seconds()}. Self-test on a vault you just created; labels say which network`);
