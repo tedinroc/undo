@@ -58,7 +58,7 @@ if (!/^[0-9a-f]{64}$/.test(String(c.wasm_sha256))) why.push("wasm_sha256 is not 
 process.stdout.write(why.join(", "));
 ' "$deploy_config" "$named")" || { golive_say FAIL "deploy/testnet.json $unfilled"; exit 1; }
 if [ -n "$unfilled" ]; then
-  golive_say FAIL "deploy/testnet.json, which ./verify.sh and ./demo.sh read, does not name $named ($unfilled): set placeholder false, contract, wasm_sha256 and wasm_built_by, as its placeholder_note says"; exit 1
+  golive_say FAIL "deploy/testnet.json, which ./verify.sh and ./demo.sh read, does not name $named ($unfilled): set placeholder false, and contract, wasm_sha256 and wasm_built_by to the instance step 10 deployed"; exit 1
 fi
 if ! same="$(node "$REPO/scripts/wasm-vs-config.mjs" "$REPO/target/near/undo_vault.wasm" "$deploy_config" 2>&1)"; then
   golive_say FAIL "deploy/testnet.json: $same"; exit 1

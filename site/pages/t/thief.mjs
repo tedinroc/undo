@@ -762,7 +762,7 @@ async function resendSigning() {
   signingLoop = false;
   if (why === 'retry_closed' && S.state === 'signing') {
     $('auto').textContent = 'No more signatures';
-    $('note').textContent = 'The signer did not finish within a day of the first execute, so the contract asks it for nothing more. The coins it did not sign come back to the vault by reclaim.';
+    $('note').textContent = 'The signer did not finish within a day of the first execute, so the contract asks it for nothing more. Its coins come back to the vault by reclaim, one at a time.';
   }
 }
 

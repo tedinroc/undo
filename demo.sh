@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Self-test on a vault you just created, with no browser and no key of your own: a throwaway vault
-# with a software passkey, a proposal to a new address, a passkey cancel, then a send to a known
-# address that the signer signs after its wait. Through the relay that deploy/testnet.json names,
+# with a software passkey, a proposal to a new address, a passkey cancel, then a send back to the
+# vault's own address that the signer signs after its wait. Through the relay that deploy/testnet.json names,
 # which pays the NEAR. No coin moves. Needs Node 20+, and Rust for the last line.
 #
 #   ./demo.sh                  against deploy/testnet.json

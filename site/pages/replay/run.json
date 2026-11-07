@@ -53,7 +53,7 @@
       "id": "refused",
       "run": "s2",
       "at": "2026-11-01T09:00:53.549Z",
-      "title": "The thief sends it with your spend key alone. Bitcoin refuses.",
+      "title": "Sent with the spend key alone, the way a thief would. Bitcoin refuses.",
       "lines": [
         {
           "kind": "text",

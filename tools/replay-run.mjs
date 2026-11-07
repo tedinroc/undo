@@ -58,7 +58,7 @@ export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } 
       },
       {
         id: 'refused', run: 's2', at: s2.node_answer.at_utc,
-        title: 'The thief sends it with your spend key alone. Bitcoin refuses.',
+        title: 'Sent with the spend key alone, the way a thief would. Bitcoin refuses.',
         lines: [
           say('A spend signed by the spend key only, with nothing where the second signature goes, posted straight to a Mutinynet node.'),
           node(s2.node_answer.text_verbatim),
