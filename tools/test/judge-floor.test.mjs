@@ -187,7 +187,8 @@ test('tier A with every endpoint dead: no [replay] line passes, and the recorded
   // The consensus checks still run on the raw hex in proofs/.
   assert.ok(r.lines.some((l) => /^PASS C02 \[consensus-lib\]/.test(l)), r.out);
   assert.ok(r.lines.some((l) => /^SKIP C12 \[live-testnet\] signer arguments: SKIP \(network\)/.test(l)), r.out);
-  assert.ok(r.lines.some((l) => /^SKIP C06 \[live-testnet\] the contract's status view/.test(l)), r.out);
+  // A placeholder deploy/testnet.json says so; once the deploy fills it, the dead RPC does.
+  assert.ok(r.lines.some((l) => /^SKIP C06 \[live-testnet\] (the contract's status view: .* holds a placeholder|status view: SKIP \(network\))/.test(l)), r.out);
   assert.equal(r.code, 0, r.out);
   everyLineHasAClaim(r.lines);
 });
@@ -242,7 +243,8 @@ test('wasm-vs-config: a placeholder has nothing to compare, the same bytes pass,
     return p;
   };
   const run = (cfg) => spawnSync(process.execPath, [join(REPO, 'scripts/wasm-vs-config.mjs'), wasm, cfg], { encoding: 'utf8' });
-  const none = run(config({}));
+  // Not the repo's own file as it stands: the deploy fills that one in.
+  const none = run(config({ placeholder: true, contract: 'not-deployed-yet', wasm_sha256: null }));
   assert.equal(none.status, 0);
   assert.match(none.stdout, /records no deployed wasm yet/);
   const same = run(config({ placeholder: false, contract: 'v1.s.undo-btc.testnet', wasm_sha256: digest }));
@@ -280,9 +282,11 @@ test('setup-repo.sh changes nothing unasked; --hooks sets the hooks alone; only 
 // ---------------------------------------------------------------- proofs/ say when a field disagrees with another
 
 test('proofs/s2-refusal.json: a tip read below the coin\'s own height carries a note saying the API lagged', () => {
-  assert.ok(s2.after.tip < s2.funding_coin.height, 'the recorded tip is the lagging one');
-  assert.match(s2.after.tip_note ?? '', /lagged a block/);
-  assert.ok(s2.after.tip_note.includes(String(s2.funding_coin.height)));
+  // The 11/01 capture read a lagging tip, and its note was added by hand. A fresh capture need not lag.
+  if (s2.after.tip < s2.funding_coin.height) {
+    assert.match(s2.after.tip_note ?? '', /lagged a block/);
+    assert.ok(s2.after.tip_note.includes(String(s2.funding_coin.height)));
+  }
   assert.equal(s2.coin_return.mutinynet_txid, s2.coin_return.coin_spent_by, 'the return is what spent the coin');
 });
 

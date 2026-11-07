@@ -152,14 +152,14 @@ test('escape.mjs builds byte-identical transactions to undo-btc, and consensus a
     rustOk('verify', hex, vaultSpk, values.join(','));
 
     // Controls: the referee must be able to say no.
-    assert.notEqual(rust('verify', hex, vaultSpk, [values[0] + 1, ...values.slice(1)].join(',')).status, 0, 'a wrong value must be refused');
+    assert.equal(rust('verify', hex, vaultSpk, [values[0] + 1, ...values.slice(1)].join(',')).status, 1, 'a wrong value must be refused');
     const tampered = parseTx(fromHex(hex));
     tampered.outputs[0].value -= 1n;
-    assert.notEqual(rust('verify', toHex(serialize(tampered)), vaultSpk, values.join(',')).status, 0, 'a changed output must be refused');
+    assert.equal(rust('verify', toHex(serialize(tampered)), vaultSpk, values.join(',')).status, 1, 'a changed output must be refused');
     const early = parseTx(fromHex(hex));
     if (csv > 1) {
       early.inputs[0].sequence = csv - 1;
-      assert.notEqual(rust('verify', toHex(serialize(early)), vaultSpk, values.join(',')).status, 0, 'one block below CSV must be refused');
+      assert.equal(rust('verify', toHex(serialize(early)), vaultSpk, values.join(',')).status, 1, 'one block below CSV must be refused');
     }
   }
 });
@@ -388,7 +388,7 @@ test('a co-signed spend built here passes consensus: script, sighash and witness
   // Controls: swapped signatures, and K_u alone with K_m's slot filled by K_u.
   const swapped = parseTx(fromHex(hex));
   swapped.inputs[0].witness = [swapped.inputs[0].witness[1], swapped.inputs[0].witness[0], Uint8Array.of(1), script];
-  assert.notEqual(rust('verify', toHex(serialize(swapped)), toHex(spk), values).status, 0);
+  assert.equal(rust('verify', toHex(serialize(swapped)), toHex(spk), values).status, 1);
   const parsed = parseTx(fromHex(hex));
   assert.equal(toHex(serialize(parsed)), hex, 'parseTx round-trips');
 });

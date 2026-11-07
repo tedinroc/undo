@@ -9,6 +9,8 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 | `sign-intent.mjs` | Signs `propose_btc` or `reclaim` from a seed file and prints the arguments | None |
 | `human-key.mjs` | Makes the dispenser and funding keys, for `scripts/human/02` and `03` | None |
 | `watch.mjs` | Phone alerts: reads one vault's queue and pushes one ntfy alert per new Pending request, however it was proposed. Holds no key. Refuses mainnet. See `docs/watch.md` | NEAR RPC, ntfy |
+| `verify/tier-a.mjs`, `verify/tier-b.sh` | What `./verify.sh A` and `B` run. A: the contract `deploy/testnet.json` names, and the real hashes in `proofs/` fetched again and re-verified. B: the state machine and the Bitcoin consensus tests, offline. `verify/rust.mjs` builds the Rust referees both use | NEAR RPC, archival RPC, Esplora (A); none (B) |
+| `demo/demo.mjs` | What `./demo.sh` runs: a throwaway vault through the relay `deploy/testnet.json` names, with the page's own code from `site/lib`, then a proposal, a passkey cancel and a signed send. SKIP without `site/lib` or a deploy | The relay, NEAR RPC |
 | `g1.mjs` | Gate G1 driver. Plan only unless `--live`. Refuses mainnet | NEAR RPC |
 | `g2.mjs` | Gate G2 driver: real coins, the co-signed spend and the escape. Plan only unless `--live`, rehearses with `--regtest`, resumes after any stop. Refuses mainnet and any endpoint off its allow lists | NEAR RPC, Esplora |
 
@@ -34,4 +36,4 @@ A finished proof says `pass` for the chain's part and `gate_complete: false` unt
 
 `test/g2-rehearsal.mjs` runs `g2.mjs` on real bitcoind with standard relay policy, the real wasm on a local NEAR node and a mock signer, and breaks one thing at a time. Rehearsal results are labelled and can never land in `proofs/`.
 
-`tools/test/run-all.sh` runs every check. `rust-check/` recomputes each result with other code, and `test/mutants.mjs` breaks the tools line by line to show the tests notice.
+`tools/test/run-all.sh` runs the tests in `tools/test` and `agent/test` that need no browser; `site/test` and `scripts/go-live/test` run on their own. `rust-check/` recomputes each result with other code, and `test/mutants.mjs` breaks the tools line by line to show the tests notice.
