@@ -1,6 +1,6 @@
 {
   "mode": "testnet",
-  "contract": "FILL-AT-DEPLOY.testnet",
+  "contract": "tmp-1107a.s.undo-btc.testnet",
   "rpc": ["https://test.rpc.fastnear.com", "https://near-testnet.drpc.org", "https://rpc.testnet.near.org"],
   "esplora": "https://mutinynet.com/api",
   "relay": "/api/relay",
