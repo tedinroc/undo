@@ -27,6 +27,29 @@ The two protocols agreed to within 0.06 Tgas per method and 0.08 Tgas per transa
 | `./verify.sh A`, `./verify.sh B` | A: 35 PASS, 3 SKIP because nothing is deployed, 0 FAIL. B: 13 PASS |
 | `crates/undo-btc` | 50 passed, and 2 on real bitcoind regtest, including the escape's fee race |
 
+### Again, after the merge with the pages and the relay
+
+2026-11-07 UTC, on the merged tree: this contract source, unchanged by the merge, with `site/`, the relay and `worker/undo-cron/`. Same labels and limits as above, and Chrome was off, so no browser test ran.
+
+| Check | Result |
+|---|---|
+| `scripts/build.sh` | the same `358c63bf…`, 381,119 bytes |
+| `check-wasm.sh`, `check-identity.sh` (tree and wasm), `secret-scan.sh`, `test-secret-scan.sh`, `outward-check.sh` | OK |
+| `scripts/protocol-check.sh` | 151 passed, 0 failed, on each of protocols 86 and 88 |
+| `crates/undo-core/props`, and its mutants | 148 passed; 187 of 187 killed, control green |
+| `crates/undo-btc` | 50 passed, and 2 on bitcoind regtest |
+| `site/test/*.test.mjs` | 195 passed, 0 failed, 74 skipped: 53 need Chrome, and 21 are the workerd file, run on its own on the next line |
+| `site/test/relay.workerd.test.mjs`, the relay in real workerd against the wasm | 21 of 21 |
+| `tools/test/pages-output-check.sh` | 17 OK, 0 FAIL, 80 files |
+| `scripts/go-live/test/golive.test.mjs`, local node and stub wrangler | 23 of 23 |
+| `tools/test/run-all.sh` | Passed: 94 tool mutants killed, G1 driver on both protocols, G2 rehearsal 40 scenarios, the watcher on a local node 15 of 15 |
+| `agent/test/run-sandbox.sh 86 88` | 49 of 49 on each |
+| `./verify.sh B` | 13 PASS |
+| `./verify.sh A` on a local stage, an instance of this build with no access key | 38 PASS, 0 SKIP, 0 FAIL |
+| `./demo.sh` on that local stage | 5 PASS in 67 s |
+
+Not run this time: the shell mutants and `--measure`, because `contracts/` did not change after the run above.
+
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |
