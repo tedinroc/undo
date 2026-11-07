@@ -190,7 +190,8 @@ function signTxHash(base64) {
   return base58Encode(sha256(bytes.slice(0, bytes.length - 65)));
 }
 
-function relayWith(world, extra = {}) {
+/** `made`: vaults this relay is to treat as its own, as if it had sent their create_vault. Recorded before any call. */
+function relayWith(world, extra = {}, { made = [] } = {}) {
   const ns = extra.UNDO_STATE ?? localStateNamespace();
   const env = {
     CONTRACT_ID: CONTRACT,
@@ -210,7 +211,12 @@ function relayWith(world, extra = {}) {
     ...extra,
   };
   const handler = makeRelay(env, { fetchFn: world.fetchFn, nowFn: () => world.now ?? NOW });
+  const state = new StateClient(ns);
+  // Before the relay kept this table there was no such call, and an old store answers it as down.
+  const record = (vault, { passkey: pk = passkey.hex, cold = DEFAULT_COLD } = {}) => state.call('made', { vault, passkey: pk, k_e_intent: cold, now: NOW }).catch(() => null);
+  let ready = ns.down ? Promise.resolve() : Promise.all(made.map((v) => record(v)));
   const post = async (path, body, { ip = '198.51.100.7', origin = null, raw = null, beat = BEAT } = {}) => {
+    await ready;
     const headers = { 'content-type': 'application/json', 'cf-connecting-ip': ip };
     if (origin) headers.origin = origin;
     if (beat) headers['x-undo-beat'] = beat;
@@ -227,7 +233,14 @@ function relayWith(world, extra = {}) {
       const res = await handler(new Request('https://site.test/api/relay'));
       return { status: res.status, body: await res.json() };
     },
-    state: new StateClient(ns),
+    state,
+    /** Records a vault as this relay's own, as its create_vault does. */
+    made: (vault = VAULT, keys = {}) => {
+      ready = ready.then(() => record(vault, keys));
+      return ready;
+    },
+    /** Every state store call but the read that asks whether this relay made a vault. */
+    charges: () => ns.calls.filter((c) => c !== 'madeVault' && c !== 'made'),
   };
 }
 
@@ -237,6 +250,7 @@ const passkey = await (async () => {
   return { soft, made, hex: toHex(made.pubkey) };
 })();
 
+const DEFAULT_COLD = toHex(coldKeys(label('cold-default')).intent.pub);
 const vaultRow = (over = {}) => ({ passkey: passkey.hex, passkey_nonce: 3, k_e_intent: null, active: true, script_pubkey: `0020${toHex(label('spk'))}`, guard: ACCOUNT, address: 'vault-address', spend_epoch: 2, spend_nonce: 0, k_s: toHex(ed25519.getPublicKey(label('ks'))), ...over });
 const requestRow = (over = {}) => ({ inputs: [{}], status: 'Pending', epoch: 2, unlock: NOW - 1000, expires_at: NOW + 3_600_000, ...over });
 
@@ -274,12 +288,15 @@ test('state: a method on the wrong key is refused; owner methods take a limit pe
   assert.equal((await state.call('charge', { key: 'owner', method: 'propose_btc', now: NOW, ceiling: 1e9 })).code, 'bad_request');
   assert.equal((await state.call('charge', { key: 'general', method: 'cancel', now: NOW, ceiling: 1e9 })).code, 'bad_request');
   assert.equal((await state.call('charge', { key: 'general', method: 'set_policy', now: NOW, ceiling: 1e9 })).code, 'bad_request');
-  const cancel = (vault) => state.call('charge', { key: 'owner', method: 'cancel_all_and_rotate', vault, now: NOW, ceiling: 1e9 });
+  const other = 'ef'.repeat(32);
+  for (const vault of [VAULT, other]) await state.call('made', { vault, passkey: passkey.hex, k_e_intent: DEFAULT_COLD, now: NOW });
+  let n = 0;
+  const cancel = (vault) => state.call('charge', { key: 'owner', method: 'cancel_all_and_rotate', vault, now: NOW, ceiling: 1e9, call: `c${(n += 1)}` });
   for (let i = 0; i < 6; i += 1) assert.equal((await cancel(VAULT)).ok, true);
   const seventh = await cancel(VAULT);
   assert.equal(seventh.code, 'rate_limited');
   assert.equal(seventh.retry_after_s, 60);
-  assert.equal((await cancel('other')).ok, true);
+  assert.equal((await cancel(other)).ok, true);
 });
 
 test('state: nonce rows are per key, seed and reset only move forward, concurrent leases never repeat', async () => {
@@ -338,7 +355,7 @@ test('state: one funding per vault. Limit, ceiling and claim are one step, and a
 test('state: tables are the design\'s, old counts are pruned, and only a hash of an address is ever stored', async () => {
   const object = new UndoState({ storage: localStorage() }, {});
   const tables = object.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").toArray().map((r) => r.name);
-  assert.deepEqual(tables, ['alert_state', 'daily_ceiling', 'dispenser_utxos', 'funded_vaults', 'heartbeat_log', 'ip_counter', 'nonce_lease', 'vault_counter']);
+  assert.deepEqual(tables, ['alert_state', 'daily_ceiling', 'dispenser_utxos', 'funded_vaults', 'heartbeat_log', 'ip_counter', 'made_vaults', 'nonce_lease', 'owner_sent', 'vault_counter']);
   const op = async (name, body) => (await object.fetch(new Request(`https://do/${name}`, { method: 'POST', body: JSON.stringify(body) }))).json();
   assert.equal((await object.fetch(new Request('https://do/nothing', { method: 'POST', body: '{}' }))).status, 404);
   const charge = (now) => op('charge', { key: 'general', method: 'heartbeat', ipHash: 'hash-only', vault: VAULT, now, ceiling: 1e6 });
@@ -561,7 +578,7 @@ test('relay: a node\'s refusal comes back in its own words, and costs no ceiling
 
 test('owner: junk spends nothing. A victim\'s per-vault limit and the owner ceiling cannot be used up by someone without the passkey', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
-  const r = relayWith(world);
+  const r = relayWith(world, {}, { made: [VAULT, 'ef'.repeat(32)] });
   const good = await rotateBody();
   const other = softCredentials({ secret: label('someone-else'), origin: 'https://site.test', rpId: 'site.test' });
   const forged = await rotateBody({ soft: other });
@@ -583,23 +600,23 @@ test('owner: junk spends nothing. A victim\'s per-vault limit and the owner ceil
     }
   }
   assert.equal(world.sent.length, 0, 'the owner key signed nothing');
-  assert.equal(r.ns.calls.length, 0, 'nothing was charged');
+  assert.deepEqual(r.charges(), [], 'nothing was charged');
   const out = await r.relay('cancel_all_and_rotate', good);
   assert.equal(out.body.ok, true, 'and the real one goes straight through');
   assert.equal(out.body.key, 'owner');
   const tx = decodeTx(world.sent[0]);
   assert.equal(tx.pub, toHex(OWNER.pub));
   assert.deepEqual(tx.actions.map((a) => [a.method, a.tgas]), [['cancel_all_and_rotate', 30]]);
-  const unknownVault = relayWith(fakeWorld());
+  const unknownVault = relayWith(fakeWorld(), {}, { made: [VAULT] });
   assert.equal((await unknownVault.relay('cancel_all_and_rotate', good)).body.message, 'no such vault');
 });
 
 test('owner: every check is one the contract makes, so a nonce ahead of a lagging node and a dead read both go through', async () => {
   const lag = fakeWorld({ vaults: { [VAULT]: vaultRow({ passkey_nonce: 1 }) } });
-  assert.equal((await relayWith(lag).relay('cancel_all_and_rotate', await rotateBody({ nonce: 3 }))).body.ok, true);
+  assert.equal((await relayWith(lag, {}, { made: [VAULT] }).relay('cancel_all_and_rotate', await rotateBody({ nonce: 3 }))).body.ok, true);
   const dead = fakeWorld();
   dead.viewDown = true;
-  assert.equal((await relayWith(dead).relay('cancel_all_and_rotate', await rotateBody())).body.ok, true);
+  assert.equal((await relayWith(dead, {}, { made: [VAULT] }).relay('cancel_all_and_rotate', await rotateBody())).body.ok, true);
 });
 
 test('owner: cancel with a passkey or the cold key, and neither for a request that is gone', async () => {
@@ -607,6 +624,7 @@ test('owner: cancel with a passkey or the cold key, and neither for a request th
   const intent = coldKeys(cold).intent;
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ k_e_intent: toHex(intent.pub) }) }, requests: { 5: { inputs: [{}] } } });
   const r = relayWith(world);
+  await r.made(VAULT, { cold: toHex(intent.pub) });
   const digest = cancelDigest({ contract: CONTRACT, vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000 });
   const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
   const body = cancelArgs({ vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000, assertion: args });
@@ -635,7 +653,7 @@ test('status near the ceiling: no new vault fits, and it says whether one more p
 
 test('owner: general at its ceiling, owner still up, and two different answers', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
-  const r = relayWith(world, { CEILING_GENERAL_MICRO: 800 });
+  const r = relayWith(world, { CEILING_GENERAL_MICRO: 800 }, { made: [VAULT] });
   assert.equal((await r.status()).body.general.up, false, 'a new vault no longer fits');
   assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true);
   assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true);
@@ -658,7 +676,7 @@ test('owner: general at its ceiling, owner still up, and two different answers',
   assert.ok(over.body.retry_after_s > 0);
   assert.equal(over.body.bucket, null);
 
-  const atLimit = relayWith(fakeWorld({ vaults: { [VAULT]: vaultRow() } }), { CEILING_OWNER_MICRO: 0 });
+  const atLimit = relayWith(fakeWorld({ vaults: { [VAULT]: vaultRow() } }), { CEILING_OWNER_MICRO: 0 }, { made: [VAULT] });
   const refused = await atLimit.relay('cancel_all_and_rotate', await rotateBody());
   assert.equal(refused.body.code, 'daily_ceiling');
   assert.equal(refused.body.bucket, 'owner');
@@ -696,7 +714,7 @@ test('owner: with the state store down a cancel still goes, on a chain nonce, an
     } };
   };
   const world2 = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
-  const out2 = await relayWith(world2, { UNDO_STATE: half }).relay('cancel_all_and_rotate', await rotateBody());
+  const out2 = await relayWith(world2, { UNDO_STATE: half }, { made: [VAULT] }).relay('cancel_all_and_rotate', await rotateBody());
   assert.equal(out2.body.ok, true);
   assert.equal(out2.body.degraded, true);
   assert.ok(calls >= 2);
@@ -747,6 +765,8 @@ test('funding copy: the same transaction as tools/lib/dispenser.mjs, on the same
   assert.equal(toHex(mine.spk), toHex(dispenserSpk()));
 });
 
+const fundsRelay = (world, extra = {}) => relayWith(world, extra, { made: [VAULT] });
+
 function fundsWorld(over = {}) {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
   world.utxos = [{ txid: toHex(label('coin')), vout: 0, value: 50_000, status: { confirmed: true } }];
@@ -767,7 +787,7 @@ test('funds: the address comes from the contract, once per vault, and never on a
     return inner(url, init);
   })(world.fetchFn);
   world.lastBuiltTxid = (raw) => raws.get(raw);
-  const r = relayWith(world);
+  const r = relayWith(world, {}, { made: [VAULT, 'ab'.repeat(32)] });
   const out = await r.funds(VAULT);
   assert.equal(out.body.ok, true);
   assert.equal(out.body.value, 2000);
@@ -783,7 +803,7 @@ test('funds: the address comes from the contract, once per vault, and never on a
   for (const body of [{ vault: VAULT, to: 'tb1qsomeoneelse' }, { vault: 'nope' }, { to: 'x' }, []]) assert.equal((await r.post('/api/funds', body)).body.code, 'bad_request');
   const none = await r.funds('ab'.repeat(32));
   assert.deepEqual([none.body.code, none.body.message], ['bad_request', 'no such vault']);
-  const inactive = relayWith(fakeWorld({ vaults: { [VAULT]: vaultRow({ active: false }) } }));
+  const inactive = fundsRelay(fakeWorld({ vaults: { [VAULT]: vaultRow({ active: false }) } }));
   assert.equal((await inactive.funds(VAULT)).body.message, 'that vault is not active');
 });
 
@@ -800,7 +820,7 @@ function fundedRelay(extra = {}, worldOver = {}) {
     return inner(url, init);
   };
   world.lastBuiltTxid = (raw) => raws.get(raw);
-  return { world, r: relayWith(world, extra), vault: (i) => toHex(label(`funds-${i}`)) };
+  return { world, r: relayWith(world, extra, { made: Object.keys(vaults) }), vault: (i) => toHex(label(`funds-${i}`)) };
 }
 
 test('funds: over the per-address limit and over the daily ceiling are different answers, and the page can read both', async () => {
@@ -891,7 +911,7 @@ test('funds: empty, down and refused are each their own answer, a refusal in the
 
 test('funds: a bad dispenser key is not configured, and no answer repeats a key', async () => {
   const world = fundsWorld();
-  const r = relayWith(world, { DISPENSER_SECRET: 'zz-not-hex' });
+  const r = fundsRelay(world, { DISPENSER_SECRET: 'zz-not-hex' });
   const out = await r.funds(VAULT);
   assert.equal(out.body.code, 'relay_not_configured');
   assert.ok(!JSON.stringify(out.body).includes('zz-not-hex'));
@@ -1019,7 +1039,7 @@ const spentGeneral = async (r) => (await r.state.call('status', { now: NOW })).s
 
 test('attack 1: a well-signed call that cannot work spends nothing of the owner ceiling', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
-  const r = relayWith(world);
+  const r = relayWith(world, {}, { made: [VAULT] });
   const newKs = ed25519.getPublicKey(label('new-ks'));
   const rotate = async ({ nonce = 3, expiresAt = NOW + 60_000 }) => {
     const digest = rotateDigest({ contract: CONTRACT, vaultHex: VAULT, newKs, nonce, expiresAt });
@@ -1031,13 +1051,13 @@ test('attack 1: a well-signed call that cannot work spends nothing of the owner 
   const ahead = await r.relay('cancel_all_and_rotate', await rotate({ nonce: 1003 }));
   assert.deepEqual([ahead.status, ahead.body.message], [422, 'that passkey nonce is too far ahead']);
   assert.equal(world.sent.length, 0, 'the owner key signed neither');
-  assert.equal(r.ns.calls.length, 0, 'and nothing was charged');
+  assert.deepEqual(r.charges(), [], 'and nothing was charged');
   assert.equal((await r.relay('cancel_all_and_rotate', await rotate({ nonce: 5 }))).body.ok, true, 'a node two behind is still a lagging node');
 });
 
 test('attack 1: a cancel already past cancelling is refused before the owner key signs', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 5: requestRow({ status: 'Signed' }) } });
-  const r = relayWith(world);
+  const r = relayWith(world, {}, { made: [VAULT] });
   const digest = cancelDigest({ contract: CONTRACT, vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000 });
   const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
   const out = await r.relay('cancel', cancelArgs({ vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000, assertion: args }));
@@ -1048,7 +1068,7 @@ test('attack 1: a cancel already past cancelling is refused before the owner key
 test('attack 1: one vault gets twelve owner sends a day, whichever method, and someone else\'s cancel still lands', async () => {
   const other = 'ef'.repeat(32);
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow(), [other]: vaultRow() } });
-  const r = relayWith(world);
+  const r = relayWith(world, {}, { made: [VAULT, other] });
   let clock = NOW;
   Object.defineProperty(world, 'now', { get: () => clock });
   const newKs = ed25519.getPublicKey(label('new-ks'));
@@ -1202,7 +1222,7 @@ test('attack 6: status says when the owner key cannot pay, and a dead RPC claims
 
 test('attack 6: a tap refused for allowance turns the status off, until a read says otherwise', async () => {
   const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
-  const r = relayWith(world, { KEY_CACHE_MS: 30_000 });
+  const r = relayWith(world, { KEY_CACHE_MS: 30_000 }, { made: [VAULT] });
   assert.equal((await r.status()).body.owner.up, true);
   world.refuseWith = { InvalidAccessKeyError: { NotEnoughAllowance: { allowance: '1', cost: '2' } } };
   const out = await r.relay('cancel_all_and_rotate', await rotateBody());
@@ -1250,18 +1270,18 @@ test('attack 10: funds only for a vault this relay guards, holding no coin, with
   foreignWorld.utxos = fundsWorld().utxos;
   const foreign = relayWith(foreignWorld);
   const wrong = await foreign.funds(VAULT);
-  assert.deepEqual([wrong.status, wrong.body.code, wrong.body.message], [422, 'would_refuse', 'this relay only funds vaults it guards']);
+  assert.deepEqual([wrong.status, wrong.body.code, wrong.body.message], [422, 'would_refuse', 'this relay only funds vaults it made']);
   assert.equal((await foreign.state.call('status', { now: NOW })).spent.funds, 0);
 
   const holding = fundsWorld();
   holding.vaultCoins['vault-address'] = [{ txid: 'ab'.repeat(32), vout: 0, value: 2000 }];
-  const r = relayWith(holding);
+  const r = fundsRelay(holding);
   const has = await r.funds(VAULT);
   assert.deepEqual([has.body.code, has.body.message], ['would_refuse', 'that vault already holds a coin']);
   assert.equal(holding.posts.length, 0);
   assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 0, 'the ceiling got its sats back');
 
-  const worked = relayWith(fundsWorld(), { POW_BITS: 10 });
+  const worked = fundsRelay(fundsWorld(), { POW_BITS: 10 });
   const none = await worked.post('/api/funds', { vault: VAULT });
   assert.equal(none.body.code, 'bad_request', 'the work is not optional');
   let bad = 0;
@@ -1334,7 +1354,8 @@ test('attack 15: execute costs per input, and an execute past the ceiling gives 
 test('state: a day limit per vault, across the key\'s methods, and it outlives the two-hour prune', async () => {
   const ns = localStateNamespace();
   const state = new StateClient(ns);
-  const charge = (method, now) => state.call('charge', { key: 'owner', method, vault: VAULT, now, ceiling: 1e9 });
+  await state.call('made', { vault: VAULT, passkey: passkey.hex, k_e_intent: DEFAULT_COLD, now: NOW });
+  const charge = (method, now) => state.call('charge', { key: 'owner', method, vault: VAULT, now, ceiling: 1e9, call: `${method}:${now}` });
   let at = NOW;
   for (let i = 0; i < 12; i += 1) {
     assert.equal((await charge(i % 2 ? 'cancel' : 'cancel_all_and_rotate', at)).ok, true, `send ${i}`);
@@ -1343,4 +1364,225 @@ test('state: a day limit per vault, across the key\'s methods, and it outlives t
   const over = await charge('cancel', at);
   assert.deepEqual([over.ok, over.code], [false, 'rate_limited']);
   assert.ok(over.retry_after_s > 0 && over.retry_after_s <= 86_400);
+});
+
+// ---------------------------------------------------------------- what the authorization audit found
+
+const ownerSpent = async (r) => (await r.state.call('status', { now: NOW })).spent.owner;
+
+async function signedRotation({ vault = VAULT, soft = passkey.soft, nonce = 3, expiresAt = NOW + 60_000, newKs = ed25519.getPublicKey(label('new-ks')) } = {}) {
+  const digest = rotateDigest({ contract: CONTRACT, vaultHex: vault, newKs, nonce, expiresAt });
+  const { args } = await getAssertion({ credentials: soft, digest, rpId: 'site.test' });
+  return rotateArgs({ vaultHex: vault, newKs, nonce, expiresAt, assertion: args });
+}
+
+test('AUDIT-1: vaults made straight on the contract get no owner key. 42 of them, 12 sends each, charge nothing, and a real cancel still goes', async () => {
+  const vaults = { [VAULT]: vaultRow() };
+  const bodies = [];
+  for (let i = 0; i < 42; i += 1) {
+    const soft = softCredentials({ secret: label(`own-${i}`), origin: 'https://site.test', rpId: 'site.test' });
+    const made = await createPasskey({ credentials: soft, rpId: 'site.test' });
+    const vault = toHex(label(`direct-${i}`));
+    vaults[vault] = vaultRow({ passkey: toHex(made.pubkey), passkey_nonce: 0, guard: 'attacker.test.near' });
+    bodies.push(await signedRotation({ vault, soft, nonce: 1 }));
+  }
+  const world = fakeWorld({ vaults });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  const answers = {};
+  let said = null;
+  for (const body of bodies) {
+    for (let i = 0; i < 12; i += 1) {
+      const out = await r.relay('cancel_all_and_rotate', body);
+      const key = `${out.status} ${out.body.code ?? 'sent'}`;
+      answers[key] = (answers[key] ?? 0) + 1;
+      said ??= out.body.message ?? '';
+    }
+  }
+  assert.deepEqual(answers, { '422 not_this_relays': 504 });
+  assert.match(said, /only for vaults it made/);
+  assert.match(said, /tools\/cancel\.mjs/, 'it says how to cancel with no relay');
+  assert.match(said, /tools\/freeze\.mjs --method cancel/);
+  assert.equal(world.sent.length, 0, 'the owner key signed nothing');
+  assert.equal(world.reads, 0, 'and nothing read the chain for them');
+  assert.equal(await ownerSpent(r), 0, 'the owner ceiling is untouched');
+  const victim = await r.relay('cancel_all_and_rotate', await rotateBody());
+  assert.deepEqual([victim.status, victim.body.ok, victim.body.key], [200, true, 'owner'], 'the real owner\'s rotation goes');
+  assert.deepEqual([(await r.status()).body.owner.up, (await r.status()).body.owner.why], [true, null]);
+});
+
+test('AUDIT-1: one signed body is charged once, even one the contract will refuse for its nonce', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ passkey_nonce: 3 }) } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  let clock = NOW;
+  Object.defineProperty(world, 'now', { get: () => clock });
+  const ahead = await signedRotation({ nonce: 4 });
+  const answers = [];
+  for (let i = 0; i < 12; i += 1) {
+    answers.push(await r.relay('cancel_all_and_rotate', ahead));
+    clock += 10_000;
+  }
+  assert.equal(answers[0].body.ok, true, 'a nonce one ahead may be a lagging node, so it goes once');
+  assert.ok(answers.slice(1).every((a) => a.status === 409 && a.body.code === 'already_sent'), JSON.stringify(answers.slice(1).map((a) => a.body.code)));
+  assert.equal(world.sent.length, 1, 'the owner key signed it once');
+  assert.equal(await ownerSpent(r), RELAY_METHODS.cancel_all_and_rotate.costMicro);
+  const cold = coldKeys(label('cold-1')).intent;
+  const coldWorld = fakeWorld({ vaults: { [VAULT]: vaultRow({ k_e_intent: toHex(cold.pub) }) }, requests: { 5: requestRow() } });
+  const c = relayWith(coldWorld);
+  await c.made(VAULT, { cold: toHex(cold.pub) });
+  const signed = signColdIntent({ cold: label('cold-1'), contract: CONTRACT, vault: VAULT, method: 'cancel', fields: { request: 5 }, expiresAt: NOW + 60_000 });
+  const body = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: { Cold: signed.signature } };
+  assert.equal((await c.relay('cancel', body)).body.ok, true);
+  assert.equal((await c.relay('cancel', body)).body.code, 'already_sent', 'a cold cancel too');
+  assert.equal(coldWorld.sent.length, 1);
+});
+
+test('AUDIT-1: a WebAuthn object with a field the contract lacks, or a cancel naming both Passkey and Cold, is refused before anything', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 5: requestRow() } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  const good = await rotateBody();
+  const padded = { ...good, assertion: { ...good.assertion, user_handle: 'ab' } };
+  const digest = cancelDigest({ contract: CONTRACT, vaultHex: VAULT, request: 5, expiresAt: NOW + 60_000 });
+  const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
+  const both = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: { Passkey: args, Cold: 'ab'.repeat(65) } };
+  const neither = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: {} };
+  const callsBefore = r.ns.calls.length;
+  for (const [method, body] of [['cancel_all_and_rotate', padded], ['cancel', both], ['cancel', neither], ['cancel', { ...both, auth: { Passkey: { ...args, extra: '00' } } }]]) {
+    const out = await r.relay(method, body);
+    assert.deepEqual([out.status, out.body.code], [400, 'bad_request'], JSON.stringify(Object.keys(body.auth ?? body.assertion)));
+  }
+  assert.equal(world.sent.length, 0);
+  assert.equal(world.reads, 0);
+  assert.equal(r.ns.calls.length, callsBefore, 'nor the state store');
+  const { relayBodyProblem } = await import('../lib/relay-table.mjs');
+  assert.equal(relayBodyProblem({ method: 'cancel', args: { ...both, auth: { Passkey: args } } }), null, 'the plain shapes still pass');
+  assert.equal((await r.relay('cancel', { ...both, auth: { Passkey: args } })).body.ok, true);
+});
+
+test('AUDIT-2: with the vault read down, junk counts apart and never uses up what the owner\'s own cancel may send', async () => {
+  const cold = coldKeys(label('cold-2')).intent;
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ k_e_intent: toHex(cold.pub) }) }, requests: { 5: requestRow() } });
+  const r = relayWith(world);
+  await r.made(VAULT, { cold: toHex(cold.pub) });
+  let clock = NOW;
+  Object.defineProperty(world, 'now', { get: () => clock });
+  world.viewDown = true;
+  const answers = [];
+  for (let i = 0; i < 24; i += 1) {
+    const junk = { vault: VAULT, request: 5, expires_at: clock + 60_000 + i, auth: { Cold: toHex(sha256(utf8(`junk-${i}`))).padEnd(130, '0') } };
+    answers.push(await r.relay('cancel', junk));
+    if (i % 6 === 5) clock += 61_000;
+  }
+  const went = answers.filter((a) => a.body.ok).length;
+  assert.equal(went, 4, 'a few unchecked calls go, since the contract decides, and no more');
+  assert.equal(RELAY_METHODS.cancel.uncheckedPerVaultDay, 4);
+  const refused = answers.filter((a) => !a.body.ok);
+  assert.ok(refused.every((a) => a.body.code === 'rate_limited'), JSON.stringify(refused.map((a) => a.body.code)));
+  assert.match(refused[refused.length - 1].body.message, /tools\/cancel\.mjs/);
+  for (let i = 0; i < RELAY_METHODS.cancel_all_and_rotate.perVaultDay; i += 1) {
+    const real = await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: clock + 60_000 + i }));
+    assert.equal(real.body.ok, true, `the owner's own rotation ${i}, signed by the passkey the vault was made with, while reads are down`);
+    clock += 11_000;
+  }
+  world.viewDown = false;
+  clock += 86_400_000;
+  assert.equal((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: clock + 60_000 }))).body.ok, true, 'and with reads back');
+
+  const many = fakeWorld({ vaults: {} });
+  many.viewDown = true;
+  const ids = Array.from({ length: 6 }, (_, i) => toHex(label(`made-${i}`)));
+  const m = relayWith(many, { CEILING_OWNER_MICRO: 20 * RELAY_METHODS.cancel.costMicro }, { made: [...ids, VAULT] });
+  const spray = [];
+  for (const id of ids) spray.push(await m.relay('cancel', { vault: id, request: 1, expires_at: NOW + 60_000, auth: { Cold: 'ab'.repeat(65) } }));
+  assert.equal(spray.filter((a) => a.body.ok).length, 2, 'unchecked calls take at most a tenth of the owner ceiling, across all vaults');
+  assert.equal((await m.relay('cancel_all_and_rotate', await rotateBody())).body.ok, true, 'and a checked cancel still has the rest');
+});
+
+test('AUDIT-2: a send that never reached the chain gives back every count it took', async () => {
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  let clock = NOW;
+  Object.defineProperty(world, 'now', { get: () => clock });
+  world.refuseWith = { InvalidChain: null };
+  const first = await signedRotation({ expiresAt: clock + 600_000 });
+  for (let i = 0; i < RELAY_METHODS.cancel_all_and_rotate.perVaultDay; i += 1) {
+    const out = await r.relay('cancel_all_and_rotate', i === 0 ? first : await signedRotation({ expiresAt: clock + 600_000 + i }));
+    assert.equal(out.body.code, 'tx_refused', `refused ${i}`);
+    clock += 11_000;
+  }
+  world.rpcDown = true;
+  for (let i = 0; i < 6; i += 1) assert.equal((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: clock + 600_000 + 100 + i }))).body.code, 'rpc_down');
+  world.rpcDown = false;
+  world.refuseWith = null;
+  assert.equal(await ownerSpent(r), 0, 'the ceiling came back');
+  assert.equal((await r.relay('cancel_all_and_rotate', first)).body.ok, true, 'the same body may go again: it never reached the chain');
+  for (let i = 1; i < RELAY_METHODS.cancel_all_and_rotate.perVaultDay; i += 1) {
+    assert.equal((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: clock + 600_000 + 200 + i }))).body.ok, true, `real send ${i}: the day's limit came back too`);
+    clock += 11_000;
+  }
+  assert.equal((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: clock + 600_000 + 300 }))).body.code, 'rate_limited', 'and the limit still holds');
+});
+
+test('AUDIT-3: test coins go only to a vault this relay made, not to one that only names it as guard', async () => {
+  const world = fundsWorld();
+  const raws = new Map();
+  world.fetchFn = ((inner) => async (url, init = {}) => {
+    if (String(url).endsWith('/tx')) raws.set(init.body, await txidOfRaw(init.body));
+    return inner(url, init);
+  })(world.fetchFn);
+  world.lastBuiltTxid = (raw) => raws.get(raw);
+  assert.equal(world.sends().length, 0);
+  const r = relayWith(world);
+  const direct = await r.funds(VAULT);
+  assert.deepEqual([direct.status, direct.body.code, direct.body.message], [422, 'would_refuse', 'this relay only funds vaults it made']);
+  assert.equal(world.posts.length, 0);
+  assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 0);
+  await r.made(VAULT);
+  assert.equal((await r.funds(VAULT)).body.ok, true, 'once the relay made it');
+
+  const make = fakeWorld();
+  const m = relayWith(make, { POW_BITS: 0 });
+  const soft = softCredentials({ secret: label('a3'), origin: 'https://site.test', rpId: 'site.test' });
+  const madeKey = await createPasskey({ credentials: soft, rpId: 'site.test' });
+  const { buildCreateArgs, newVaultKeys, rpIdHashOf } = await import('../lib/intents.mjs');
+  const built = await buildCreateArgs({
+    contract: CONTRACT, keys: newVaultKeys({ seed: label('seed-a3'), cold: label('cold-a3') }), passkeyPub: madeKey.pubkey, rpIdHash: rpIdHashOf('site.test'),
+    km: secp256k1.getPublicKey(label('km'), true), guard: ACCOUNT, policy: POLICY, csv: 6, expiresAt: NOW + 60_000,
+    assert: async (digest) => (await getAssertion({ credentials: soft, digest, rpId: 'site.test' })).args,
+  });
+  make.refuseWith = { InvalidChain: null };
+  assert.equal((await m.relay('create_vault', built.args, { pow: 0 })).body.code, 'tx_refused');
+  assert.equal((await m.state.call('madeVault', { vault: built.vaultHex })).row, null, 'a create the chain never had leaves no row');
+  make.refuseWith = null;
+  assert.equal((await m.relay('create_vault', built.args, { pow: 0 })).body.ok, true);
+  assert.deepEqual((await m.state.call('madeVault', { vault: built.vaultHex })).row, { passkey: built.args.passkey.pubkey, k_e_intent: built.args.k_e_intent }, 'its create_vault records it, with the keys it was made with');
+  const taken = fakeWorld({ vaults: { [built.vaultHex]: vaultRow() } });
+  const t = relayWith(taken, { POW_BITS: 0 });
+  assert.equal((await t.relay('create_vault', built.args, { pow: 0 })).body.message, 'that vault exists');
+  assert.equal((await t.state.call('madeVault', { vault: built.vaultHex })).row, null, 'a vault made elsewhere is not recorded by sending its create again');
+});
+
+test('AUDIT-4: general sends stop short of what the owner key keeps for a day of cancels', async () => {
+  // The 0.05 NEAR floor the status reads, and the default owner ceiling's day of sends, 0.3 NEAR.
+  const reserve = 350_000_000_000_000_000_000_000n;
+  const storage = 182n * 10n ** 19n;
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow(), 2: requestRow({ inputs: Array(16).fill({}) }) } });
+  world.account = { amount: `${reserve + storage + 5n * 10n ** 21n}`, storage_usage: 182 };
+  const r = relayWith(world, {}, { made: [VAULT] });
+  const beat = await r.relay('heartbeat', { vault: VAULT });
+  assert.deepEqual([beat.status, beat.body.code], [503, 'relay_reserve']);
+  assert.match(beat.body.message, /keeping what is left on its account for cancels/);
+  assert.equal(world.sent.length, 0, 'the general key signed nothing');
+  assert.equal(await spentGeneral(r), 0, 'and its charge came back');
+  const s = (await r.status()).body;
+  assert.deepEqual([s.general.up, s.general.why, s.owner.up], [false, 'relay_reserve', true]);
+  const rotate = await r.relay('cancel_all_and_rotate', await rotateBody());
+  assert.deepEqual([rotate.body.ok, rotate.body.key], [true, 'owner'], 'the owner key still sends');
+  world.account = { amount: `${reserve + storage + 10n ** 23n}`, storage_usage: 182 };
+  assert.equal((await r.relay('heartbeat', { vault: VAULT })).body.ok, true, 'with room to spare a heartbeat goes');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true, 'and a one-input execute');
+  const big = await r.relay('execute', { vault: VAULT, request: 2 });
+  assert.equal(big.body.code, 'relay_reserve', 'sixteen inputs would hold 0.71 NEAR until the refund lands');
+  assert.equal(await spentGeneral(r), RELAY_METHODS.heartbeat.costMicro + RELAY_METHODS.execute.costMicro, 'the refused one cost nothing');
+  const { ownerReserveYocto } = await import('../lib/relay-table.mjs');
+  assert.equal(ownerReserveYocto(CEILING_OWNER_DEFAULT_MICRO), reserve, 'the table says the same');
 });

@@ -6,6 +6,7 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 |---|---|---|
 | `escape.mjs` | The Bitcoin escape from a recovery file and a UTXO list | None |
 | `freeze.mjs` | Signs one cold-key intent to a file: `freeze`, `unfreeze`, `veto_grant`, `cancel`. With no `--minutes` a freeze lands at the whole CSV period, however wrong this clock or late the relay | None |
+| `cancel.mjs` | Sends one signed cancel from your own NEAR testnet account, with no relay: the file the phone page saves when its relay will not send a cancel, or a `freeze.mjs --method cancel` file. Only `cancel` and `cancel_all_and_rotate`, in the shape the contract takes. Reads the vault first, refuses mainnet, a used nonce, a request already gone and an expired call, and asks before it sends | NEAR RPC |
 | `sign-intent.mjs` | Signs `propose_btc` or `reclaim` from a seed file and prints the arguments | None |
 | `human-key.mjs` | Makes the dispenser and funding keys, for `scripts/human/02` and `03` | None |
 | `watch.mjs` | Phone alerts: reads one vault's queue and pushes one ntfy alert per new Pending request, however it was proposed. Holds no key. Refuses mainnet. See `docs/watch.md` | NEAR RPC, ntfy |
