@@ -163,6 +163,8 @@ function buildThief({ checkBin, seed, script, spk, coin, toSpk, ku }) {
   if (w[0].length !== 0) throw new Stop('something sits where K_m\'s signature goes');
   const local = spawnSync(checkBin, ['verify', built.raw, toHex(spk), String(coin.value)], { encoding: 'utf8' });
   if (local.status === 0) throw new Stop('libbitcoinconsensus accepts the key alone. Nothing was sent. The script is not what this project claims');
+  // Exit 1 is the referee's refusal. A crash is none, and the record would then claim a refusal that never happened.
+  if (local.status !== 1) throw new Stop(`the consensus check gave no verdict (exit ${local.status}). Nothing was sent`);
   return { ...built, fee, amount, consensus: 'libbitcoinconsensus refused it before the POST', k_u_signature_verified: true };
 }
 
