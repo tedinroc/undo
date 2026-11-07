@@ -7,11 +7,14 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const HUMAN = resolve(dirname(fileURLToPath(import.meta.url)), '../../scripts/human');
 const REPO = resolve(HUMAN, '../..');
+// Every test home sits in here, so a test that stops early (a mutant run makes them) leaves nothing behind.
+const TMP = mkdtempSync(join(tmpdir(), 'undo-human-tests-'));
+after(() => rmSync(TMP, { recursive: true, force: true }));
 
 function shimDir(root) {
   const bin = join(root, 'shim');
@@ -57,7 +60,7 @@ cat "$SHIM_KEYCHAIN"; echo`);
 }
 
 function run(script, answer, extra = {}) {
-  const home = extra.home ?? mkdtempSync(join(tmpdir(), 'undo-human-'));
+  const home = extra.home ?? mkdtempSync(join(TMP, 'undo-human-'));
   const bin = shimDir(home);
   const env = {
     HOME: home,
@@ -214,7 +217,7 @@ test('03 makes both keys, keeps the secret off every command line, and never rep
 });
 
 test('03 tightens a folder that was already there', () => {
-  const home = mkdtempSync(join(tmpdir(), 'undo-human-'));
+  const home = mkdtempSync(join(TMP, 'undo-human-'));
   mkdirSync(join(home, '.config/undo/mainnet-deployer'), { recursive: true, mode: 0o755 });
   chmodSync(join(home, '.config/undo/mainnet-deployer'), 0o755);
   const r = run('03-funding-key.sh', 'yes\n', { home });
@@ -232,7 +235,7 @@ test('03 shows no address when the Keychain did not keep the key', () => {
 });
 
 test('the install script checks the release checksum before installing', () => {
-  const home = mkdtempSync(join(tmpdir(), 'undo-install-'));
+  const home = mkdtempSync(join(TMP, 'undo-install-'));
   const bin = join(home, 'shim');
   mkdirSync(bin);
   const tarDir = join(home, 'pack/near-cli-rs-aarch64-apple-darwin');
@@ -266,7 +269,7 @@ esac
 });
 
 test('00 makes the private folder outside the repo, private, and keeps what is there', () => {
-  const root = mkdtempSync(join(tmpdir(), 'undo-private-'));
+  const root = mkdtempSync(join(TMP, 'undo-private-'));
   const source = join(root, 'source.txt');
   writeFileSync(source, 'one-blocked-word\n');
   const dir = join(root, 'private');

@@ -110,12 +110,21 @@ export async function startRig({ log = () => {}, protocol = 88, blockMs = 1500 }
   const cookiePath = join(datadir, 'regtest', '.cookie');
   const auth = () => `Basic ${Buffer.from(readFileSync(cookiePath, 'utf8').trim()).toString('base64')}`;
   let rpcId = 0;
-  const rpc = async (method, params = []) => {
-    const res = await fetch(`http://127.0.0.1:${rpcPort}/`, {
-      method: 'POST',
-      headers: { authorization: auth(), 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '1.0', id: (rpcId += 1), method, params }),
-    });
+  const rpc = async (method, params = [], resets = 0) => {
+    let res;
+    try {
+      res = await fetch(`http://127.0.0.1:${rpcPort}/`, {
+        method: 'POST',
+        headers: { authorization: auth(), 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '1.0', id: (rpcId += 1), method, params }),
+      });
+    } catch (err) {
+      // bitcoind closes a connection idle for -rpcservertimeout (30 s). After a spawnSync that long, fetch reuses the
+      // pooled socket before this event loop sees the close, and the reset comes back with no answer: the request
+      // never reached bitcoind, so it is sent again on a new connection.
+      if (resets < 3 && ['ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET'].includes(err.cause?.code)) return rpc(method, params, resets + 1);
+      throw err;
+    }
     const data = await res.json();
     if (data.error) {
       const err = new Error(JSON.stringify(data.error));

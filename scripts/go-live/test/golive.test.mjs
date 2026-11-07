@@ -21,7 +21,7 @@ import { base58Encode, concat, toHex, utf8 } from '../../../tools/lib/bytes.mjs'
 import { p256, sha256 } from '../../../tools/lib/crypto.mjs';
 import { publicSecp } from '../../../tools/lib/keys.mjs';
 import { action, failureOf, keyFromSecret, loadKeyFile, NEAR, Near, TGAS } from '../../../tools/lib/near.mjs';
-import { insideGitTree, Refused, writePrivate } from '../lib.mjs';
+import { insideGitTree, OWNER_ALLOWANCE_NEAR, OWNER_METHODS, Refused, writePrivate } from '../lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const GOLIVE = resolve(HERE, '..');
@@ -348,7 +348,7 @@ test('00 env check: the dry run names what is missing; live passes on the right 
   assert.equal(no.code, 1, no.out);
 });
 
-/** A copy of this tree with the config naming a contract, as a git repo of its own so the scans can list it. */
+/** A copy of this tree with both configs naming a contract, as a git repo of its own so the scans can list it. */
 function deployTree(contract) {
   const dir = join(WORK, `tree-${toHex(label(contract)).slice(0, 6)}`);
   rmSync(dir, { recursive: true, force: true });
@@ -356,6 +356,10 @@ function deployTree(contract) {
   cpSync(REPO, dir, { recursive: true, filter: (src) => !skip.has(src.split('/').pop()) });
   const config = JSON.parse(readFileSync(join(dir, 'site/config/testnet.json'), 'utf8'));
   writeFileSync(join(dir, 'site/config/testnet.json'), `${JSON.stringify({ ...config, contract }, null, 2)}\n`);
+  // What a judge's ./verify.sh A reads, filled the way the deploy fills it.
+  const deployed = JSON.parse(readFileSync(join(dir, 'deploy/testnet.json'), 'utf8'));
+  const wasmSha = toHex(sha256(readFileSync(join(process.env.UNDO_WASM_DIR, 'undo_vault.wasm'))));
+  writeFileSync(join(dir, 'deploy/testnet.json'), `${JSON.stringify({ ...deployed, placeholder: false, contract, wasm_sha256: wasmSha, wasm_built_by: 'operator' }, null, 2)}\n`);
   // The outward check reads the built wasm in target/near, as it does before any real deploy.
   mkdirSync(join(dir, 'target', 'near'), { recursive: true });
   for (const f of ['undo_vault.wasm', 'mock_signer.wasm']) cpSync(join(process.env.UNDO_WASM_DIR, f), join(dir, 'target', 'near', f));
@@ -373,11 +377,27 @@ test('40: dry run builds and scans offline; live runs both checks, then the Work
   };
   const dry = run(['--dry-run', '--contract', 'v1.s.undo-btc.testnet'], {});
   assert.equal(dry.code, 0, dry.out);
+  assert.match(dry.out, /PASS \[static\] deploy\/testnet\.json names v1\.s\.undo-btc\.testnet and the sha256 of target\/near\/undo_vault\.wasm/);
   assert.match(dry.out, /PASS \[static\] BUILT testnet/);
   assert.match(dry.out, /PASS \[static\] outward check on the built site: OUTWARD OK/);
   assert.match(dry.out, /deploy\.sh --check-only[\s\S]*site\/deploy\.sh --check-only[\s\S]*undo-cron\/deploy\.sh {2,}[\s\S]*site\/deploy\.sh {2,}/);
   const wrong = run(['--dry-run', '--contract', 'v2.s.undo-btc.testnet'], {});
   assert.equal(wrong.code, 1, wrong.out);
+  // deploy/testnet.json left a placeholder, naming another contract, or recording other bytes: refused before the build.
+  const deployFile = join(tree, 'deploy/testnet.json');
+  const filled = readFileSync(deployFile, 'utf8');
+  for (const [why, over, says] of [
+    ['a placeholder', { placeholder: true, contract: 'not-deployed-yet', wasm_sha256: null }, /does not name v1\.s\.undo-btc\.testnet \(placeholder is not false, contract is not-deployed-yet, wasm_sha256 is not set\)/],
+    ['another contract', { contract: 'v2.s.undo-btc.testnet' }, /does not name v1\.s\.undo-btc\.testnet \(contract is v2\.s\.undo-btc\.testnet\)/],
+    ['other bytes', { wasm_sha256: 'ab'.repeat(32) }, /FAIL \[static\] deploy\/testnet\.json: undo_vault\.wasm sha256 [0-9a-f]{64}: NOT the wasm/],
+  ]) {
+    writeFileSync(deployFile, JSON.stringify({ ...JSON.parse(filled), ...over }));
+    const refused = run(['--dry-run', '--contract', 'v1.s.undo-btc.testnet'], {});
+    assert.equal(refused.code, 1, `${why}\n${refused.out}`);
+    assert.match(refused.out, says, why);
+    assert.doesNotMatch(refused.out, /BUILT/, `${why}: nothing is built`);
+  }
+  writeFileSync(deployFile, filled);
 
   const secrets = ['CONTRACT_ID', 'RELAY_ACCOUNT', 'RELAY_CRON_KEY', 'RELAY_GENERAL_KEY', 'RELAY_OWNER_KEY', 'DISPENSER_SECRET', 'IP_SALT'];
   const seeded = (stub) => {
@@ -701,6 +721,13 @@ test('sandbox 60: the real instance fails the readback while the deployer key is
   const teardown = node('90-teardown-temp.mjs', [...sb.common, '--parent', sb.parent.accountId, '--record', sb.record, '--config', join(WORK, 'none.json'), '--live', '--name', 'v1'], sb.env);
   assert.equal(teardown.code, 3, teardown.out);
   assert.ok(await sb.near.account(contract));
+});
+
+test('the owner key step 20 adds can call what the relay sends on it, and has the allowance the relay table sets', { skip: noSite }, async () => {
+  const table = await import(pathToFileURL(join(REPO, 'site/lib/relay-table.mjs')).href);
+  const owner = Object.entries(table.RELAY_METHODS).filter(([, m]) => m.key === table.OWNER).map(([name]) => name);
+  assert.deepEqual([...OWNER_METHODS].sort(), owner.sort());
+  assert.equal(OWNER_ALLOWANCE_NEAR, table.OWNER_ALLOWANCE_NEAR);
 });
 
 test('secrets-put.mjs --live run directly makes the account check itself: an id on another account\'s row sets nothing', { skip: noSite }, () => {

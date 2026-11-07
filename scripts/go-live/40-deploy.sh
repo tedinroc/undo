@@ -40,6 +40,30 @@ if [ -n "$contract" ] && [ "$named" != "$contract" ]; then
   golive_say FAIL "site/config/testnet.json names $named, the relay's secrets name $contract"; exit 1
 fi
 golive_say PASS "site/config/testnet.json names $named"
+# The judge's path reads deploy/testnet.json, not the site's config: ./verify.sh A, ./demo.sh and scripts/build.sh.
+# Left a placeholder, a judge's verify.sh skips every deployed-contract line, so it must name this contract too.
+deploy_config="$REPO/deploy/testnet.json"
+unfilled="$(node -e '
+let c;
+try {
+  c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+} catch (err) {
+  process.stdout.write(`does not read (${err.code ?? "not JSON"})`);
+  process.exit(1);
+}
+const why = [];
+if (c.placeholder !== false) why.push("placeholder is not false");
+if (c.contract !== process.argv[2]) why.push(`contract is ${c.contract}`);
+if (!/^[0-9a-f]{64}$/.test(String(c.wasm_sha256))) why.push("wasm_sha256 is not set");
+process.stdout.write(why.join(", "));
+' "$deploy_config" "$named")" || { golive_say FAIL "deploy/testnet.json $unfilled"; exit 1; }
+if [ -n "$unfilled" ]; then
+  golive_say FAIL "deploy/testnet.json, which ./verify.sh and ./demo.sh read, does not name $named ($unfilled): set placeholder false, contract, wasm_sha256 and wasm_built_by, as its placeholder_note says"; exit 1
+fi
+if ! same="$(node "$REPO/scripts/wasm-vs-config.mjs" "$REPO/target/near/undo_vault.wasm" "$deploy_config" 2>&1)"; then
+  golive_say FAIL "deploy/testnet.json: $same"; exit 1
+fi
+golive_say PASS "deploy/testnet.json names $named and the sha256 of target/near/undo_vault.wasm"
 [ "$h7" = "true" ] && golive_say INFO "test mode is on in this config (h7): fine for H7, set false for the final deploy"
 
 # What would go out, built and scanned here first, with no network.

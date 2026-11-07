@@ -441,12 +441,17 @@ function recoveryDryRun() {
     writeFileSync(file, buildRecovery({ network: 'mutinynet', vaultId: toHex(randomBytes(32)), script, cold }), { mode: 0o600 });
     chmodSync(file, 0o600);
     const out = spawnSync(built.bin, [file], { encoding: 'utf8' });
+    let verdicts = 0;
     for (const l of out.stdout.trim().split('\n')) {
       const m = /^(PASS|FAIL) (\S+) \[([^\]]+)\] (.*)$/.exec(l);
-      if (m) line(m[1], m[2], m[3], `${m[4]} (file built by tools/lib/recovery.mjs, as the page builds it)`);
-      else console.log(`    ${l}`);
+      if (m) {
+        verdicts += 1;
+        line(m[1], m[2], m[3], `${m[4]} (file built by tools/lib/recovery.mjs, as the page builds it)`);
+      } else console.log(`    ${l}`);
     }
-    if (out.status !== 0 && !/FAIL/.test(out.stdout)) line('FAIL', 'C18', 'consensus-lib', `recovery-dry-run exit ${out.status}`);
+    // No verdict line is no pass: a dry run that printed nothing must not leave C18 out of the run.
+    if (verdicts === 0) line('FAIL', 'C18', 'consensus-lib', `recovery-dry-run exit ${out.status}, and no PASS or FAIL line`);
+    else if (out.status !== 0 && !/FAIL/.test(out.stdout)) line('FAIL', 'C18', 'consensus-lib', `recovery-dry-run exit ${out.status}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

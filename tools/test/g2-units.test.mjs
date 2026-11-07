@@ -293,7 +293,7 @@ test('high S, a bad signature and a wrong hash type each have their own reason',
   assert.equal(checkSig(anyone, digest, publicSecp(km), 'K_m').reason, 'bad_sighash_type');
   assert.equal(checkSig(sig, digest, publicSecp(ku), 'K_m').reason, 'bad_signature');
   assert.equal(checkSig(sig, digest, publicSecp(km), 'K_m'), null);
-  assert.notEqual(verify(tamperFinalTx(hex, 'bad-sig'), toHex(spk), coin.value), 0, 'consensus agrees');
+  assert.equal(verify(tamperFinalTx(hex, 'bad-sig'), toHex(spk), coin.value), 1, 'consensus agrees');
 });
 
 test('a co-signed spend is checked against what was asked for, not against itself', () => {
@@ -340,7 +340,7 @@ test('the controls: consensus refuses both, for the check each is there to test'
   assert.deepEqual(toHex(control.inputs[0].witness[0]), toHex(real.inputs[0].witness[0]), 'K_m\'s signature stays');
   assert.equal(control.inputs[0].witness[1].length, 0);
   assert.equal(verify(hex, toHex(spk), coin.value), 0, 'control: the untouched spend is fine');
-  assert.notEqual(verify(noKu, toHex(spk), coin.value), 0);
+  assert.equal(verify(noKu, toHex(spk), coin.value), 1);
 
   const file = { csv: CSV, script };
   Object.defineProperty(file, 'cold', { value: ke, enumerable: false });
@@ -353,7 +353,7 @@ test('the controls: consensus refuses both, for the check each is there to test'
   const digest = sighash(makeTx([coin], CSV - 1, [{ value: amount, spk: to }]), 0, script, coin.value);
   assert.equal(checkSig(tx.inputs[0].witness[0], digest, publicSecp(ke), 'K_e'), null, 'an honest signature, so only OP_CSV can refuse it');
   assert.equal(verify(escape(), toHex(spk), coin.value), 0, 'control: the same escape at nSequence csv is fine');
-  assert.notEqual(verify(short.raw, toHex(spk), coin.value), 0);
+  assert.equal(verify(short.raw, toHex(spk), coin.value), 1);
 });
 
 test('the key alone: K_u\'s real signature, nothing for K_m, and consensus refuses it', () => {
@@ -469,7 +469,7 @@ test('a funding transaction verifies under consensus, pays the vault at vout 0, 
   const utxos = [{ txid: 'cd'.repeat(32), vout: 0, value: 500_000, status: { confirmed: true } }];
   const built = buildFunding({ dispenser: d, utxos, payTo: spk, value: 20_000, feeRate: 2 });
   assert.equal(verify(built.raw, toHex(d.spk), 500_000), 0);
-  assert.notEqual(verify(built.raw, toHex(d.spk), 500_001), 0);
+  assert.equal(verify(built.raw, toHex(d.spk), 500_001), 1);
   const tx = parseTx(fromHex(built.raw));
   assert.equal(toHex(tx.outputs[0].spk), toHex(spk));
   assert.equal(Number(tx.outputs[0].value), 20_000);

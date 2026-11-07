@@ -901,6 +901,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`rehearsal stopped: ${err.stack}`);
+  console.error(`rehearsal stopped: ${err.stack}${err.cause ? `\ncause: ${err.cause.code ?? ''} ${err.cause.message ?? err.cause}` : ''}`);
   process.exit(1);
 });
