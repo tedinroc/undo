@@ -300,8 +300,10 @@ test('build: refuses a bad config, a Node import and an unfilled contract', () =
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+  // The repo's testnet config names a contract once it is deployed, so build the unfilled case from it.
   const testnet = JSON.parse(readFileSync(join(SITE, 'config/testnet.json'), 'utf8'));
-  assert.throws(() => build({ configObject: testnet, out: join(tmpdir(), 'undo-never') }), /not filled in/);
+  const unfilled = { ...testnet, contract: 'FILL-AT-DEPLOY.testnet' };
+  assert.throws(() => build({ configObject: unfilled, out: join(tmpdir(), 'undo-never') }), /not filled in/);
 });
 
 test('build: a page can only reach the hosts its config names', () => {
