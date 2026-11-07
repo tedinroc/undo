@@ -2198,6 +2198,12 @@ test('state: a drop gives back only what its own claim charged, on the day it ch
   assert.equal(await spent(), 6000);
   assert.deepEqual(await ask('v3'), { ok: true, already: true, txid: 'aa' }, 'and the vault stays paid');
 
+  // No claim, or none named: nothing dropped and nothing given back, whatever the call says it charged.
+  for (const body of [{ vault: 'none', charged: 2000 }, { vault: 'none', at: NOW, charged: 2000 }, { vault: 'v1', charged: 2000 }]) {
+    assert.deepEqual(await state.call('fundedDrop', body), { ok: true, dropped: false }, JSON.stringify(body));
+  }
+  assert.equal(await spent(), 6000);
+
   // Across midnight: back to the day it was charged on, never off today's ceiling.
   const late = await ask('v4', Date.UTC(2026, 10, 1, 23, 59, 59));
   const today = Date.UTC(2026, 10, 2, 0, 0, 1);

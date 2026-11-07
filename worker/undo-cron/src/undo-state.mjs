@@ -347,7 +347,7 @@ export class UndoState {
      */
     fundedDrop({ vault, at, charged = 0 }) {
       const row = this.first('SELECT at FROM funded_vaults WHERE vault = ? AND txid IS NULL', vault);
-      if (row?.at !== at) return { ok: true, dropped: false };
+      if (!row || row.at !== at) return { ok: true, dropped: false };
       this.sql.exec('DELETE FROM funded_vaults WHERE vault = ?', vault);
       if (Number.isSafeInteger(charged) && charged > 0) {
         this.sql.exec('UPDATE daily_ceiling SET spent = MAX(0, spent - ?) WHERE day = ? AND bucket = ?', charged, dayOf(at), FUNDS);
