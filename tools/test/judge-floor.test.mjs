@@ -67,6 +67,45 @@ test('referee, the real one: accepts the mined G2 spend, refuses a wrong value, 
   assert.match(broken.why, /exited 101/);
 });
 
+/** A referee that accepts exactly the (raw, values) pairs listed, and crashes (exit 101) on everything else. */
+function pickyReferee(name, accept) {
+  const list = join(work, `${name}.json`);
+  writeFileSync(list, JSON.stringify(accept.map(([raw, values]) => `${raw}|${values.join(',')}`)));
+  return script(name, `exec "${process.execPath}" -e 'const ok = new Set(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))); const [, , raw, , values] = process.argv; if (ok.has(raw + "|" + values)) { console.log("consensus ok"); process.exit(0); } console.error("panicked"); process.exit(101);' "${list}" "$@"`);
+}
+
+test('proof checkers: a referee that crashes on every control is no refusal, so the G1 and G2 proofs fail', () => {
+  const cosign = g2.coins.find((c) => c.role === 'cosign').value;
+  const escape = g2.coins.find((c) => c.role === 'escape').value;
+  const g2bin = pickyReferee('picky-g2', [[g2.cosigned.raw, [cosign]], [g2.escape.raw, [escape]]]);
+  const two = spawnSync(process.execPath, [join(REPO, 'tools/test/check-g2-proof.mjs'), join(REPO, 'proofs/g2.json')], { encoding: 'utf8', env: { ...process.env, UNDO_TOOLS_CHECK_BIN: g2bin } });
+  assert.equal(two.status, 1, two.stdout);
+  for (const why of ['a wrong value was not refused', 'does not refuse the spend with no K_u signature', 'does not refuse the escape one block short']) assert.match(two.stdout, new RegExp(`G2 PROOF FAIL: .*${why}`));
+  const g1 = JSON.parse(read('proofs/g1.json'));
+  const runs = [];
+  const walk = (n) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === 'object') { if (n.final_tx && n.input_values) runs.push(n); Object.values(n).forEach(walk); } };
+  walk(g1.stages);
+  assert.ok(runs.length > 0);
+  const g1bin = pickyReferee('picky-g1', runs.map((r) => [r.final_tx, r.input_values]));
+  const one = spawnSync(process.execPath, [join(REPO, 'tools/test/check-g1-proof.mjs'), join(REPO, 'proofs/g1.json')], { encoding: 'utf8', env: { ...process.env, UNDO_TOOLS_CHECK_BIN: g1bin } });
+  assert.equal(one.status, 1, one.stdout);
+  assert.match(one.stdout, /FAIL control for request \d+: a wrong value must be refused, and the referee gave no verdict \(exit 101\)/);
+  // The live drivers hold the same rule where a refusal is what they record.
+  assert.match(read('tools/g2.mjs'), /if \(control\.status !== 1\) throw new Fail\(step, 'consensus_control_not_judged'/);
+});
+
+test('the key-alone tool records a refusal only on the referee\'s own refusal, never on a crash', { skip: existsSync(join(REPO, 'tools/s2-refusal.mjs')) ? false : 'tools/s2-refusal.mjs comes with the web branch' }, () => {
+  assert.match(read('tools/s2-refusal.mjs'), /if \(local\.status !== 1\) throw new Stop\(`the consensus check gave no verdict/);
+});
+
+test('proof checkers, the real referee: the recorded G1 and G2 proofs still pass', { skip: noReferee }, () => {
+  for (const [checker, file, want] of [['check-g2-proof.mjs', 'g2.json', /G2 PROOF OK: chain lines pass, gate_complete true, consensus agrees/], ['check-g1-proof.mjs', 'g1.json', /^PASS \[consensus-lib\] \d+ final transactions accepted/m]]) {
+    const r = spawnSync(process.execPath, [join(REPO, 'tools/test', checker), join(REPO, 'proofs', file)], { encoding: 'utf8', env: { ...process.env, UNDO_TOOLS_CHECK_BIN: REFEREE } });
+    assert.equal(r.status, 0, r.stdout);
+    assert.match(r.stdout, want);
+  }
+});
+
 // ---------------------------------------------------------------- tier A against a stand-in Esplora
 
 const DEAD = 'http://127.0.0.1:9';

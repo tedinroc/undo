@@ -28,8 +28,10 @@ for (const run of runs) {
   }
   const wrong = [...run.input_values];
   wrong[0] += 1;
-  if (verify(run, wrong) === 0) {
-    console.log(`FAIL control passed for request ${run.request}: a wrong value must be refused`);
+  // Exit 1 is the referee's refusal. Anything else (0, or a crash such as a panic's 101) is no refusal.
+  const control = verify(run, wrong);
+  if (control !== 1) {
+    console.log(`FAIL control for request ${run.request}: a wrong value must be refused, and the referee ${control === 0 ? 'accepted it' : `gave no verdict (exit ${control})`}`);
     bad += 1;
   }
 }
