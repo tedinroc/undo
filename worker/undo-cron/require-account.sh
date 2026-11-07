@@ -18,9 +18,22 @@ require_account() {
     echo "deploy: refused: wrangler whoami does not show the $PUBLIC_ACCOUNT account" >&2
     return 1
   fi
-  if ! printf '%s\n' "$who" | grep -q -F -e "$CLOUDFLARE_ACCOUNT_ID"; then
+  local row
+  row="$(printf '%s\n' "$who" | grep -F -e "$CLOUDFLARE_ACCOUNT_ID" || true)"
+  if [ -z "$row" ]; then
     echo "deploy: refused: this login cannot see CLOUDFLARE_ACCOUNT_ID" >&2
     return 1
+  fi
+  # The id must be the public account's own: its row names that account, or it is the only account this login sees
+  # (a login named for the public account, with one account). A login that sees several accounts passes only for
+  # the row that names the public one, so CLOUDFLARE_ACCOUNT_ID cannot point at another account it can reach.
+  if ! printf '%s\n' "$row" | grep -qi -F -e "$PUBLIC_ACCOUNT"; then
+    local ids
+    ids="$(printf '%s\n' "$who" | grep -oE '(^|[^0-9a-f])[0-9a-f]{32}([^0-9a-f]|$)' | grep -oE '[0-9a-f]{32}' | sort -u)"
+    if [ "$ids" != "$CLOUDFLARE_ACCOUNT_ID" ]; then
+      echo "deploy: refused: the row for CLOUDFLARE_ACCOUNT_ID does not name the $PUBLIC_ACCOUNT account" >&2
+      return 1
+    fi
   fi
   echo "deploy: account checked"
 }

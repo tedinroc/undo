@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en" data-state="boot">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0A0A0A">
+<title>Undo for Bitcoin replay</title>
+<meta name="description" content="A replay of earlier runs of Undo for Bitcoin on Mutinynet and NEAR testnet, step by step, with their real hashes. Nothing here is live.">
+<meta property="og:title" content="Undo for Bitcoin replay">
+<meta property="og:description" content="Earlier runs, step by step, with their real hashes. Signet test coins. Nothing here is live.">
+<meta property="og:image" content="https://undo-btc.pages.dev/film/poster.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/_shell.css">
+<link rel="stylesheet" href="/landing/landing.css">
+<link rel="stylesheet" href="/replay/replay.css">
+<script type="module" src="/replay/replay.mjs"></script>
+</head>
+<body>
+<header class="top">
+  <div id="chip" class="chip">signet test coins</div>
+  <div class="wordmark">Undo <span class="for">for</span> Bitcoin</div>
+</header>
+<main id="replay" class="replay">
+  <p class="banner"><span class="tag">REPLAY</span> <span>earlier runs, not live</span></p>
+  <h1 class="headline">Replay of earlier runs</h1>
+  <p id="note" class="small">Real hashes from earlier runs on one test vault. Nothing on this page is happening now.</p>
+  <ol id="steps" class="steps" aria-live="polite"></ol>
+  <p id="plain" class="sentence" hidden></p>
+  <div id="controls" class="controls" hidden>
+    <button id="next" class="go" type="button">Next step</button>
+    <button id="all" class="ghost" type="button">Show every step</button>
+  </div>
+  <noscript><p class="sentence">This replay needs JavaScript to read its record, run.json, which sits next to this page.</p></noscript>
+  <p class="small back"><a class="link" href="/">Undo for Bitcoin</a></p>
+</main>
+<footer class="foot"><span id="foot-chip">signet test coins</span> · replay of earlier runs · no real Bitcoin on this site</footer>
+</body>
+</html>
