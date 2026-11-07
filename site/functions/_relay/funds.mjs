@@ -116,8 +116,15 @@ async function fund(relay, dispenser, payTo, vault, { sats, feeRate }) {
     const { said, posted } = await broadcast(relay, built);
     if (said.kind === 'accepted') {
       const change = built.change ? { txid: built.txid, vout: 1, value: built.change } : null;
-      await relay.state.call('commitCoin', { coins, change });
-      await relay.state.call('fundedDone', { vault, txid: built.txid, now: relay.nowFn() });
+      try {
+        await relay.state.call('commitCoin', { coins, change });
+        await relay.state.call('fundedDone', { vault, txid: built.txid, now: relay.nowFn() });
+      } catch {
+        // The coin is out whatever the store took down, so its claim and its charge stand.
+        const paid = new Refusal('state_store_down', { message: 'the coin went out, and the state store did not record it' });
+        paid.keepClaim = true;
+        throw paid;
+      }
       return json(200, { ok: true, txid: built.txid, vout: built.vout, value: built.value, broadcast: { status: posted.status, body: posted.body } });
     }
     if (said.kind === 'transient') {
@@ -199,7 +206,8 @@ export async function fundsHandler(relay, request) {
     await refuseIfItHoldsACoin(relay, row);
     return await fund(relay, dispenser, fromHex(row.script_pubkey), vault, conf);
   } catch (err) {
-    if (!err.keepClaim) await relay.state.call('fundedDrop', { vault, sats: conf.sats, now: relay.nowFn() }).catch(() => {});
+    // Only this call's own claim, and only what it charged: a claim it took over was charged by the call before it.
+    if (!err.keepClaim) await relay.state.call('fundedDrop', { vault, at: claim.at, charged: claim.charged }).catch(() => {});
     if (err instanceof Refusal) throw err;
     throw new Refusal('state_store_down', { message: 'the state store is not answering' });
   }

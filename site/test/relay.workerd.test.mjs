@@ -648,6 +648,32 @@ test('funds: 2,000 sats on regtest to the contract\'s address, once. Limit, ceil
   assert.equal(down.body.verbatim, 'Bad Gateway');
 });
 
+test('funds: in workerd\'s own store, a drop gives back only its own claim\'s charge, and nothing once a coin is recorded or the claim was taken over', { skip, timeout: 30_000 }, async () => {
+  const ns = await mf.getDurableObjectNamespace('UNDO_STATE', 'undo-cron');
+  const op = async (name, body) => (await ns.get(ns.idFromName('funds-claims')).fetch(`https://do/${name}`, { method: 'POST', body: JSON.stringify(body) })).json();
+  const t = Date.UTC(2026, 10, 1, 12);
+  const ask = (vault, now = t) => op('funded', { vault, ipHash: vault, sats: 2000, ceiling: 40_000, now });
+  const drop = (vault, claim) => op('fundedDrop', { vault, at: claim.at, charged: claim.charged });
+  const spent = async () => (await op('status', { now: t })).spent.funds;
+
+  const first = await ask('v1');
+  const second = await ask('v1', t + 3 * 60_000);
+  assert.deepEqual([first.charged, second.charged], [2000, 0], 'a claim taken over after it ran out charges nothing');
+  assert.equal((await drop('v1', first)).dropped, false, 'the first call\'s late drop finds its claim taken over');
+  assert.equal((await drop('v1', second)).dropped, true);
+  assert.equal(await spent(), 2000, 'the first claim\'s coin may have landed, so its charge stands');
+
+  const paid = await ask('v2');
+  assert.deepEqual(await op('fundedDone', { vault: 'v2', txid: 'aa', now: paid.at }), { ok: true });
+  assert.equal((await drop('v2', paid)).dropped, false);
+  assert.equal(await spent(), 4000, 'a coin recorded is never given back');
+  assert.deepEqual(await ask('v2'), { ok: true, already: true, txid: 'aa' });
+
+  const nothing = await ask('v3');
+  assert.equal((await drop('v3', nothing)).dropped, true);
+  assert.equal(await spent(), 4000, 'a claim that moved nothing gives back its own charge');
+});
+
 test('cron: the canary gets one heartbeat, on its own key, logged in the Durable Object', { skip, timeout: 60_000 }, async () => {
   const before = (await views.vault(canary.vaultHex)).last_heartbeat;
   const cron = await mf.getWorker('undo-cron');

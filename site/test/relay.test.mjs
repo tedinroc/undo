@@ -355,18 +355,19 @@ test('state: a coin is leased to one funding, comes back after its lease, and a 
 test('state: one funding per vault. Limit, ceiling and claim are one step, and a lost answer can be asked again', async () => {
   const state = new StateClient(localStateNamespace());
   const ask = (vault, over = {}) => state.call('funded', { vault, ipHash: 'a', sats: 2000, ceiling: 40_000, now: NOW, ...over });
-  assert.deepEqual(await ask('v1'), { ok: true, already: false });
+  assert.deepEqual(await ask('v1'), { ok: true, already: false, at: NOW, charged: 2000 });
   const inFlight = await ask('v1');
   assert.equal(inFlight.code, 'rate_limited');
   assert.equal(inFlight.retry_after_s, 120);
-  assert.deepEqual(await ask('v1', { now: NOW + 120_000 }), { ok: true, already: false }, 'a claim nobody finished runs out');
+  assert.deepEqual(await ask('v1', { now: NOW + 120_000 }), { ok: true, already: false, at: NOW + 120_000, charged: 0 }, 'a claim nobody finished runs out');
   assert.equal((await state.call('status', { now: NOW })).spent.funds, 2000, 'and is not charged twice');
   await state.call('fundedDone', { vault: 'v1', txid: 'aa', now: NOW });
   assert.deepEqual(await ask('v1'), { ok: true, already: true, txid: 'aa' });
-  assert.equal((await ask('v2')).ok, true);
+  const v2 = await ask('v2');
+  assert.equal(v2.ok, true);
   assert.equal((await ask('v3')).code, 'rate_limited', 'two per hour per address');
   assert.equal((await ask('v3', { ipHash: 'b', ceiling: 4000 })).code, 'daily_ceiling');
-  await state.call('fundedDrop', { vault: 'v2', sats: 2000, now: NOW });
+  await state.call('fundedDrop', { vault: 'v2', at: v2.at, charged: v2.charged });
   assert.equal((await ask('v3', { ipHash: 'b', ceiling: 4000 })).ok, true, 'a funding that moved nothing gives its sats back');
 });
 
@@ -2097,11 +2098,89 @@ test('replay row: a signed call stays sent for two days, past the ten-minute pru
   assert.equal(world.sends().filter((t) => t.pub === toHex(OWNER.pub)).length, 1, 'the owner key signed it once');
 });
 
-test('state: a drop takes back only a claim that moved nothing. A paid vault stays paid', async () => {
+// ---------------------------------------------------------------- the funds ceiling: a drop gives back only its own charge
+
+test('funds: a claim taken over charges nothing, so its drop gives nothing back. A coin that landed late stays charged', async () => {
+  const { world, r, vault } = fundedRelay({ CEILING_FUNDS_SATS: 2000 });
+  const spentFunds = async () => (await r.state.call('status', { now: NOW })).spent.funds;
+  world.postRule = () => ({ status: 502, body: '<html>Bad Gateway</html>' });
+  const lost = await r.funds(vault(0), { ip: '192.0.2.1' });
+  assert.deepEqual([lost.status, lost.body.code], [503, 'esplora_down'], 'it may yet land, so its claim and its charge stand');
+  assert.equal(await spentFunds(), 2000);
+  // It did land. Once the claim has run out the vault asks again, and the relay finds the coin there.
+  world.postRule = null;
+  world.now = NOW + 3 * 60_000;
+  world.vaultCoins['vault-address'] = [{ txid: toHex(label('landed')), vout: 0, value: 2000 }];
+  const holds = await r.funds(vault(0), { ip: '192.0.2.2' });
+  assert.deepEqual([holds.status, holds.body.message], [422, 'that vault already holds a coin']);
+  assert.equal(await spentFunds(), 2000, 'the claim that took over charged nothing and gave nothing back');
+  world.vaultCoins = {};
+  const next = await r.funds(vault(1), { ip: '192.0.2.3' });
+  assert.deepEqual([next.status, next.body.code], [429, 'daily_ceiling'], 'a ceiling of one coin paid one coin');
+  assert.equal(world.posts.length, 1, 'one funding was ever sent');
+});
+
+test('funds: a coin that went out stays charged, even when the state store fails to record it', async () => {
+  const ns = stateWith((op) => {
+    if (op === 'fundedDone') throw new Error('gone');
+    return null;
+  });
+  const { world, r, vault } = fundedRelay({ UNDO_STATE: ns, CEILING_FUNDS_SATS: 2000 });
+  const out = await r.funds(vault(0), { ip: '192.0.2.1' });
+  assert.deepEqual([out.status, out.body.code], [503, 'state_store_down']);
+  assert.equal(world.posts.length, 1, 'the coin went out');
+  assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 2000, 'so its charge stands');
+  const next = await r.funds(vault(1), { ip: '192.0.2.2' });
+  assert.deepEqual([next.status, next.body.code], [429, 'daily_ceiling']);
+  assert.equal(world.posts.length, 1, 'and no second coin under a ceiling of one');
+});
+
+test('funds: a claim that moved nothing gives back its own charge, found by when it was made, whatever the clock reads at the drop', async () => {
+  const { world, r, vault } = fundedRelay({}, { utxos: [] });
+  let clock = NOW;
+  Object.defineProperty(world, 'now', { get: () => (clock += 1000) });
+  const empty = await r.funds(vault(0), { ip: '192.0.2.1' });
+  assert.equal(empty.body.code, 'dispenser_empty');
+  assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 0, 'nothing moved, so nothing stays charged');
+  world.utxos = [{ txid: toHex(label('refill')), vout: 0, value: 90_000, status: { confirmed: true } }];
+  assert.equal((await r.funds(vault(0), { ip: '192.0.2.2' })).body.ok, true, 'and the vault may ask again at once');
+});
+
+test('state: a drop gives back only what its own claim charged, on the day it charged it, and only while that claim stands unpaid', async () => {
   const state = new StateClient(localStateNamespace());
-  const ask = () => state.call('funded', { vault: 'v1', ipHash: 'a', sats: 2000, ceiling: 40_000, now: NOW });
-  assert.deepEqual(await ask(), { ok: true, already: false });
-  await state.call('fundedDone', { vault: 'v1', txid: 'aa', now: NOW });
-  await state.call('fundedDrop', { vault: 'v1', sats: 2000, now: NOW });
-  assert.deepEqual(await ask(), { ok: true, already: true, txid: 'aa' }, 'a late drop does not forget what was paid');
+  const MINUTE = 60_000;
+  const ask = (vault, now = NOW) => state.call('funded', { vault, ipHash: vault, sats: 2000, ceiling: 40_000, now });
+  const drop = (vault, claim) => state.call('fundedDrop', { vault, at: claim.at, charged: claim.charged });
+  const spent = async (now = NOW) => (await state.call('status', { now })).spent.funds;
+
+  const own = await ask('v1');
+  assert.deepEqual(own, { ok: true, already: false, at: NOW, charged: 2000 });
+  assert.deepEqual(await drop('v1', own), { ok: true, dropped: true });
+  assert.equal(await spent(), 0, 'a claim that moved nothing gives back its own charge');
+  assert.equal((await ask('v1')).charged, 2000, 'and the vault may ask again at once, and is charged again');
+
+  // Run out and taken over: the first call's coin may have landed, so its charge stands whatever becomes of either.
+  const first = await ask('v2');
+  const second = await ask('v2', NOW + 3 * MINUTE);
+  assert.deepEqual(second, { ok: true, already: false, at: NOW + 3 * MINUTE, charged: 0 });
+  assert.deepEqual(await drop('v2', first), { ok: true, dropped: false }, 'a late drop of the claim that ran out');
+  assert.equal((await ask('v2', NOW + 3 * MINUTE + 1000)).code, 'rate_limited', 'leaves the claim that took it over standing');
+  assert.deepEqual(await drop('v2', second), { ok: true, dropped: true });
+  assert.equal(await spent(), 4000, 'v1, and v2\'s first claim. The second charged nothing, so it gave nothing back');
+
+  // Paid: a drop after the coin is recorded changes nothing. With a clock that did not move, as in these tests, the
+  // paid row even carries the claim's own time.
+  const paid = await ask('v3');
+  await state.call('fundedDone', { vault: 'v3', txid: 'aa', now: paid.at });
+  assert.deepEqual(await drop('v3', paid), { ok: true, dropped: false });
+  assert.equal(await spent(), 6000);
+  assert.deepEqual(await ask('v3'), { ok: true, already: true, txid: 'aa' }, 'and the vault stays paid');
+
+  // Across midnight: back to the day it was charged on, never off today's ceiling.
+  const late = await ask('v4', Date.UTC(2026, 10, 1, 23, 59, 59));
+  const today = Date.UTC(2026, 10, 2, 0, 0, 1);
+  assert.equal((await ask('v5', today)).charged, 2000);
+  assert.deepEqual(await drop('v4', late), { ok: true, dropped: true });
+  assert.equal(await spent(late.at), 6000, 'the day it was charged gets it back');
+  assert.equal(await spent(today), 2000, 'today keeps what today charged');
 });

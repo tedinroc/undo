@@ -317,17 +317,22 @@ export class UndoState {
     /**
      * One funding per vault, claimed here before any coin moves: per-IP limit, daily ceiling and the claim are
      * one step. A vault already paid answers with its transaction, so a lost answer costs nothing to ask again.
+     * The answer names this claim (`at`) and what it charged, which is all its drop may give back.
      */
     funded({ vault, ipHash, sats, ceiling, now }) {
       const row = this.first('SELECT txid, at FROM funded_vaults WHERE vault = ?', vault);
       if (row?.txid) return { ok: true, already: true, txid: row.txid };
       if (row && now - row.at < CLAIM_MS) return { ok: false, code: 'rate_limited', retry_after_s: Math.ceil((row.at + CLAIM_MS - now) / 1000) };
+      // A claim that ran out was charged by the call that made it, and that call's coin may yet land. Taking it over
+      // charges nothing more, so its drop gives nothing back.
+      let charged = 0;
       if (!row) {
-        const charged = this.chargeNow({ key: FUNDS, method: FUNDS, ipHash, now, ceiling, cost: sats, perIpHour: FUNDS_PER_IP_HOUR });
-        if (!charged.ok) return charged;
+        const out = this.chargeNow({ key: FUNDS, method: FUNDS, ipHash, now, ceiling, cost: sats, perIpHour: FUNDS_PER_IP_HOUR });
+        if (!out.ok) return out;
+        charged = sats;
       }
       this.sql.exec('INSERT OR REPLACE INTO funded_vaults VALUES (?, NULL, ?)', vault, now);
-      return { ok: true, already: false };
+      return { ok: true, already: false, at: now, charged };
     },
 
     fundedDone({ vault, txid, now }) {
@@ -335,11 +340,19 @@ export class UndoState {
       return { ok: true };
     },
 
-    /** No coin moved, so the vault may ask again and the ceiling gets its sats back. */
-    fundedDrop({ vault, sats, now }) {
-      this.sql.exec('DELETE FROM funded_vaults WHERE vault = ? AND txid IS NULL', vault);
-      this.refundNow({ bucket: FUNDS, cost: sats, now });
-      return { ok: true };
+    /**
+     * No coin moved, so the vault may ask again and the ceiling gets back what this claim charged, on the day it
+     * charged it. Only while the claim stands as `funded` left it: once a coin is recorded, or another call has taken
+     * the claim over, nothing is dropped and nothing comes back, so the funds ceiling never forgets a coin that went out.
+     */
+    fundedDrop({ vault, at, charged = 0 }) {
+      const row = this.first('SELECT at FROM funded_vaults WHERE vault = ? AND txid IS NULL', vault);
+      if (row?.at !== at) return { ok: true, dropped: false };
+      this.sql.exec('DELETE FROM funded_vaults WHERE vault = ?', vault);
+      if (Number.isSafeInteger(charged) && charged > 0) {
+        this.sql.exec('UPDATE daily_ceiling SET spent = MAX(0, spent - ?) WHERE day = ? AND bucket = ?', charged, dayOf(at), FUNDS);
+      }
+      return { ok: true, dropped: true };
     },
 
     heartbeatLogged({ vault, at, hash }) {
