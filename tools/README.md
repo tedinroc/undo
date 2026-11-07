@@ -14,6 +14,7 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 | `g1.mjs` | Gate G1 driver. Plan only unless `--live`. Refuses mainnet | NEAR RPC |
 | `g2.mjs` | Gate G2 driver: real coins, the co-signed spend and the escape. Plan only unless `--live`, rehearses with `--regtest`, resumes after any stop. Refuses mainnet and any endpoint off its allow lists | NEAR RPC, Esplora |
 | `s2-refusal.mjs` | The spend key alone, against a real node: funds a coin in a finished G2 run's vault, POSTs K_u's signature with nothing for K_m once, keeps the node's words, re-reads the coin, sends it back by the escape. Plan only unless `--live`. No NEAR write | NEAR RPC, Esplora |
+| `replay-run.mjs` | Builds `site/pages/replay/run.json`, the replay page's only data, from `proofs/g2.json` and `proofs/s2-refusal.json`; `--check` exits 1 if the file is not what the proofs make. `site/test/landing.test.mjs` rebuilds it and compares | None |
 
 `K_p` here is a software authenticator, and every result that rests on it says so. A real phone is gate G3.
 

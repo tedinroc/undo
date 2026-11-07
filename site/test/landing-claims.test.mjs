@@ -54,6 +54,8 @@ test('the status line prints the contract\'s words, or the RPC\'s refusal, and n
   const scriptCode = /python3 -c '([^']+)'`/.exec(landingJs)?.[1];
   const code = decoderOf(pageLine);
   assert.equal(scriptCode, code, 'landing.mjs writes the same decoder the HTML shows');
+  const rpc = JSON.parse(readFileSync(join(REPO, 'site', 'config', 'testnet.json'), 'utf8')).rpc[0];
+  assert.ok(pageLine.startsWith(`curl -s ${rpc} `), 'the static line asks the RPC the script swaps in, and the README names');
   const decode = (answer) => spawnSync('python3', ['-c', code], { input: JSON.stringify(answer), encoding: 'utf8' });
   const words = Buffer.from(JSON.stringify({ ok: true, lines: ['guard online'] }));
   const ok = decode({ jsonrpc: '2.0', id: 'u', result: { result: [...words], logs: [] } });
