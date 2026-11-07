@@ -13,6 +13,7 @@ const EMPTY_HOLDS_MS = 10 * 60_000;
 const CALL_TIMEOUT_MS = 8000;
 const RESERVE_VSIZE = 180;
 const INPUT_VSIZE = 68;
+const MADE_ONLY = 'this relay only funds vaults it made';
 
 const settings = (relay) => ({
   sats: numberOr(relay.env.FUNDS_SATS, DEFAULT_SATS),
@@ -159,18 +160,22 @@ export async function fundsHandler(relay, request) {
   const { vault } = body;
   if (!checkPow(fundsPowTarget(vault), body.pow, relay.powBits)) throw new Refusal('pow_bad', { message: 'that proof of work does not solve this vault' });
   // Anyone can make a vault straight on the contract, free of this relay's limits, and name this relay as its guard.
-  // So a coin goes only to a vault this relay sent the create_vault for.
+  // So a coin goes only to a vault this relay's own create_vault made.
   const made = await relay.madeRow(vault);
   if (made === undefined) throw new Refusal('state_store_down', { message: 'the state store is not answering' });
-  if (made === null) throw new Refusal('would_refuse', { message: 'this relay only funds vaults it made' });
+  if (made === null) throw new Refusal('would_refuse', { message: MADE_ONLY });
+  const reader = relay.reader();
   let row;
   try {
-    row = await relay.reader().view(relay.contract, 'vault', { vault });
+    row = await reader.view(relay.contract, 'vault', { vault });
   } catch {
     throw new Refusal('rpc_down', { message: 'could not read the vault' });
   }
   if (row === null) throw new Refusal('bad_request', { message: 'no such vault' });
   if (!row.active) throw new Refusal('bad_request', { message: 'that vault is not active' });
+  const mine = await relay.madeHere(vault, made, reader, row);
+  if (mine === false) throw new Refusal('would_refuse', { message: MADE_ONLY });
+  if (mine === null) throw new Refusal('rpc_down', { message: 'could not read how that vault was made' });
 
   const conf = settings(relay);
   const dispenser = dispenserOf(relay);

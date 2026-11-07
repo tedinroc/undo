@@ -217,8 +217,18 @@ function relayWith(world, extra = {}, { made = [] } = {}) {
   };
   const handler = makeRelay(env, { fetchFn: world.fetchFn, nowFn: () => world.now ?? NOW });
   const state = new StateClient(ns);
-  // Before the relay kept this table there was no such call, and an old store answers it as down.
-  const record = (vault, { passkey: pk = passkey.hex, cold = DEFAULT_COLD } = {}) => state.call('made', { vault, passkey: pk, k_e_intent: cold, now: NOW }).catch(() => null);
+  // Before the relay kept this table there was no such call, and an old store answers it as down. A row as its
+  // create_vault leaves it once the chain has shown that very transaction made the vault.
+  const record = async (vault, { passkey: pk = passkey.hex, cold = DEFAULT_COLD } = {}) => {
+    try {
+      const hash = `made-${vault}`;
+      await state.call('made', { vault, passkey: pk, k_e_intent: cold, now: NOW });
+      await state.call('madeSent', { vault, hash });
+      await state.call('madeChecked', { vault, hash, made: true });
+    } catch {
+      // As above.
+    }
+  };
   let ready = ns.down ? Promise.resolve() : Promise.all(made.map((v) => record(v)));
   const post = async (path, body, { ip = '198.51.100.7', origin = null, raw = null, beat = BEAT } = {}) => {
     await ready;
@@ -239,13 +249,15 @@ function relayWith(world, extra = {}, { made = [] } = {}) {
       return { status: res.status, body: await res.json() };
     },
     state,
+    /** Once the rows passed as `made` are written. */
+    ready: () => ready,
     /** Records a vault as this relay's own, as its create_vault does. */
     made: (vault = VAULT, keys = {}) => {
       ready = ready.then(() => record(vault, keys));
       return ready;
     },
-    /** Every state store call but the read that asks whether this relay made a vault. */
-    charges: () => ns.calls.filter((c) => c !== 'madeVault' && c !== 'made'),
+    /** Every state store call but the ones that keep and read whether this relay made a vault. */
+    charges: () => ns.calls.filter((c) => !['madeVault', 'made', 'madeSent', 'madeChecked'].includes(c)),
   };
 }
 
@@ -360,7 +372,7 @@ test('state: one funding per vault. Limit, ceiling and claim are one step, and a
 test('state: tables are the design\'s, old counts are pruned, and only a hash of an address is ever stored', async () => {
   const object = new UndoState({ storage: localStorage() }, {});
   const tables = object.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").toArray().map((r) => r.name);
-  assert.deepEqual(tables, ['alert_state', 'daily_ceiling', 'dispenser_utxos', 'funded_vaults', 'heartbeat_log', 'ip_counter', 'made_vaults', 'nonce_lease', 'owner_sent', 'vault_counter']);
+  assert.deepEqual(tables, ['alert_state', 'daily_ceiling', 'dispenser_utxos', 'funded_vaults', 'heartbeat_log', 'ip_counter', 'made_sends', 'made_vaults', 'nonce_lease', 'owner_sent', 'vault_counter']);
   const op = async (name, body) => (await object.fetch(new Request(`https://do/${name}`, { method: 'POST', body: JSON.stringify(body) }))).json();
   assert.equal((await object.fetch(new Request('https://do/nothing', { method: 'POST', body: '{}' }))).status, 404);
   const charge = (now) => op('charge', { key: 'general', method: 'heartbeat', ipHash: 'hash-only', vault: VAULT, now, ceiling: 1e6 });
@@ -1488,6 +1500,7 @@ test('AUDIT-1: a WebAuthn object with a field the contract lacks, or a cancel na
   const { args } = await getAssertion({ credentials: passkey.soft, digest, rpId: 'site.test' });
   const both = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: { Passkey: args, Cold: 'ab'.repeat(65) } };
   const neither = { vault: VAULT, request: 5, expires_at: NOW + 60_000, auth: {} };
+  await r.ready();
   const callsBefore = r.ns.calls.length;
   for (const [method, body] of [['cancel_all_and_rotate', padded], ['cancel', both], ['cancel', neither], ['cancel', { ...both, auth: { Passkey: { ...args, extra: '00' } } }]]) {
     const out = await r.relay(method, body);
@@ -1624,8 +1637,9 @@ test('AUDIT-3: test coins go only to a vault this relay made, not to one that on
   assert.equal((await m.relay('create_vault', built.args, { pow: 0 })).body.code, 'tx_refused');
   assert.equal((await m.state.call('madeVault', { vault: built.vaultHex })).row, null, 'a create the chain never had leaves no row');
   make.refuseWith = null;
-  assert.equal((await m.relay('create_vault', built.args, { pow: 0 })).body.ok, true);
-  assert.deepEqual((await m.state.call('madeVault', { vault: built.vaultHex })).row, { passkey: built.args.passkey.pubkey, k_e_intent: built.args.k_e_intent }, 'its create_vault records it, with the keys it was made with');
+  const sentCreate = (await m.relay('create_vault', built.args, { pow: 0 })).body;
+  assert.equal(sentCreate.ok, true);
+  assert.deepEqual((await m.state.call('madeVault', { vault: built.vaultHex })).row, { passkey: built.args.passkey.pubkey, k_e_intent: built.args.k_e_intent, hash: sentCreate.hash, confirmed: false }, 'its create_vault records it, with the keys it was made with and the hash it signed, kept before it was sent');
   const taken = fakeWorld({ vaults: { [built.vaultHex]: vaultRow() } });
   const t = relayWith(taken, { POW_BITS: 0 });
   assert.equal((await t.relay('create_vault', built.args, { pow: 0 })).body.message, 'that vault exists');
@@ -1724,6 +1738,81 @@ test('made rows: two sends of one create_vault, the first refused at the node. T
   refuseNext = true;
   assert.equal((await r.relay('create_vault', old.args, { pow: 0, ip: '198.51.100.10' })).body.code, 'tx_refused');
   assert.ok(await rowOf(old.vaultHex), 'a refused send takes back only a row it wrote');
+});
+
+test('made rows: a vault is this relay\'s own only once the chain shows its own create_vault ran, in the block the vault was made in', async () => {
+  // A create the contract refused, or one whose vault never activated, leaves a row for an id anyone can then make
+  // straight on the contract: the id covers neither guard, policy nor K_m. The vault's created_at tells them apart.
+  const CREATED = NOW - 120_000;
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ created_at: CREATED }) } });
+  world.utxos = [{ txid: toHex(label('coin')), vout: 0, value: 50_000, status: { confirmed: true } }];
+  const raws = new Map();
+  const outcomes = {};
+  world.blockTimes = { 'block-made': CREATED, 'block-before': CREATED - 1000 };
+  let txReads = 0;
+  const inner = world.fetchFn;
+  world.fetchFn = async (url, init = {}) => {
+    if (String(url) === `${ESPLORA}/tx`) raws.set(init.body, await txidOfRaw(init.body));
+    if (!String(url).startsWith(ESPLORA)) {
+      const { method, params } = JSON.parse(init.body);
+      if (method === 'tx') txReads += 1;
+      const o = method === 'tx' ? outcomes[params.tx_hash] : undefined;
+      if (o) {
+        const result = { final_execution_status: 'EXECUTED_OPTIMISTIC', transaction_outcome: { outcome: { receipt_ids: ['receipt-1'] } }, receipts_outcome: [{ id: 'receipt-1', block_hash: o.block, outcome: { status: o.status } }] };
+        return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }));
+      }
+    }
+    return inner(url, init);
+  };
+  world.lastBuiltTxid = (raw) => raws.get(raw);
+  const withRow = async (hash) => {
+    const r = relayWith(world);
+    await r.state.call('made', { vault: VAULT, passkey: passkey.hex, k_e_intent: DEFAULT_COLD, now: NOW });
+    if (hash) assert.equal((await r.state.call('madeSent', { vault: VAULT, hash })).ok, true);
+    return r;
+  };
+  const rowOf = async (r) => (await r.state.call('madeVault', { vault: VAULT })).row;
+  const threeRotations = async (r) => {
+    const out = [];
+    for (let i = 0; i < 3; i += 1) out.push((await r.relay('cancel_all_and_rotate', await signedRotation({ expiresAt: NOW + 60_000 + i }))).body.code ?? 'sent');
+    return out;
+  };
+
+  const unsigned = await withRow(null);
+  assert.equal((await unsigned.relay('cancel_all_and_rotate', await signedRotation())).body.code, 'not_this_relays', 'a row whose create was never signed is not a vault this relay made');
+
+  outcomes.failed = { block: 'block-made', status: { Failure: { ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: 'Smart contract panicked: bad K_u signature' } } } } } };
+  const failed = await withRow('failed');
+  const failedCoin = await failed.funds(VAULT);
+  assert.deepEqual([failedCoin.status, failedCoin.body.code, failedCoin.body.message], [422, 'would_refuse', 'this relay only funds vaults it made'], 'its create was refused, so the vault there now is someone else\'s');
+  assert.equal(await rowOf(failed), null, 'and the row is gone');
+  assert.equal((await failed.relay('cancel_all_and_rotate', await signedRotation())).body.code, 'not_this_relays');
+  assert.equal(world.posts.length, 0, 'no coin moved');
+
+  outcomes.earlier = { block: 'block-before', status: { SuccessValue: '' } };
+  const earlier = await withRow('earlier');
+  assert.equal((await earlier.relay('cancel_all_and_rotate', await signedRotation())).body.code, 'not_this_relays', 'its create ran a block before this vault was made: the vault it made is gone, and this one is another');
+  assert.equal(await rowOf(earlier), null);
+
+  outcomes.pending = { block: 'block-made', status: 'Unknown' };
+  const pending = await withRow('pending');
+  assert.equal((await pending.funds(VAULT)).body.code, 'rpc_down', 'a receipt not run yet says nothing');
+  assert.equal((await rowOf(pending)).confirmed, false);
+
+  const unknown = await withRow('unknown');
+  assert.equal((await unknown.funds(VAULT)).body.code, 'rpc_down', 'a transaction no node has: no coin, and nothing decided');
+  assert.deepEqual(await threeRotations(unknown), ['sent', 'sent', 'rate_limited'], 'a cancel still goes, counted as one the relay could not check');
+  assert.equal((await rowOf(unknown)).hash, 'unknown', 'the row stays as it was');
+
+  outcomes.mine = { block: 'block-made', status: { SuccessValue: '' } };
+  const mine = await withRow('mine');
+  const coin = await mine.funds(VAULT);
+  assert.equal(coin.body.ok, true, JSON.stringify(coin.body));
+  assert.equal((await rowOf(mine)).confirmed, true, 'its create made this very vault');
+  delete outcomes.mine;
+  const readsBefore = txReads;
+  assert.deepEqual(await threeRotations(mine), ['sent', 'sent', 'sent'], 'checked calls, at the checked limit');
+  assert.equal(txReads, readsBefore, 'a confirmed row reads no transaction again');
 });
 
 test('AUDIT-4: status calls general up only when a new vault and a 4-input execute fit above the reserve, and each send agrees', async () => {

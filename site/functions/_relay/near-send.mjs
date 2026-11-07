@@ -161,8 +161,11 @@ export class NearSender {
     return { unknown: true };
   }
 
-  /** Returns { hash, retries } once included, or { hash, retries, state: 'unknown' }. Throws a Refusal. */
-  async send(key, actions, { nonces = null } = {}) {
+  /**
+   * Returns { hash, retries } once included, or { hash, retries, state: 'unknown' }. Throws a Refusal. `onSigned(hash)`
+   * runs before each signed transaction goes out, and if it throws, nothing more is sent.
+   */
+  async send(key, actions, { nonces = null, onSigned = null } = {}) {
     const deadline = this.nowFn() + this.budgetMs;
     let retries = 0;
     let nonce = await this.firstNonce(key, nonces);
@@ -176,6 +179,7 @@ export class NearSender {
         blockHash: await this.finalHash(),
         actions,
       }, key.sign);
+      if (onSigned) await onSigned(signed.hash);
       const out = await this.deliver(signed, deadline);
       if (out.included) return { hash: signed.hash, retries };
       if (out.unknown) return { hash: signed.hash, retries, state: 'unknown' };

@@ -1,8 +1,9 @@
 // The relay's strongly consistent state: limits, daily ceilings, a nonce row per key, the dispenser's coins.
 // A plain class with no `cloudflare:` import, so site/test can run this same class over node:sqlite. Each
 // operation is one synchronous transaction, so nothing else runs between its reads and its writes. It stores
-// no address and no body: an IP only as a salted hash, a vault id and that vault's two public keys, all of which the
-// chain shows, and for an owner call only which call it was, so one signed body is charged once.
+// no address and no body: an IP only as a salted hash, a vault id, that vault's two public keys and the hash of the
+// create_vault this relay sent for it, all of which the chain shows, and for an owner call only which call it was, so
+// one signed body is charged once.
 import { OWNER, OWNER_UNCHECKED_SHARE, RELAY_METHODS } from '../../../site/lib/relay-table.mjs';
 
 export const FUNDS = 'funds';
@@ -28,6 +29,10 @@ const SCHEMA = [
   // The vaults this relay sent a create_vault for, with the passkey and cold intent key they were made with. Only these
   // get the owner key and test coins: anyone can make a vault straight on the contract, as many as they like.
   'CREATE TABLE IF NOT EXISTS made_vaults (vault TEXT PRIMARY KEY, passkey TEXT NOT NULL, k_e_intent TEXT NOT NULL, at INTEGER NOT NULL)',
+  // The hash of the create_vault transaction this relay signed for a made_vaults row, kept before it is sent, and
+  // whether the chain has shown that this very transaction made the vault there now. A table apart, so a store that
+  // already holds made_vaults needs no change to it.
+  'CREATE TABLE IF NOT EXISTS made_sends (vault TEXT PRIMARY KEY, hash TEXT NOT NULL, confirmed INTEGER NOT NULL)',
   // One row per owner call sent: vault, method, signer, nonce or request, expiry. A body the contract would refuse
   // cannot be sent twice, and one it would take cannot be charged twice.
   'CREATE TABLE IF NOT EXISTS owner_sent (vault TEXT NOT NULL, call TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (vault, call))',
@@ -121,12 +126,19 @@ export class UndoState {
       this.sql.exec('UPDATE vault_counter SET count = MAX(0, count - 1) WHERE vault = ? AND method = ? AND window_start = ?', v, name, window);
     }
     if (Array.isArray(ticket.sent)) this.sql.exec('DELETE FROM owner_sent WHERE vault = ? AND call = ?', ticket.sent[0], ticket.sent[1]);
-    if (typeof ticket.made === 'string') this.sql.exec('DELETE FROM made_vaults WHERE vault = ?', ticket.made);
+    if (typeof ticket.made === 'string') this.dropMade(ticket.made);
     return { ok: true };
   }
 
+  /** `hash` and `confirmed` are null and false until this relay has signed the vault's create_vault. */
   madeRow(vault) {
-    return this.first('SELECT passkey, k_e_intent FROM made_vaults WHERE vault = ?', vault);
+    const row = this.first('SELECT m.passkey, m.k_e_intent, s.hash, s.confirmed FROM made_vaults m LEFT JOIN made_sends s ON s.vault = m.vault WHERE m.vault = ?', vault);
+    return row && { passkey: row.passkey, k_e_intent: row.k_e_intent, hash: row.hash ?? null, confirmed: row.confirmed === 1 };
+  }
+
+  dropMade(vault) {
+    this.sql.exec('DELETE FROM made_vaults WHERE vault = ?', vault);
+    this.sql.exec('DELETE FROM made_sends WHERE vault = ?', vault);
   }
 
   // ------------------------------------------------------------ dispenser
@@ -189,6 +201,26 @@ export class UndoState {
     /** Null for a vault this relay did not make. */
     madeVault({ vault }) {
       return { ok: true, row: typeof vault === 'string' ? this.madeRow(vault) : null };
+    },
+
+    /** The hash of the create_vault this relay is about to send for a row it wrote. Kept before the bytes go out. */
+    madeSent({ vault, hash }) {
+      if (typeof vault !== 'string' || typeof hash !== 'string' || !hash) return { ok: false, code: 'bad_request' };
+      if (!this.first('SELECT at FROM made_vaults WHERE vault = ?', vault)) return { ok: false, code: 'not_this_relays' };
+      this.sql.exec('INSERT OR REPLACE INTO made_sends VALUES (?, ?, 0)', vault, hash);
+      return { ok: true };
+    },
+
+    /**
+     * What the chain said about the transaction `hash`: it made the vault there now (`made`), so later calls read nothing,
+     * or it did not, and the row goes. Only for the row that still names that hash, so a stale answer changes nothing.
+     */
+    madeChecked({ vault, hash, made }) {
+      if (typeof vault !== 'string' || typeof hash !== 'string' || typeof made !== 'boolean') return { ok: false, code: 'bad_request' };
+      if (!this.first('SELECT hash FROM made_sends WHERE vault = ? AND hash = ?', vault, hash)) return { ok: true, changed: false };
+      if (made) this.sql.exec('UPDATE made_sends SET confirmed = 1 WHERE vault = ?', vault);
+      else this.dropMade(vault);
+      return { ok: true, changed: true };
     },
 
     /** The rest of a call whose size was only known after a read, such as an execute of several inputs. */

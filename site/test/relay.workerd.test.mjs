@@ -93,12 +93,15 @@ async function makeVault(name, on = 'main', opts = {}) {
 
 /**
  * The relay `on` keeps its own state store. Its create share here is too small for a vault, so a vault made on main
- * is written into its store, as its own create_vault would have done. Production has one relay and one store.
+ * is written into its store, as its own create_vault would have done: the row, then the hash of the create it signed.
+ * Every relay here signs as the same account, so `on` checks that hash against the chain itself. Production has one
+ * relay and one store.
  */
 async function adopt(on, v) {
   const ns = await mf.getDurableObjectNamespace('UNDO_STATE', 'undo-cron');
-  const res = await ns.get(ns.idFromName(on)).fetch('https://do/made', { method: 'POST', body: JSON.stringify({ vault: v.vaultHex, passkey: v.args.passkey.pubkey, k_e_intent: v.args.k_e_intent, now: Date.now() }) });
-  assert.equal((await res.json()).ok, true);
+  const op = async (name, body) => (await ns.get(ns.idFromName(on)).fetch(`https://do/${name}`, { method: 'POST', body: JSON.stringify(body) })).json();
+  assert.equal((await op('made', { vault: v.vaultHex, passkey: v.args.passkey.pubkey, k_e_intent: v.args.k_e_intent, now: Date.now() })).ok, true);
+  assert.equal((await op('madeSent', { vault: v.vaultHex, hash: v.tx })).ok, true);
 }
 
 /** A vault made straight on the contract, not through this relay, naming the relay as its guard, paid by the payer. */

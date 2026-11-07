@@ -673,7 +673,9 @@ async function runCeiling() {
   const { row } = await doCall('film3', 'madeVault', { vault: v.vaultHex });
   must('run 3\'s relay recorded the vault it made', row !== null && row !== undefined, JSON.stringify(row));
   const copied = await doCall('low', 'made', { vault: v.vaultHex, passkey: row.passkey, k_e_intent: row.k_e_intent, now: Date.now() });
-  must('the low-ceiling relay holds the same row', copied.ok === true, JSON.stringify(copied));
+  // With the hash of the create it signed, which 'low' checks against the chain itself: both sign as one account.
+  const hashed = row.hash ? await doCall('low', 'madeSent', { vault: v.vaultHex, hash: row.hash }) : { ok: false };
+  must('the low-ceiling relay holds the same row', copied.ok === true && hashed.ok === true, JSON.stringify([copied, hashed]));
   apiWorker = 'low';
   await sleep(10_500); // The relay's status cache.
   const near = await (await fetch(`${stage.origin}/api/relay`)).json();

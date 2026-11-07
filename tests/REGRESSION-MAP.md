@@ -189,6 +189,14 @@ The same check found one in the relay, low: it sent `execute` for a Signing requ
 | The relay sent `execute` for a Signing request whose retry window had closed, or whose sign call was still out | `site/test/relay.test.mjs: execute on a Signing request: refused before the general key pays when the contract would refuse it, sent when it might not`; on the real wasm in workerd, `site/test/relay.workerd.test.mjs: a sign call still out: …` | Refused before the key signs once a paying request is a day past its first execute, and while a sign call is out if its first execute is newer than the block 240 back. When neither can be shown from the views, the call goes and the contract decides. The contract refuses the same call with `InFlight`. |
 | The thief tab resent `execute` after the window closed | `site/test/thief.test.mjs: while signing, execute goes again every interval, and stops once the request can no longer ask for signatures` | It stops, and says the contract asks the signer for nothing more. A self-spend keeps retrying. |
 
+### The relay's made-vault rule
+
+The relay sends the owner key's cancels, and test coins, only for vaults it made (the relay audit's AUDIT-1 and AUDIT-3). It wrote a vault's row before sending its `create_vault`, and kept it when the contract refused that create or the vault never activated. A vault id covers neither guard, policy nor `K_m`, so the same id could then be made straight on the contract, naming any guard, and get both. Medium: each such row still cost one charge against the create share, so the bound on how many vaults can fill the owner ceiling did not change. The tests failed on the code before the fix (3 of 4 in `made-row.test.mjs`: the relay funded the straight vault and sent its owner's cancel) and pass now.
+
+| Problem | Test | Result expected now |
+|---|---|---|
+| A relay create the contract refused (a bad `pop_u` or `pop_leaf`), or one whose vault never activated (a wrong `K_m`), left a row that a vault made straight on the contract with the same id then used | `site/test/made-row.test.mjs` (local node, real wasm, mock signer, regtest); `site/test/relay.test.mjs: made rows: a vault is this relay's own only once the chain shows its own create_vault ran, in the block the vault was made in` | The relay keeps the hash of the create it signed before sending it, and counts the vault as its own only once that transaction's create receipt ran, in the block the vault's `created_at` names. Otherwise the owner key answers `not_this_relays`, funds answer `would_refuse`, and the row goes. When the chain cannot say, a cancel still goes, counted as one the relay could not check, and funds wait. |
+
 ## Section 11, the last methods
 
 Every method is on both protocols through `scripts/protocol-check.sh`, with a positive and a negative in `tests/tests/surface.rs`:

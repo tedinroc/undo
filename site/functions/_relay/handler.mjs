@@ -1,7 +1,8 @@
 // /api/relay and /api/funds. The page names a method from a short table, and this builds the transaction itself,
 // with its own gas, against the one contract in its environment: never a free-form relay. Two keys with two
 // nonce rows and two ceilings, and general sends stop short of the balance a day of cancels needs, so general
-// traffic cannot spend what a cancel needs. The owner key sends only for vaults this relay made, once per signed call.
+// traffic cannot spend what a cancel needs. The owner key sends only for vaults this relay made, once per signed call:
+// vaults whose create_vault this relay sent, and which the chain shows that very transaction made.
 // The owner ceiling is still one ceiling, shared by every vault made here: enough of them can fill it, and so can
 // anyone's real calls on their own. The relay is a convenience, so then a cancel goes from any account, and the refusal
 // says how. Logs nothing of a body, an address or a vault. Reads its keys only from the environment, and has no
@@ -286,9 +287,12 @@ class Relay {
       // Anyone can make vaults straight on the contract, as many as they like, and fill the owner ceiling with them.
       const made = await this.madeRow(args.vault);
       if (made === null) throw new Refusal('not_this_relays', { message: NOT_THIS_RELAYS });
+      // Null when the chain could not say: the call goes on, counted as one the relay could not check.
+      const mine = made === undefined || made.confirmed ? true : await this.madeHere(args.vault, made, reader);
+      if (mine === false) throw new Refusal('not_this_relays', { message: NOT_THIS_RELAYS });
       const { problem, checked } = await ownerRefusal({ method, args, contract: this.contract, now: this.nowFn(), made, read: (name, a) => reader.view(this.contract, name, a) });
       if (problem) throw new Refusal('assertion_refused', { message: problem });
-      return { checked, call: ownerCallKey(method, args) };
+      return { checked: checked && mine === true, call: ownerCallKey(method, args) };
     }
     return null;
   }
@@ -302,6 +306,47 @@ class Relay {
       if (err instanceof StateDown) return undefined;
       throw err;
     }
+  }
+
+  /**
+   * Whether the vault the chain holds now is the one this relay's own create_vault made: true, false, or null when the
+   * chain cannot say. A row is written before its create is sent, and a vault id covers neither guard, policy nor K_m,
+   * so a create the contract refuses, or whose vault never activates, would leave a row for an id anyone can then make
+   * straight on the contract. Here the create receipt of the transaction this relay signed must have run, in the very
+   * block the vault's created_at names: block times only go up, and an id exists once at a time, so no other create
+   * can share that block. False takes the row back, true marks it so later calls read nothing. Null leaves it as it is:
+   * no read, a vault not on the chain yet, or a transaction no node keeps any more. `chainVault`, when the caller has it.
+   */
+  async madeHere(vault, made, reader, chainVault) {
+    if (made.confirmed) return true;
+    if (!made.hash) return false;
+    let mine;
+    try {
+      const row = chainVault ?? (await reader.view(this.contract, 'vault', { vault }));
+      if (row === null || !Number.isSafeInteger(row.created_at)) return null;
+      const { result: tx, error } = await reader.rpc('tx', { tx_hash: made.hash, sender_account_id: this.account, wait_until: 'EXECUTED_OPTIMISTIC' });
+      if (error || !tx) return null;
+      const first = tx.transaction_outcome?.outcome?.receipt_ids?.[0];
+      const receipt = (tx.receipts_outcome ?? []).find((r) => r.id === first);
+      const status = receipt?.outcome?.status;
+      // A receipt not run yet reads "Unknown".
+      if (!status || typeof status !== 'object') return null;
+      if (Object.hasOwn(status, 'Failure')) mine = false;
+      else if (!Object.hasOwn(status, 'SuccessValue') && !Object.hasOwn(status, 'SuccessReceiptId')) return null;
+      else {
+        const { result: block, error: blockError } = await reader.rpc('block', { block_id: receipt.block_hash });
+        if (blockError || !block?.header?.timestamp_nanosec) return null;
+        mine = Number(BigInt(block.header.timestamp_nanosec) / 1_000_000n) === row.created_at;
+      }
+    } catch {
+      return null;
+    }
+    try {
+      await this.state.call('madeChecked', { vault, hash: made.hash, made: mine });
+    } catch {
+      // Asked again next time.
+    }
+    return mine;
   }
 
   /** A view, with a refusal in the contract's own words, or rpc_down. */
@@ -561,9 +606,13 @@ class Relay {
       throw err;
     }
     const sender = this.sender();
+    // A create's hash is kept before its bytes go out, so the row can later be checked against what the chain did.
+    const onSigned = charged.made ? (hash) => this.state.call('madeSent', { vault: charged.made, hash }).then((out) => {
+      if (!out.ok) throw new Refusal('state_store_down', { message: 'that vault cannot be recorded' });
+    }) : null;
     let sent;
     try {
-      sent = await this.withNonces(sender, key, actions, spec.key === OWNER && !degraded, degraded);
+      sent = await this.withNonces(sender, key, actions, spec.key === OWNER && !degraded, degraded, onSigned);
     } catch (err) {
       // Every Refusal here means the chain never had the transaction: it was never signed, or a node refused it.
       if (!degraded && (err instanceof StateDown || (err instanceof Refusal && err.code !== 'relay_not_configured'))) await this.refund(method, charged, { sendFailed: true });
@@ -579,10 +628,10 @@ class Relay {
   }
 
   /** A cancel that loses the state store halfway still goes out, on a nonce read from the chain. */
-  async withNonces(sender, key, actions, fallBack, degraded) {
+  async withNonces(sender, key, actions, fallBack, degraded, onSigned = null) {
     if (degraded || !this.state) return { out: await sender.send(key, actions, { nonces: null }), degraded: true };
     try {
-      return { out: await sender.send(key, actions, { nonces: this.state }), degraded: false };
+      return { out: await sender.send(key, actions, { nonces: this.state, onSigned }), degraded: false };
     } catch (err) {
       if (!(fallBack && err instanceof StateDown)) throw err;
     }
