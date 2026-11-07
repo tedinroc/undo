@@ -136,6 +136,26 @@ test('AUDIT-5: what this tab made reaches the report, which says so, and a writt
   assert.deepEqual(recallH7(), { v: VAULT });
 });
 
+test('a finished run in this tab stays out of the next: a link naming no vault, or another, starts with no tries and no operator passkey', async () => {
+  const made = toHex(p256.getPublicKey(sha256(utf8('undo-test-only:h7-op')), true));
+  for (const [link, state] of [['#h7=1', 'h7_check'], [`#h7=1&v=${'cd'.repeat(32)}`, 'h7_stopped']]) {
+    store.clear();
+    rememberH7({ v: VAULT, op: made, opc: 'ownCred_1', log: LOG, pk: 'be1.bs0.l', aw: 'on', q: 'blank.one' });
+    const { ctx } = ctxWith();
+    runH7(ctx, parsePhoneFragment(link), { general: { up: true }, owner: { up: true } });
+    await settle();
+    assert.equal(document.documentElement.dataset.state, state, link);
+    assert.deepEqual(window.undoH7.tries, [], `${link}: no tries from the earlier run`);
+    assert.equal(window.undoH7.kept.op, undefined, `${link}: no operator passkey from the earlier run`);
+  }
+  // What Start again keeps, the tries with no vault yet, still counts.
+  store.clear();
+  rememberH7({ log: LOG });
+  runH7(ctxWith().ctx, parsePhoneFragment('#h7=1'), { general: { up: true }, owner: { up: true } });
+  await settle();
+  assert.equal(window.undoH7.tries.length, 8);
+});
+
 test('AUDIT-5: the operator check signs only the deploy\'s own digest, which the deploy can check against the key', async () => {
   const { runOperatorCheck } = await import('../pages/p/operator-check.mjs');
   const { operatorProofDigest } = await import('../../tools/lib/operator-proof.mjs');

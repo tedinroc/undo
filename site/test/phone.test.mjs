@@ -849,6 +849,10 @@ test('Make a test vault: two taps, each line when its step ends, then the page r
   await shot('21-idle-own-vault');
 });
 
+// What a test run made and saw is kept in the tab's sessionStorage, never in the link (71079fd).
+const h7Kept = () => cdp.page('return JSON.parse(sessionStorage.getItem("undo-h7") ?? "{}");');
+const h7Tries = async () => ((await h7Kept()).log ?? '').split('~').filter(Boolean);
+
 async function h7ToReport(t) {
   await emptyAuthenticator();
   await inject(`const realCreate = navigator.credentials.create.bind(navigator.credentials); const realGet = navigator.credentials.get.bind(navigator.credentials);
@@ -870,7 +874,7 @@ async function h7ToReport(t) {
     if (state === 'h7_rotate') await shot('32-h7-rotate');
     await clickOn('#cancel');
     tapped += 1;
-    await waitFor('the tap to finish', async () => !['h7_wait', 'h7_sending'].includes(await stateOf()) && (await cdp.page('return (new URLSearchParams(location.hash.slice(1)).get("log") ?? "").split("~").filter(Boolean).length;')) >= tapped, 30_000);
+    await waitFor('the tap to finish', async () => !['h7_wait', 'h7_sending'].includes(await stateOf()) && (await h7Tries()).length >= tapped, 30_000);
   }
   await waitState('h7_operator');
   await shot('33-h7-operator');
@@ -916,9 +920,12 @@ test('test mode: passkey, tries to a high-S or 8, the film\'s own call last, an 
   const f = new URLSearchParams((await cdp.page('return location.hash;')).slice(1));
   const vault = await views.vault(f.get('v'));
   assert.equal(vault.k_s_suspended, true);
-  const operatorPub = f.get('op');
+  assert.equal(f.get('op'), null, 'the link names no operator passkey');
+  assert.equal(f.get('log'), null, 'and no tries');
+  const operatorPub = (await h7Kept()).op;
+  assert.match(operatorPub, /^0[23][0-9a-f]{64}$/);
   assert.notEqual(operatorPub, vault.passkey, 'two different keys');
-  const entries = f.get('log').split('~').filter(Boolean);
+  const entries = await h7Tries();
   assert.equal(entries.length, tapped);
   for (const entry of entries) {
     const hash = entry.split('.').pop();

@@ -25,9 +25,14 @@ const READ_WAIT_MS = 20_000;
 /**
  * `kept` is what this tab made and saw, from sessionStorage, which a link cannot write: the report says only that.
  * The link holds where to look (the vault, its credential, the test seed), and claims nothing.
+ *
+ * A record of another vault's run is not this link's run: a link that names no vault, or another one, starts a run of
+ * its own, so an earlier run's tries and operator passkey never land in a new vault's report. Only what Start again
+ * kept, the tries with no vault yet, carries over.
  */
 export function runH7(ctx, fragment, relayStatus) {
-  const kept = recallH7();
+  const recalled = recallH7();
+  const kept = !recalled.v || recalled.v === fragment.v ? recalled : {};
   const ours = Boolean(kept.v && kept.v === fragment.v);
   const st = {
     ctx, f: fragment, kept, relay: relayStatus, problems: [], tries: decodeTries(kept.log), answers: answersOf(kept.q), seed: fragment.k ? fromHex(fragment.k) : null,
