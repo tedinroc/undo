@@ -343,7 +343,8 @@ fn griefed(name: &str, r: ExecutionFinalResult) -> Result<()> {
 /// The worst row the rules allow: 32 known destinations of the longest script, a full list of grants with
 /// the longest account names, and the 24 h windows full at the rate floor. Thief here has K_s, K_u and K_p.
 /// A request's outflow counts for a day after its last signature request, and a paying request's retries
-/// close a day after its first execute, so the outflow window can hold two days of spends. A landing
+/// close a day after its first execute, so the outflow window can hold two days of spends, and the answer
+/// time of one that completes after its close. The builder fills the two days. A landing
 /// rotation clears the fee window and not the outflow window, so one gets the row to that size inside one
 /// sandbox day.
 async fn worst_row(h: &Harness, label: &str, guard: &str) -> Result<Vault> {
@@ -512,7 +513,20 @@ async fn gas_of_the_landing_and_the_cold_key_on_the_largest_dead_queue() -> Resu
     let (_, new) = rotate_at_owner_attach(&h, &v, "landing-n2").await?;
     let grant = newest_grant(&h.vault_view(&v).await?);
     h.advance_to(h.now_ms().await? + known + 1).await?;
-    griefed("apply_grant_sweeping_three", h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": grant})).gas(gas(OWNER_ATTACH_TGAS)).transact().await?)?;
+    // The least whole Tgas that clears it, tried from 10 up. A try with too little fails in its own receipt
+    // and changes nothing, so each one finds the same dead queue.
+    let mut attach = 10;
+    let res = loop {
+        let res = h.relayer.call(h.undo.id(), "apply_grant").args_json(json!({"vault": v.hex(), "grant": grant})).gas(gas(attach)).transact().await?;
+        if res.is_success() || attach == OWNER_ATTACH_TGAS {
+            break res;
+        }
+        let why = format!("{:?}", res.failures());
+        assert!(why.contains("Exceeded the prepaid gas"), "{attach} Tgas: {why}");
+        attach += 1;
+    };
+    println!("MEASURE griefed apply_grant_least_attach={attach}T");
+    griefed("apply_grant_sweeping_three", res)?;
     v.k_s = new;
 
     big_queue(&h, &mut v, "landing-c").await?;

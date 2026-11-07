@@ -79,8 +79,8 @@ run_suite core --manifest-path crates/undo-core/props/Cargo.toml
 suite_line core "[unit]" "crates/undo-core/props, every test"
 claim core C01 "[unit]" "no request gets a signature before its base unlock, property-tested over generated role and method sequences, not exhaustive" \
   no_unlock_before_base:no_unlock_before_base scenarios:clearing_a_hold_before_the_base_never_unlocks_early scenarios:execute_goes_through_the_moment_the_unlock_arrives
-claim core C06 "[unit]" "a dead guard doubles the new-destination delay and blocks nothing" \
-  scenarios:guard_death_delays_and_blocks_nothing
+claim core C06 "[unit]" "a dead guard switches new destinations to the vault's unguarded delay, which the bounds keep at or above the guarded one, and blocks nothing" \
+  scenarios:guard_death_delays_and_blocks_nothing scenarios:the_guarded_delay_cannot_pass_the_unguarded_one round5:the_guard_line_names_the_real_delays
 claim core C07 "[unit]" "a guard hold is bounded, once per request, and clearing it never goes below the base unlock" \
   scenarios:hold_is_bounded_once_and_clearing_returns_to_base_only scenarios:a_hold_cannot_be_added_at_or_after_unlock scenarios:an_assessment_is_recorded_both_ways_and_holds_at_most_once
 claim core C09 "[unit]" "no pair of signing sessions over the same coins pays more real fee than the cap, model half, property-tested" \
@@ -93,8 +93,8 @@ claim core C11 "[unit]" "upgrades wait longer than any withdrawal plus the react
   scenarios:upgrade_rules_leave_the_stated_reaction_window_on_each_preset scenarios:an_upgrade_waits_and_then_runs_out
 claim core C15 "[unit]" "a vault with a wrong K_m never activates" \
   scenarios:a_wrong_k_m_never_activates_and_inactive_vaults_refuse_propose
-claim core C17 "[unit]" "one passkey rotation kills every pending request at once; a request already signing keeps signing" \
-  scenarios:rotation_kills_every_pending_request_at_once scenarios:a_signing_request_survives_rotation_because_a_signature_may_be_public
+claim core C17 "[unit]" "one passkey rotation kills every pending request at once; a request already signing can still be signed, one that pays out for at most 24 h after its first execute" \
+  scenarios:rotation_kills_every_pending_request_at_once scenarios:a_signing_request_survives_rotation_because_a_signature_may_be_public round5:the_suspended_key_line_names_the_retry_window_and_reclaim_with_a_new_key
 
 echo
 echo "== tier B: Bitcoin script and recovery file (crates/undo-btc), libbitcoinconsensus, offline"

@@ -629,7 +629,7 @@ async fn set_guard_waits_with_a_veto_and_removal_is_a_grant_too() -> Result<()> 
     beat(&h, &v, &new).await?.into_result()?;
     assert_eq!(h.vault_view(&v).await?["guard_online"], true);
 
-    // Removal: the same wait, and the delay doubles when it lands.
+    // Removal: the same wait, and the delay becomes the unguarded one when it lands.
     let grant = set_guard(&h, &v, None).await?.json::<u64>()?;
     assert_eq!(h.vault_view(&v).await?["grant_list"][0]["kind"], "remove the guard");
     assert_eq!(h.vault_view(&v).await?["guard"], new.id().as_str(), "removing is loosening, so it waits");
@@ -649,7 +649,7 @@ async fn set_guard_waits_with_a_veto_and_removal_is_a_grant_too() -> Result<()> 
 }
 
 #[tokio::test]
-async fn heartbeat_keeps_the_delay_and_a_stale_one_doubles_it() -> Result<()> {
+async fn heartbeat_keeps_the_delay_and_a_stale_one_switches_to_the_unguarded_one() -> Result<()> {
     let h = Harness::new().await?;
     let (mut v, guard) = guarded(&h, "s-beat").await?;
     let p = policy_of(&h, &v).await?;
