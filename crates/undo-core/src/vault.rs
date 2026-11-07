@@ -437,8 +437,10 @@ impl Vault {
     }
 
     /// The same for the outflow window: pending requests, and what reached the signer in the last day.
-    /// A paying request takes signatures only for a day after its first execute, so this holds at most
-    /// two days of first executes plus the pending cap.
+    /// Execute asks for a paying request's signatures only within a day of its first execute, and the
+    /// answer that completes it, which can land up to the signer's answer time after the last ask,
+    /// moves its time once more. So this holds the first executes of at most two days and that answer
+    /// time, plus the pending cap.
     pub fn outflow_window_entries(&self) -> usize {
         self.outflow_window.len()
     }
@@ -619,10 +621,18 @@ impl Vault {
                     return Err(Error::InFlight { retry_at_height });
                 }
                 // Its outflow counts for a day from its last signature request, and a proposal made after
-                // that day was checked without it. So a request that pays out takes no signatures a day
-                // after its first execute. Reclaim, open after `T_stuck`, is the way out for its coins.
+                // that day was checked without it. So from a day after its first execute, execute asks
+                // the signer for nothing more for a request that pays out. An answer to an earlier ask
+                // can still land after that, and the one that completes the request moves its outflow's
+                // time. Reclaim, open after `T_stuck`, is the way out for its coins.
                 if request.tier != Tier::SelfSpend {
-                    let closed_at = request.first_execute_at.unwrap_or(now).saturating_add(DAY);
+                    let mut closed_at = request.first_execute_at.unwrap_or(now).saturating_add(DAY);
+                    // Every execute here moves the entry to now, so this build's entry outlasts that
+                    // close. One kept from an earlier build is timed at propose and leaves a day after
+                    // it, and a retry with no entry left would sign outflow that counts nowhere.
+                    if now < closed_at && !self.outflow_window.iter().any(|e| e.request == id) {
+                        closed_at = request.proposed_at.saturating_add(DAY).min(now);
+                    }
                     if now >= closed_at {
                         return Err(Error::RetryWindowClosed { closed_at });
                     }

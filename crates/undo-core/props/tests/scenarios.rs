@@ -2253,7 +2253,7 @@ fn status_says_an_executed_request_keeps_signing_after_a_rotation() {
 
     h.rotate(SPEND_2).unwrap();
     let text = text_of(&h);
-    assert!(text.contains("requests not yet executed are dead, one already executed keeps signing"), "{text}");
+    assert!(text.contains("requests not yet executed are dead. One already executed can still ask the signer for its missing signatures"), "{text}");
     assert!(!text.contains("every older request is dead"), "{text}");
     assert!(text.contains(&format!("last spend reached signing at {}, before the spend key was rotated", utc_text(spent))), "{text}");
 

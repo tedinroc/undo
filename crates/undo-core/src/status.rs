@@ -68,12 +68,15 @@ impl Vault {
             // it ends. Cancel is the one passkey action left, and it has nothing to act on.
             attention.push(format!("frozen until {until} by the cold key: no proposals, reclaims or execute, and no passkey action except cancel, which has nothing to stop because the freeze ended every pending request. Only the cold key can lift it early, and the cold-key exit is unaffected"));
         }
+        // Execute refuses a retry for a request that pays out from a day after its first execute, sooner for
+        // one executed before an upgrade, and leaves reclaim, which the spend key signs, as the way out.
+        let retry = format!("a self-spend with no time limit and one that pays out for at most {} after its first execute", span_text(DAY));
         if self.k_s_suspended {
             // Execute is the point of no return, so a rotation cannot speak for a request past it. A veto,
             // a freeze or a finished recovery takes the waiting key away and leaves this one suspended.
             let waiting = self.grants.iter().any(|g| matches!(g.kind, GrantKind::RotateSpend { .. }));
             let next = if waiting { "a new key lands after its wait unless the cold key vetoes it" } else { "no new key is waiting, so the passkey has to rotate again" };
-            attention.push(format!("spend key suspended: requests not yet executed are dead, one already executed keeps signing, and {next}"));
+            attention.push(format!("spend key suspended: requests not yet executed are dead. One already executed can still ask the signer for its missing signatures, {retry}, after which its coins come back by reclaim with a new key: {next}"));
         }
         if self.last_spend_at != 0 {
             // A rotation that began or landed after this spend may be the owner reacting too late. The
@@ -104,8 +107,11 @@ impl Vault {
             (Some(_), None) => attention.push(format!("guard offline, no heartbeat yet: {slow}{movable}")),
         }
         if self.sign_failed_at != 0 {
+            // Reclaim takes the self-spend slot, so its coins come back one per `T_new`, and only once a
+            // suspended key has been replaced.
+            let reclaim = if self.k_s_suspended { "with a new key".to_string() } else { format!("at most one per {}", span_text(self.policy.t_new_ms)) };
             attention.push(format!(
-                "the signer's last answer failed at {}: a request still signing can retry, and a coin {} blocks old can leave by the cold-key exit",
+                "the signer's last answer failed at {}: a request still signing can retry, {retry}, after which its coins come back by reclaim, {reclaim}, and a coin {} blocks old can leave by the cold-key exit",
                 utc_text(self.sign_failed_at),
                 self.csv_blocks,
             ));

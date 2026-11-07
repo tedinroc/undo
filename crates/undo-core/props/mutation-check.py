@@ -202,8 +202,17 @@ MUTANTS = [
     ("outflow: a stamp moves every entry", [(V, "for entry in self.outflow_window.iter_mut().filter(|e| e.request == id) {", "let _ = id;\n        for entry in self.outflow_window.iter_mut() {")]),
     ("outflow: retries never close", [(V, "if now >= closed_at {", "if false {")]),
     ("outflow: retries close a moment late", [(V, "if now >= closed_at {", "if now > closed_at {")]),
-    ("outflow: self-spend retries close too", [(V, "if request.tier != Tier::SelfSpend {\n                    let closed_at", "if true {\n                    let closed_at")]),
+    ("outflow: self-spend retries close too", [(V, "if request.tier != Tier::SelfSpend {\n                    let mut closed_at", "if true {\n                    let mut closed_at")]),
     ("outflow: retries close a day after propose", [(V, "request.first_execute_at.unwrap_or(now)", "Some(request.proposed_at).unwrap_or(now)")]),
+    # Round 5, the confirmation's new problems: an entry an earlier build left, and the two lines that
+    # promised retries the window refuses.
+    ("outflow: a retry runs once an earlier build's entry has left", [(V, "if now < closed_at && !self.outflow_window.iter().any(|e| e.request == id) {", "if false {")]),
+    ("outflow: an entry that left early reads as closing now", [(V, "closed_at = request.proposed_at.saturating_add(DAY).min(now);", "closed_at = now;")]),
+    ("status: the retry window names another length", [(S, "for at most {} after its first execute\", span_text(DAY))", "for at most {} after its first execute\", span_text(2 * DAY))")]),
+    ("status: the suspended line says an executed request keeps signing", [(S, "requests not yet executed are dead. One already executed can still ask the signer for its missing signatures, {retry}, after which its coins come back by reclaim with a new key: {next}", "requests not yet executed are dead, one already executed keeps signing, and {next}")]),
+    ("status: the signer line says any request can retry", [(S, "a request still signing can retry, {retry}, after which its coins come back by reclaim, {reclaim}, and a coin", "a request still signing can retry, and a coin")]),
+    ("status: the signer line offers reclaim to a suspended key", [(S, "let reclaim = if self.k_s_suspended {", "let reclaim = if false {")]),
+    ("status: reclaims spaced by the unguarded delay", [(S, 'format!("at most one per {}", span_text(self.policy.t_new_ms))', 'format!("at most one per {}", span_text(self.policy.t_new_unguarded_ms))')]),
     ("status: the delays the wrong way round", [(S, 'format!("new-destination delay {} instead of {}", span_text(unguarded), span_text(guarded))', 'format!("new-destination delay {} instead of {}", span_text(guarded), span_text(unguarded))')]),
     ("status: equal delays read as a slowdown", [(S, "if unguarded == guarded {", "if false {")]),
     ("status: a duration drops its seconds", [(S, "if rest > 0 || parts.is_empty() {", "if parts.is_empty() {")]),

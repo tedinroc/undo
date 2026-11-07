@@ -3,12 +3,15 @@
 //! C1: a known destination's 24 h cap counted from propose time, while a request stays executable until
 //! its expiry, a day after unlock on the proof preset. So two full caps could reach signing within
 //! `T_known` of each other. Outflow now counts while its request is pending, and for a day after the
-//! last time execute asked the signer for it or its last signature landed. A request that pays out
-//! takes no more signatures a day after its first execute, so nothing signs outside a window that a
-//! later proposal was checked against.
+//! last time execute asked the signer for it or its last signature landed. From a day after a paying
+//! request's first execute, execute asks the signer for nothing more for it, so nothing is asked for
+//! outside a window that a later proposal was checked against.
 //!
 //! C2: the guard line said "doubled" whatever the vault's policy was. C3: the freeze line named only
 //! grants as blocked, and the recovery line counted cancels a freeze does not let the passkey use.
+//!
+//! The confirmation's new problems, at the end: two status lines still promised retries the window
+//! refuses, and a request executed before an upgrade could retry after its propose-time entry had left.
 
 mod common;
 
@@ -146,8 +149,9 @@ fn a_week_long_expiry_cannot_queue_three_caps() {
 }
 
 /// Execute is the point of no return, and a request can take its signatures in several calls. Each one
-/// moves the outflow's time to now. A request that pays out takes none a day after its first execute,
-/// so a half-signed spend cannot finish inside the window of a request proposed after its entry left.
+/// moves the outflow's time to now. Execute asks for none for a request that pays out from a day after
+/// its first execute, so a half-signed spend cannot finish inside the window of a request proposed after
+/// its entry left.
 #[test]
 fn a_half_signed_spend_counts_from_its_last_signature_request_and_closes_a_day_after_its_first() {
     let mut h = H::test_coin();
@@ -286,7 +290,7 @@ fn a_superseded_or_pruned_spend_still_counts_for_its_day() {
 }
 
 /// A rotation and a freeze kill pending requests, which releases their reservations. A request past its
-/// first execute keeps signing through both, so its outflow keeps counting.
+/// first execute, inside its retry window, keeps signing through both, so its outflow keeps counting.
 #[test]
 fn a_rotation_or_freeze_releases_pending_outflow_and_keeps_what_is_signing() {
     let mut h = H::test_coin();
@@ -396,4 +400,177 @@ fn the_recovery_line_says_a_freeze_holds_the_passkeys_cancels() {
     h.advance(until - h.now);
     assert!(!text_of(&h).contains("while the vault is frozen"), "the freeze lapsed");
     h.recover_cancel().unwrap();
+}
+
+// ------------------------------------------------------------------ the confirmation's new problems
+
+const SPEND_3: [u8; 32] = [0x13; 32];
+
+/// What both status lines now say execute still asks the signer for.
+const RETRY: &str = "a self-spend with no time limit and one that pays out for at most 24 h after its first execute";
+
+fn line_starting(h: &H, start: &str) -> String {
+    h.v.status_lines(h.now).1.into_iter().find(|l| l.starts_with(start)).unwrap_or_default()
+}
+
+fn signer_line(failed: Ms, csv: u32, reclaim: &str) -> String {
+    format!("the signer's last answer failed at {}: a request still signing can retry, {RETRY}, after which its coins come back by reclaim, {reclaim}, and a coin {csv} blocks old can leave by the cold-key exit", utc_text(failed))
+}
+
+/// The reviewer's first repro: a mainnet two-input withdrawal whose signer answers fail, then 25 h. The
+/// line said a request still signing can retry while execute refused it. It now names the window and the
+/// way out, and each part holds: a self-spend from the same outage still retries, the withdrawal does
+/// not, and reclaim brings its coins back one per `T_new`.
+#[test]
+fn the_signer_line_names_the_retry_window_and_reclaim() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x63);
+    let own = h.self_spend(&[(op(3), COIN_5)], FEE).unwrap();
+    let r = h.propose(&[(op(1), 600_000), (op(2), 600_000)], &dest, 1_199_000, None).unwrap();
+    h.advance(r.base_unlock - h.now);
+    let first = h.now;
+    for id in [own.id, r.id] {
+        let batch = h.execute(id, MAX_INPUTS).unwrap();
+        for i in &batch.indices {
+            assert_eq!(h.v.on_signed(id, batch.attempt, *i, [7; 32], [7; 32], None, h.now), SignedOutcome::Failed);
+        }
+    }
+    let (failed, csv) = (h.now, h.v.csv_blocks);
+    assert_eq!(line_starting(&h, "the signer's"), signer_line(failed, csv, "at most one per 10 min"));
+
+    h.advance(25 * HOUR);
+    assert_eq!(line_starting(&h, "the signer's"), signer_line(failed, csv, "at most one per 10 min"));
+    assert_eq!(h.execute(r.id, MAX_INPUTS).unwrap_err(), Error::RetryWindowClosed { closed_at: first + DAY });
+    let again = h.execute(own.id, MAX_INPUTS).unwrap();
+    h.sign_batch(own.id, &again);
+    assert_eq!(h.v.requests[&own.id].status, RequestStatus::Signed, "a self-spend has no time limit");
+    h.reclaim(op(1), 600_000, 500).unwrap();
+    let free_at = h.now + h.v.policy.t_new_ms;
+    assert_eq!(h.reclaim(op(2), 600_000, 500).unwrap_err(), Error::SelfSpendSlotUsed { free_at });
+    h.advance(h.v.policy.t_new_ms);
+    h.reclaim(op(2), 600_000, 500).unwrap();
+}
+
+/// The second repro: a rotation, a cold-key veto, then 25 h. The line said an executed request keeps
+/// signing while execute refused it. Reclaim is signed by the spend key, so while this one is suspended
+/// the way out waits for a new key, and both lines say so.
+#[test]
+fn the_suspended_key_line_names_the_retry_window_and_reclaim_with_a_new_key() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x64);
+    let r = h.propose(&[(op(1), 600_000), (op(2), 600_000)], &dest, 1_199_000, None).unwrap();
+    h.advance(r.base_unlock - h.now);
+    let first = h.now;
+    let batch = h.execute(r.id, MAX_INPUTS).unwrap();
+    assert_eq!(h.v.on_signed(r.id, batch.attempt, 0, [7; 32], [7; 32], Some(vec![0xbb]), h.now), SignedOutcome::Stored { complete: false });
+    assert_eq!(h.v.on_signed(r.id, batch.attempt, 1, [7; 32], [7; 32], None, h.now), SignedOutcome::Failed);
+    let (failed, csv) = (h.now, h.v.csv_blocks);
+    let grant = h.rotate(SPEND_2).unwrap();
+    h.veto(grant).unwrap();
+    h.advance(25 * HOUR);
+
+    let suspended = format!("spend key suspended: requests not yet executed are dead. One already executed can still ask the signer for its missing signatures, {RETRY}, after which its coins come back by reclaim with a new key: no new key is waiting, so the passkey has to rotate again");
+    assert_eq!(line_starting(&h, "spend key suspended"), suspended);
+    assert_eq!(line_starting(&h, "the signer's"), signer_line(failed, csv, "with a new key"));
+    assert_eq!(h.execute(r.id, MAX_INPUTS).unwrap_err(), Error::RetryWindowClosed { closed_at: first + DAY });
+    assert_eq!(h.reclaim(op(2), 600_000, 500).unwrap_err(), Error::SpendKeySuspended);
+
+    let grant = h.rotate(SPEND_3).unwrap();
+    assert!(line_starting(&h, "spend key suspended").ends_with("by reclaim with a new key: a new key lands after its wait unless the cold key vetoes it"));
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(grant).unwrap();
+    assert_eq!(line_starting(&h, "spend key suspended"), "");
+    assert_eq!(line_starting(&h, "the signer's"), signer_line(failed, csv, "at most one per 10 min"));
+    h.reclaim(op(2), 600_000, 500).unwrap();
+}
+
+/// The close stops execute asking, not answers landing. An answer to a retry made just before the close
+/// lands after it and completes the request, and its outflow then counts for a day from that landing.
+#[test]
+fn an_answer_asked_for_before_the_close_lands_after_it_and_counts_from_there() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x65);
+    known(&mut h, &dest);
+    let cap = h.v.policy.outflow_cap_24h;
+    let r = h.propose(&[(op(1), cap / 2 + FEE), (op(2), cap - cap / 2)], &dest, cap, None).unwrap();
+    h.advance(r.base_unlock - h.now);
+    let first = h.now;
+    let batch = h.execute(r.id, 1).unwrap();
+    h.sign_batch(r.id, &batch);
+    h.advance(DAY - 1);
+    let last = h.execute(r.id, MAX_INPUTS).unwrap();
+    h.advance(3_000);
+    h.sign_batch(r.id, &last);
+    let landed = h.now;
+    assert!(landed > first + DAY);
+    assert_eq!(h.v.requests[&r.id].status, RequestStatus::Signed);
+    h.advance(DAY - 1);
+    assert_eq!(tier_of(&h, op(3), &dest, cap), Tier::New, "a day from the landing, which came after the close");
+    h.advance(1);
+    assert_eq!(tier_of(&h, op(3), &dest, cap), Tier::Known);
+}
+
+/// The row as a build before round 5 left it: the same bytes, except that this request's outflow entry
+/// still has its propose time, which that build never moved. Requests and ledger entries are stored
+/// outside the row, so they come through as they are, as they do in the contract.
+fn as_an_earlier_build_left_it(v: &Vault, id: RequestId) -> Vault {
+    let r = &v.requests[&id];
+    let entry = |at: Ms| [at.to_le_bytes(), r.outputs.dest_value.to_le_bytes(), id.to_le_bytes()].concat();
+    let (stamped, proposed) = (entry(r.first_execute_at.unwrap()), entry(r.proposed_at));
+    let mut row = borsh::to_vec(v).unwrap();
+    let found: Vec<usize> = (0..=row.len() - stamped.len()).filter(|i| row[*i..*i + stamped.len()] == stamped[..]).collect();
+    assert_eq!(found.len(), 1, "the entry is in the row once");
+    row[found[0]..found[0] + proposed.len()].copy_from_slice(&proposed);
+    let mut old: Vault = borsh::from_slice(&row).unwrap();
+    old.requests = v.requests.clone();
+    old.ledger = v.ledger.clone();
+    old
+}
+
+/// SPEC 22's upgrade case. A build before round 5 timed an executed request's entry at propose, and an
+/// upgrade keeps the row as that build wrote it. Once that entry left, a day after propose, the request
+/// could still retry until a day after its first execute, while a second full cap read Known: two caps
+/// inside a day. A retry with no entry left is now refused. One made before the entry leaves moves it,
+/// as any retry does.
+#[test]
+fn a_request_executed_before_an_upgrade_stops_retrying_when_its_entry_leaves() {
+    let mut h = H::mainnet();
+    let dest = p2wpkh(0x66);
+    known(&mut h, &dest);
+    let cap = h.v.policy.outflow_cap_24h;
+    let half = cap / 2;
+    let r1 = h.propose(&[(op(1), half + FEE), (op(2), cap - half)], &dest, cap, None).unwrap();
+    assert_eq!(r1.tier, Tier::Known);
+    let proposed = h.now;
+    // Executed half a day after its unlock, which the proof preset's day of expiry allows.
+    h.advance(r1.base_unlock + 12 * HOUR - h.now);
+    let batch = h.execute(r1.id, 1).unwrap();
+    h.sign_batch(r1.id, &batch);
+    let first = h.now;
+    h.v = as_an_earlier_build_left_it(&h.v, r1.id);
+    assert_eq!(h.v.outflow_used_24h(h.now), cap, "the earlier build's entry still counts");
+
+    let mut early = h.clone();
+    early.advance(proposed + DAY - 1 - early.now);
+    let rest = early.execute(r1.id, 1).unwrap();
+    early.sign_batch(r1.id, &rest);
+    let landed = early.now;
+    early.advance(DAY - 1);
+    assert_eq!(tier_of(&early, op(3), &dest, cap), Tier::New, "a retry before it left moved it");
+    early.advance(1);
+    assert_eq!(early.now, landed + DAY);
+    assert_eq!(tier_of(&early, op(3), &dest, cap), Tier::Known);
+
+    h.advance(proposed + DAY - h.now);
+    assert!(h.now + 12 * HOUR <= first + DAY, "half a day before the usual close");
+    assert_eq!(tier_of(&h, op(3), &dest, cap), Tier::Known, "the entry has left");
+    let r2 = h.propose(&[(op(3), cap + FEE)], &dest, cap, None).unwrap();
+    assert_eq!(r2.tier, Tier::Known);
+    let closed = Error::RetryWindowClosed { closed_at: proposed + DAY };
+    assert_eq!(h.execute(r1.id, MAX_INPUTS).unwrap_err(), closed);
+    h.advance(r2.base_unlock - h.now);
+    h.execute_all_signed(r2.id);
+    assert_eq!(h.execute(r1.id, MAX_INPUTS).unwrap_err(), closed, "still closed when R2 has signed");
+    assert_eq!(h.v.requests[&r1.id].sigs.iter().filter(|s| s.is_some()).count(), 1, "R1 stays half signed");
+    h.reclaim(op(2), cap - half, FEE).unwrap();
 }

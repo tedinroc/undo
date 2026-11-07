@@ -47,7 +47,9 @@ pub enum Error {
     NotUnlocked { unlock: Ms },
     AlreadySigned,
     InFlight { retry_at_height: u64 },
-    /// A request that pays out takes no more signatures a day after its first execute.
+    /// From a day after a paying request's first execute, execute asks the signer for nothing more for
+    /// it, and sooner for one executed before an upgrade once its outflow has stopped counting, a day
+    /// after its propose. An answer to an earlier ask can still land after `closed_at`.
     RetryWindowClosed { closed_at: Ms },
     NothingToSign,
     NotReclaimable,
