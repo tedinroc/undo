@@ -786,7 +786,7 @@ async fn status_is_plain_language_with_no_arguments_and_for_a_vault() -> Result<
     let (ok, text) = status(&h, Some(&v)).await?;
     assert!(!ok);
     assert!(text.contains("guard offline since "), "{text}");
-    assert!(text.contains(": new-destination delay doubled, funds movable"), "{text}");
+    assert!(text.contains(": new-destination delay 10 min instead of 5 min, funds movable"), "{text}");
     beat(&h, &v, &guard).await?.into_result()?;
 
     // Signing outage: an answer that fails shows until a good one lands.

@@ -1,7 +1,7 @@
 //! A vault's state in plain language, for anyone reading the chain with one curl line. Downtime reads
 //! as a designed state, because it is one. Each line names what still works.
 
-use crate::policy::{DAY, HEARTBEAT_STALE_MS, RECOVERY_CANCEL_CAP};
+use crate::policy::{DAY, HEARTBEAT_STALE_MS, HOUR, MINUTE, RECOVERY_CANCEL_CAP};
 use crate::request::RequestStatus;
 use crate::types::Ms;
 use crate::vault::{GrantKind, Vault};
@@ -20,6 +20,24 @@ pub fn utc_text(ms: Ms) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02} UTC")
+}
+
+/// `48 h`, `10 min`, `1 h 30 s`, `10 min 1.5 s`: exact, with no rounding.
+pub fn span_text(ms: Ms) -> String {
+    let (hours, minutes, rest) = (ms / HOUR, (ms % HOUR) / MINUTE, ms % MINUTE);
+    let mut parts = Vec::new();
+    if hours > 0 {
+        parts.push(format!("{hours} h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes} min"));
+    }
+    if rest > 0 || parts.is_empty() {
+        let fraction = format!("{:03}", rest % 1_000);
+        let fraction = fraction.trim_end_matches('0');
+        parts.push(if fraction.is_empty() { format!("{} s", rest / 1_000) } else { format!("{}.{fraction} s", rest / 1_000) });
+    }
+    parts.join(" ")
 }
 
 impl GrantKind {
@@ -46,7 +64,9 @@ impl Vault {
         }
         if self.is_frozen(now) {
             let until = utc_text(self.frozen_until.unwrap_or(now));
-            attention.push(format!("frozen until {until} by the cold key: no proposals, no execute, no passkey grants, cold-key exit unaffected"));
+            // The freeze bumped the epoch, so every pending request is dead, and nothing can be proposed until
+            // it ends. Cancel is the one passkey action left, and it has nothing to act on.
+            attention.push(format!("frozen until {until} by the cold key: no proposals, reclaims or execute, and no passkey action except cancel, which has nothing to stop because the freeze ended every pending request. Only the cold key can lift it early, and the cold-key exit is unaffected"));
         }
         if self.k_s_suspended {
             // Execute is the point of no return, so a rotation cannot speak for a request past it. A veto,
@@ -68,13 +88,20 @@ impl Vault {
         }
         // Only said when it is true: a freeze, a suspended key and an inactive vault move nothing.
         let movable = if self.active && !self.is_frozen(now) && !self.k_s_suspended { ", funds movable" } else { "" };
+        // The bounds allow the two delays to be equal, or far apart, so the line names both.
+        let (guarded, unguarded) = (self.policy.t_new_ms, self.policy.t_new_unguarded_ms);
+        let slow = if unguarded == guarded {
+            format!("new-destination delay {}, the same as with a guard online", span_text(unguarded))
+        } else {
+            format!("new-destination delay {} instead of {}", span_text(unguarded), span_text(guarded))
+        };
         match (&self.guard, self.last_heartbeat) {
-            (None, _) => calm.push(format!("no guard: new-destination delay doubled{movable}")),
+            (None, _) => calm.push(format!("no guard: {slow}{movable}")),
             (Some(_), Some(beat)) if now.saturating_sub(beat) <= HEARTBEAT_STALE_MS => {
                 calm.push(format!("guard online, last heartbeat {}", utc_text(beat)));
             }
-            (Some(_), Some(beat)) => attention.push(format!("guard offline since {}: new-destination delay doubled{movable}", utc_text(beat))),
-            (Some(_), None) => attention.push(format!("guard offline, no heartbeat yet: new-destination delay doubled{movable}")),
+            (Some(_), Some(beat)) => attention.push(format!("guard offline since {}: {slow}{movable}", utc_text(beat))),
+            (Some(_), None) => attention.push(format!("guard offline, no heartbeat yet: {slow}{movable}")),
         }
         if self.sign_failed_at != 0 {
             attention.push(format!(
@@ -87,8 +114,10 @@ impl Vault {
             attention.push(format!("passkey grant {} waiting until {}: {}. The cold key can veto it", grant.id, utc_text(grant.ready_at), grant.kind.describe()));
         }
         if let Some(recovery) = &self.recovery {
+            // `recover_cancel` is a passkey action, so a freeze refuses it.
+            let held = if self.is_frozen(now) { " but cannot use them while the vault is frozen" } else { "" };
             attention.push(format!(
-                "passkey recovery lands at {}. The current passkey has {} of {RECOVERY_CANCEL_CAP} cancels left",
+                "passkey recovery lands at {}. The current passkey has {} of {RECOVERY_CANCEL_CAP} cancels left{held}",
                 utc_text(recovery.ready_at),
                 RECOVERY_CANCEL_CAP.saturating_sub(self.recover_cancels),
             ));

@@ -391,12 +391,12 @@ async fn status_says_funds_movable_only_when_they_are() -> Result<()> {
     let args = h.create_args(&k, &call).await?;
     h.create_raw(args, call.deposit_milli).await?.into_result()?;
     let mut v = vault_of(&h, k, 6);
-    assert!(status(&h, &v).await?.1.contains("delay doubled, funds movable"));
+    assert!(status(&h, &v).await?.1.contains("delay 10 min instead of 5 min, funds movable"));
     h.rotate(&mut v, &ed("r4-mov-new").verifying_key().to_bytes()).await?;
     let until = h.now_ms().await? + 60_000;
     cold(&h, &v, "freeze", &until, json!({"until": until})).await?.into_result()?;
     let text = status(&h, &v).await?.1;
-    assert!(text.contains("frozen until") && text.contains("delay doubled") && !text.contains("funds movable"), "{text}");
+    assert!(text.contains("frozen until") && text.contains("delay 10 min instead of 5 min") && !text.contains("funds movable"), "{text}");
     Ok(())
 }
 

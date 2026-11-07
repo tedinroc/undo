@@ -31,7 +31,7 @@ pub use types::{
     dust_limit, estimate_vsize, Caller, HalfSig, Input, Intent, MpcSig, Ms, Outpoint, Outputs,
     Passkey, RequestId, Sats, ScriptKind, GrantId, MAX_MONEY,
 };
-pub use status::utc_text;
+pub use status::{span_text, utc_text};
 pub use upgrade::{PendingUpgrade, UpgradeQueue, UpgradeRules};
 pub use vault::{
     CreateArgs, Grant, GrantKind, LedgerEntry, OutpointState, PolicyOutcome, ProposeArgs,

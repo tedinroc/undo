@@ -193,7 +193,7 @@ MUTANTS = [
     ("upgrade: proof vault T_upgrade is short", [(U, "t_upgrade_ms: 14 * DAY", "t_upgrade_ms: 1 * DAY")]),
     ("upgrade: holds always", [(U, "self.reaction_window_ms(bounds) >= self.min_reaction_ms", "true")]),
     ("longest withdrawal leaves out the hold", [(P, ".saturating_add(m.hold_ms)\n", "\n")]),
-    # Round 5, the authorization audit: the outflow window.
+    # Round 5, the authorization audit: the outflow window and what status says.
     ("outflow: a pending request's reservation ages out", [(V, "pending.contains(&self.request) || now < self.at.saturating_add(DAY)", "now < self.at.saturating_add(DAY)")]),
     ("outflow: an entry never leaves", [(V, "pending.contains(&self.request) || now < self.at.saturating_add(DAY)", "pending.contains(&self.request) || now == now")]),
     ("outflow: the cap reads entries past their day", [(V, ".filter(|e| e.counts(&self.pending, now))", ".filter(|_| true)")]),
@@ -204,6 +204,11 @@ MUTANTS = [
     ("outflow: retries close a moment late", [(V, "if now >= closed_at {", "if now > closed_at {")]),
     ("outflow: self-spend retries close too", [(V, "if request.tier != Tier::SelfSpend {\n                    let closed_at", "if true {\n                    let closed_at")]),
     ("outflow: retries close a day after propose", [(V, "request.first_execute_at.unwrap_or(now)", "Some(request.proposed_at).unwrap_or(now)")]),
+    ("status: the delays the wrong way round", [(S, 'format!("new-destination delay {} instead of {}", span_text(unguarded), span_text(guarded))', 'format!("new-destination delay {} instead of {}", span_text(guarded), span_text(unguarded))')]),
+    ("status: equal delays read as a slowdown", [(S, "if unguarded == guarded {", "if false {")]),
+    ("status: a duration drops its seconds", [(S, "if rest > 0 || parts.is_empty() {", "if parts.is_empty() {")]),
+    ("status: the recovery line ignores a freeze", [(S, "let held = if self.is_frozen(now) {", "let held = if false {")]),
+    ("status: the freeze line names grants only", [(S, "no passkey action except cancel, which has nothing to stop because the freeze ended every pending request", "no passkey grants")]),
 ]
 
 ROOT = """[workspace]

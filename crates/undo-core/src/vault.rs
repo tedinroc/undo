@@ -386,8 +386,8 @@ impl Vault {
                 .is_some_and(|beat| now.saturating_sub(beat) <= HEARTBEAT_STALE_MS)
     }
 
-    /// New-destination delay right now. It fails slow: a dead guard doubles the delay and blocks
-    /// nothing.
+    /// New-destination delay right now. It fails slow: a dead guard switches to the unguarded delay,
+    /// which the bounds keep at or above the guarded one, and blocks nothing.
     pub fn delay_now(&self, now: Ms) -> Ms {
         if self.guard_online(now) {
             self.policy.t_new_ms

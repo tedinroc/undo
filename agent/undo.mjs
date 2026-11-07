@@ -197,7 +197,7 @@ async function cmdCheck(agent, args) {
     `would propose ${sats(p.selection.amount)} to ${p.address}`,
     `from          ${coinLine(p.selection)}`,
     `tier          ${tierText(p.check.tier)}`,
-    `wait          ${clock(p.check.delay_ms)} after propose${p.check.unguarded ? ' (guard offline: new-destination wait doubled)' : ''}`,
+    `wait          ${clock(p.check.delay_ms)} after propose${p.check.unguarded && p.check.tier === 'New' ? ' (guard offline: the unguarded new-destination wait)' : ''}`,
     `spend key     ${key.text}`,
   ];
   return { lines, json: { command: 'check', network: agent.network.name, to: p.address, amount: p.selection.amount, inputs: p.selection.inputs, change: p.selection.change, fee: p.selection.fee, tier: p.check.tier, delay_ms: p.check.delay_ms, unguarded: p.check.unguarded, spend_key: key.text } };
@@ -247,7 +247,7 @@ async function cmdPropose(agent, args) {
     `proposed   ${sats(request.amount)} to ${p.address}`,
     `request    #${id}`,
     `tier       ${tierText(request.tier)}`,
-    `wait       ${clock(request.unlock - request.proposed_at)}, set by the contract${p.check.unguarded ? ' (guard offline, doubled)' : ''}`,
+    `wait       ${clock(request.unlock - request.proposed_at)}, set by the contract${p.check.unguarded && request.tier === 'New' ? ' (guard offline: the unguarded new-destination wait)' : ''}`,
     `unlocks in ${clock(request.unlock - blockNow)}`,
     'The owner\'s phone can cancel it until then. This key cannot.',
     `${agent.network.label} tx ${sent.hash}`,

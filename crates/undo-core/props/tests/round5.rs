@@ -6,6 +6,9 @@
 //! last time execute asked the signer for it or its last signature landed. A request that pays out
 //! takes no more signatures a day after its first execute, so nothing signs outside a window that a
 //! later proposal was checked against.
+//!
+//! C2: the guard line said "doubled" whatever the vault's policy was. C3: the freeze line named only
+//! grants as blocked, and the recovery line counted cancels a freeze does not let the passkey use.
 
 mod common;
 
@@ -25,6 +28,10 @@ fn tier_of(h: &H, coin: Outpoint, dest: &[u8], amount: Sats) -> Tier {
     let inputs = [Input { outpoint: coin, value: amount + FEE }];
     let outputs = Outputs { dest_script: dest.to_vec(), dest_value: amount, change_value: None };
     h.v.check_propose(&inputs, &outputs, h.now).unwrap().tier
+}
+
+fn text_of(h: &H) -> String {
+    h.v.status_lines(h.now).1.join("\n")
 }
 
 fn vault_with(policy: Policy, fixed: Fixed, bounds: Bounds) -> H {
@@ -304,4 +311,89 @@ fn a_rotation_or_freeze_releases_pending_outflow_and_keeps_what_is_signing() {
     h.apply(h.v.grants[0].id).unwrap();
     assert_eq!(h.v.outflow_used_24h(h.now), half, "swept by the landing");
     assert_eq!(h.v.outflow_window_entries(), 1);
+}
+
+// ------------------------------------------------------------------ C2: what a dead guard does
+
+/// The guard line prints the delays the vault really has. Equal delays are allowed, and so are other
+/// ratios than two, so "doubled" was false for some vaults.
+#[test]
+fn the_guard_line_names_the_real_delays() {
+    let mut h = H::test_coin();
+    assert!(text_of(&h).contains("guard offline, no heartbeat yet: new-destination delay 10 min instead of 5 min, funds movable"), "{}", text_of(&h));
+    h.heartbeat().unwrap();
+    let beat = h.now;
+    h.advance(HEARTBEAT_STALE_MS + 1);
+    assert!(text_of(&h).contains(&format!("guard offline since {}: new-destination delay 10 min instead of 5 min, funds movable", utc_text(beat))));
+    h.v.guard = None;
+    assert!(text_of(&h).contains("no guard: new-destination delay 10 min instead of 5 min, funds movable"));
+
+    // The audit's case: the bounds allow the same delay with and without a guard.
+    let equal = Policy { t_new_unguarded_ms: 5 * MINUTE, ..Policy::test_coin(OUTFLOW_CAP) };
+    let h = vault_with(equal, Fixed::test_coin(), Bounds::test_coin(OUTFLOW_CAP));
+    assert_eq!(h.v.delay_now(h.now), h.v.policy.t_new_ms, "nothing slowed down");
+    let text = text_of(&h);
+    assert!(text.contains("guard offline, no heartbeat yet: new-destination delay 5 min, the same as with a guard online, funds movable"), "{text}");
+    assert!(!text.contains("doubled"));
+
+    // Ten times on test coins, and the proof preset's widest.
+    let tenfold = Policy { t_known_ms: 30_000, t_new_ms: MINUTE, ..Policy::test_coin(OUTFLOW_CAP) };
+    let h = vault_with(tenfold, Fixed::test_coin(), Bounds::test_coin(OUTFLOW_CAP));
+    assert!(text_of(&h).contains("new-destination delay 10 min instead of 1 min"), "{}", text_of(&h));
+    let widest = Policy { t_new_ms: 24 * HOUR, t_new_unguarded_ms: 48 * HOUR, ..Policy::mainnet_proof(OUTFLOW_CAP) };
+    let h = vault_with(widest, Fixed::mainnet_proof(), Bounds::mainnet(OUTFLOW_CAP));
+    assert!(text_of(&h).contains("new-destination delay 48 h instead of 24 h"), "{}", text_of(&h));
+    let odd = Policy { t_new_ms: 10 * MINUTE + 1_500, t_new_unguarded_ms: HOUR + 30 * 1_000, ..Policy::mainnet_proof(OUTFLOW_CAP) };
+    let h = vault_with(odd, Fixed::mainnet_proof(), Bounds::mainnet(OUTFLOW_CAP));
+    assert!(text_of(&h).contains("new-destination delay 1 h 30 s instead of 10 min 1.5 s"), "{}", text_of(&h));
+}
+
+// ------------------------------------------------------------------ C3: what a freeze blocks
+
+const FROZEN_LINE: &str = "by the cold key: no proposals, reclaims or execute, and no passkey action except cancel, which has nothing to stop because the freeze ended every pending request. Only the cold key can lift it early, and the cold-key exit is unaffected";
+
+/// The line says what the rules do. Every passkey action but cancel is refused, and cancel finds
+/// nothing, because the freeze killed every pending request and nothing new can be proposed.
+#[test]
+fn the_freeze_line_says_exactly_what_is_blocked() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0x5e);
+    known(&mut h, &dest);
+    let r = h.propose(&[(op(1), COIN_5)], &dest, COIN_5 - FEE, None).unwrap();
+    let until = h.now + h.v.csv_period_ms();
+    h.freeze(until).unwrap();
+    let text = text_of(&h);
+    assert!(text.contains(&format!("frozen until {} {FROZEN_LINE}", utc_text(until))), "{text}");
+
+    let frozen = Error::Frozen { until };
+    let tighter = Policy { fee_budget_24h: h.v.policy.fee_budget_24h - 1, ..h.v.policy };
+    assert_eq!(h.set_policy(tighter).unwrap_err(), frozen, "even a tightening");
+    assert_eq!(h.remove_dest(&dest).unwrap_err(), frozen, "even a removal");
+    assert_eq!(h.rotate(SPEND_2).unwrap_err(), frozen);
+    assert_eq!(h.raise_fee_cap(r.id, 100).unwrap_err(), frozen);
+    assert_eq!(h.clear_hold(r.id).unwrap_err(), frozen);
+    assert_eq!(h.recover_cancel().unwrap_err(), frozen);
+    assert_eq!(h.propose(&[(op(2), COIN_5)], &dest, COIN_5 - FEE, None).unwrap_err(), frozen);
+    assert_eq!(h.reclaim(op(1), COIN_5, FEE).unwrap_err(), frozen);
+    assert_eq!(h.execute(r.id, 16).unwrap_err(), frozen);
+    assert_eq!(h.cancel(r.id).unwrap_err(), Error::RequestNotFound, "cancel runs, and finds nothing");
+    assert!(h.v.live_pending(h.now).is_empty());
+    h.unfreeze().unwrap();
+    assert!(!text_of(&h).contains("frozen until"));
+}
+
+/// While frozen the passkey cannot cancel a recovery, so the recovery line says so.
+#[test]
+fn the_recovery_line_says_a_freeze_holds_the_passkeys_cancels() {
+    let mut h = H::test_coin();
+    h.recover_begin(passkey(0x41)).unwrap();
+    assert!(text_of(&h).contains("The current passkey has 2 of 2 cancels left"));
+    assert!(!text_of(&h).contains("while the vault is frozen"));
+    let until = h.now + h.v.csv_period_ms();
+    h.freeze(until).unwrap();
+    assert!(text_of(&h).contains("The current passkey has 2 of 2 cancels left but cannot use them while the vault is frozen"), "{}", text_of(&h));
+    assert_eq!(h.recover_cancel().unwrap_err(), Error::Frozen { until });
+    h.advance(until - h.now);
+    assert!(!text_of(&h).contains("while the vault is frozen"), "the freeze lapsed");
+    h.recover_cancel().unwrap();
 }
