@@ -1497,7 +1497,7 @@ test('AUDIT-2: with the vault read down, junk counts apart and never uses up wha
   assert.equal((await m.relay('cancel_all_and_rotate', await rotateBody())).body.ok, true, 'and a checked cancel still has the rest');
 });
 
-test('AUDIT-2: after a passkey recovery, with reads down, junk on other vaults cannot use up the recovered owner\'s cancel', async () => {
+test('AUDIT-2: after a passkey recovery, with reads down, junk on 26 other vaults does not stop the recovered owner\'s first cancel', async () => {
   const soft = softCredentials({ secret: label('recovered-passkey'), origin: 'https://site.test', rpId: 'site.test' });
   const fresh = toHex((await createPasskey({ credentials: soft, rpId: 'site.test' })).pubkey);
   const others = Array.from({ length: 26 }, (_, i) => toHex(label(`other-${i}`)));
