@@ -69,7 +69,8 @@ export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } 
       },
       {
         id: 'wait', run: 'g2', at: isoOf(c.proposed_at),
-        title: 'It needs a second signature, and a public NEAR contract makes the request wait.',
+        // Another run on the same vault, a day earlier: the owner's own test spend, not the thief's.
+        title: `Another request on this vault, ${g2Date}: the owner's own test spend. It needs a second signature, and a public NEAR contract makes it wait.`,
         lines: [
           nearTx(c.propose_tx, 'the request'),
           say(`The contract set its unlock ${mmss(c.unlock - c.proposed_at)} later: requested ${isoOf(c.proposed_at).slice(11, 19)} UTC, unlocks ${isoOf(c.unlock).slice(11, 19)} UTC. ${c.check.unguarded ? 'A new destination, and no guard was running.' : ''}`.trim()),
@@ -82,7 +83,7 @@ export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } 
       },
       {
         id: 'signed', run: 'g2', at: isoOf(c.unlocked_at_ms),
-        title: 'Nobody cancelled this one. At the unlock, the contract asked for Bitcoin\'s second signature.',
+        title: `That same request, ${g2Date}, the owner's own test spend: nobody cancelled it. At the unlock, the contract asked for Bitcoin's second signature.`,
         lines: [
           nearTx(executed.execute_tx, 'the contract asks the signer'),
           btcTx(c.txid, `paid ${c.amount.toLocaleString('en-US')} sats out, block ${c.mined_height}`),
@@ -100,8 +101,9 @@ export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } 
         film: true,
       },
     ],
-    // What the landing page links "From the film:", and what else it lists from the same vault.
-    film: [
+    // What the landing page links "From earlier runs:", and what else it lists from the same vault. When the film
+    // ships, its own capture record supplies a "From the film:" list instead.
+    earlier: [
       btcAddress(g2.vault.address, 'the test vault'),
       btcTx(s2.funding_coin.mutinynet_txid, 'the coin the spend key alone could not move'),
       btcTx(e.txid, 'the cold key\'s exit after the timelock'),

@@ -50,9 +50,9 @@ test('replay: a node\'s words are the recorded bytes, untouched', () => {
   assert.deepEqual(nodes, [s2.node_answer.text_verbatim, g2.escape.early.text]);
 });
 
-test('landing: "From the film:" and "From the same test vault:" are run.json\'s lists, each hash under its chain, linked to that chain\'s explorer', () => {
+test('landing: "From earlier runs:" and "From the same test vault:" are run.json\'s lists, each hash under its chain, linked to that chain\'s explorer', () => {
   const cards = landingHashes(landing);
-  const want = [...run.film, ...run.same_vault];
+  const want = [...run.earlier, ...run.same_vault];
   assert.equal(cards.length, want.length);
   cards.forEach((card, i) => {
     assert.equal(card.chain, label(want[i]));
@@ -60,12 +60,12 @@ test('landing: "From the film:" and "From the same test vault:" are run.json\'s 
     assert.equal(card.href, `${EXPLORER[card.chain]}${card.hash}`);
     assert.equal(card.what, `${want[i].what} · earlier run`);
   });
-  assert.match(landing, /<h2 id="from-film" class="h2">From the film:<\/h2>/);
+  assert.match(landing, /<h2 id="from-runs" class="h2">From earlier runs:<\/h2>/);
 });
 
 test('every hash on both pages is in proofs/, and every long hex or base58 string on them is one of those hashes', () => {
   const hashes = new Set(run.steps.flatMap((s) => s.lines.filter((l) => l.kind === 'hash').map((l) => l.hash)));
-  for (const l of [...run.film, ...run.same_vault]) hashes.add(l.hash);
+  for (const l of [...run.earlier, ...run.same_vault]) hashes.add(l.hash);
   for (const h of hashes) assert.ok(proofs.includes(`"${h}"`) || proofs.includes(h), `${h} is not in proofs/`);
   const text = `${landing}\n${JSON.stringify(run.steps.map((s) => s.lines.filter((l) => l.kind !== 'node')))}`;
   const longStrings = new Set([...text.matchAll(/\b(?:[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{43,44}|tb1q[0-9a-z]{58})\b/g)].map((m) => m[0]));

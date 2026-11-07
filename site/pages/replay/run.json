@@ -82,7 +82,7 @@
       "id": "wait",
       "run": "g2",
       "at": "2026-10-31T23:25:56.681Z",
-      "title": "It needs a second signature, and a public NEAR contract makes the request wait.",
+      "title": "Another request on this vault, 2026-10-31: the owner's own test spend. It needs a second signature, and a public NEAR contract makes it wait.",
       "lines": [
         {
           "kind": "hash",
@@ -114,7 +114,7 @@
       "id": "signed",
       "run": "g2",
       "at": "2026-10-31T23:35:57.509Z",
-      "title": "Nobody cancelled this one. At the unlock, the contract asked for Bitcoin's second signature.",
+      "title": "That same request, 2026-10-31, the owner's own test spend: nobody cancelled it. At the unlock, the contract asked for Bitcoin's second signature.",
       "lines": [
         {
           "kind": "hash",
@@ -162,7 +162,7 @@
       "film": true
     }
   ],
-  "film": [
+  "earlier": [
     {
       "kind": "hash",
       "chain": "Mutinynet",

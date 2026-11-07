@@ -18,6 +18,8 @@ function watchFilm() {
   video.addEventListener('error', missing);
   video.addEventListener('playing', () => {
     slot.dataset.film = 'playing';
+    // The static label says the film is not out yet; once a film file plays, that is no longer true.
+    video.setAttribute('aria-label', 'Undo for Bitcoin, the film');
   });
   // An error that fired before this module ran leaves its mark here.
   if (video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) missing();
@@ -28,7 +30,8 @@ function curlLine(config) {
     jsonrpc: '2.0', id: 'u', method: 'query',
     params: { request_type: 'call_function', finality: 'final', account_id: config.contract, method_name: 'status', args_base64: 'e30=' },
   });
-  return `curl -s ${config.rpc[0]} -H 'content-type: application/json' -d '${args}' | python3 -c 'import sys,json;print(bytes(json.load(sys.stdin)["result"]["result"]).decode())'`;
+  // On a refusal (no such account, no status view) it prints the RPC's error, not a Python traceback.
+  return `curl -s ${config.rpc[0]} -H 'content-type: application/json' -d '${args}' | python3 -c 'import sys,json;r=json.load(sys.stdin);x=r.get("result") or {};print(bytes(x["result"]).decode() if "result" in x else "RPC refused: "+json.dumps(r.get("error") or x.get("error")))'`;
 }
 
 async function main() {

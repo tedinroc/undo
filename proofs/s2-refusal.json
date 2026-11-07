@@ -57,6 +57,7 @@
   "after": {
     "read_at_utc": "2026-11-01T09:00:55.151Z",
     "tip": 3553027,
+    "tip_note": "Added 2026-11-07: this tip is one block below the coin's own height (3553028). Mutinynet's block 3553028 has timestamp 2026-11-01T09:00:50Z, before this read, so the API answering the tip lagged a block. The coin's height comes from its confirmed status, not from this tip.",
     "outspend_answer": {
       "spent": false
     },
