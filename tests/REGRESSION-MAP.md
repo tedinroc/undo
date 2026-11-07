@@ -125,6 +125,35 @@ Two of that review's mutants have no test on purpose, because no input can tell 
 
 Kept as they were: `escape branch`, `stale epoch`, `spoofed callbacks`, `wrong K_m variants`, `outpoint reuse`, `partial execute`, `storage griefing`, `passkey thief after recovery`, `small rules`, all in `review3`.
 
+## Fifth review (round 4)
+
+No critical or high finding. An owner lens and a spec lens, on the real wasm. A third lens, theft, died before it reported and was not run again. Tests are in `tests/tests/review4.rs` and at the end of `crates/undo-core/props/tests/scenarios.rs`.
+
+| Finding | Test | Result expected now |
+|---|---|---|
+| A dead domain cannot recover a passkey | `review4: a_second_origin_named_at_new_recovers_a_dead_domain`, `with_one_origin_a_dead_domain_leaves_the_cold_key` | A second origin named at `new` recovers, and its assertions cancel. An unnamed one is refused, and `status` names the list. |
+| A larger upgrade spends the vaults' credit | `review4: an_upgrade_that_would_spend_what_vaults_paid_in_is_refused`, `migrate_refuses_when_what_vaults_paid_in_is_gone`, `vault_funds_follows_every_vault` | Refused with the approval standing, the panic button still works, and a plain transfer lets it land. `migrate` refuses on a short balance. The total matches every vault through each way money moves. |
+| Griefed gas was not the worst case, `apply_grant` had no row | `measure: gas_of_owner_methods_on_the_worst_row_and_queue`, `gas_of_the_landing_and_the_cold_key_on_the_largest_dead_queue`, `gas_of_assess_on_a_dead_queue` | Each row under what a relay attaches, `on_signed` under its 10 Tgas. Run by `protocol-check.sh --measure`. |
+| `status` promises a rotation that is not waiting | `review4: status_says_when_no_new_key_is_coming`, `scenarios: status_says_when_no_new_key_is_waiting`, `only_a_rotation_grant_reads_as_a_key_waiting` | Veto, freeze and recovery each read as no key waiting. |
+| A budget that refuses reads calm | `review4: status_warns_before_the_budget_refuses_a_spend`, `scenarios: the_budget_line_comes_on_when_a_capped_fee_no_longer_fits` | The line comes on once a fee at the cap no longer fits. |
+| Poisoned coins push the exit past the reaction window | `review4: poisoned_coins_leave_by_reclaim_then_cancel` | A limit stated in SPEC 5, with its short way, which passes consensus. |
+| A passkey thief leaves the delays at their maxima | `review4: a_passkey_thief_leaves_the_mainnet_delays_at_their_maxima` | A limit stated in SPEC 1.3. |
+| `freeze` refused on a little clock skew | `review4: a_late_or_long_freeze_lands_and_is_cut_to_the_csv_period`, `scenarios: a_freeze_past_the_csv_period_is_cut_to_it`, `tools/test/offline.test.mjs` | It lands and is cut, and the log says what landed. The tool asks for past its own expiry. |
+| A stranger lands someone's `create_vault` first | `review4: a_stranger_can_land_someone_elses_create_vault_and_a_top_up_repairs_it` | A limit the page has to handle: a top-up and a beat give the film's 5:00. |
+| A pinned child blocks one exact self-paying transaction | `review4: a_pinned_child_blocks_one_exact_reclaim_and_cancel_is_the_way_out` | A limit, with its way out, which passes consensus. |
+| After a late cancel, `status` and the page's rule read dead while the spend signs | `review4: a_rotation_after_execute_does_not_read_as_cancelled`, `scenarios: status_says_an_executed_request_keeps_signing_after_a_rotation`, `a_spend_after_the_new_key_landed_reads_calm` | `reads_cancelled` is false, the line says it keeps signing, and a day-long warning names the spend. The owner's own later spend reads calm. |
+| The film's cancel is not counted | `review4: the_films_cancel_counts_and_the_model_can_read_it`, `scenarios: a_rotation_counts_what_it_stopped_as_cancels` | One count at zero credit, one in the next snapshot per live request, and none when nothing was live. |
+| "Set per vault" is false on test coins | `review4: a_test_coin_vault_can_set_its_own_wait`, `scenarios: test_coin_floors_hold` | A chosen wait lands and a request waits it. One millisecond outside the range is refused, and the reaction window did not move. |
+| `funds movable` beside a line saying nothing can move | `review4: status_says_funds_movable_only_when_they_are`, `scenarios: funds_movable_is_said_only_when_it_is_true` | Said only when active, not frozen and not suspended. |
+| Calm after a real signature | `scenarios: status_says_an_executed_request_keeps_signing_after_a_rotation` | `last spend reached signing at <t>`. Calm on its own, since a contract cannot tell whose it was. |
+| The signer and credit lines do not match behaviour | `review4: the_signer_line_promises_no_retry`, `the_credit_line_matches_what_a_proposal_costs` | No promise of retry. The credit line's two figures are checked against real refusals. |
+| `check_propose` says yes to a suspended key | `review4: check_propose_refuses_a_suspended_key`, `scenarios: check_propose_refuses_a_suspended_key` | The same refusal `propose_btc` gives. |
+| Stated rules with no test | `scenarios: test_coin_floors_hold`, `the_guarded_delay_cannot_pass_the_unguarded_one`, `a_taproot_output_needs_version_one`, `reclaim_pays_the_rate_floor`, `the_grant_list_holds_eight`, `a_lapsed_freeze_stops_reading_as_frozen`, `dead_requests_are_not_counted_as_pending`, `recover_cancel_with_none_running_burns_nothing`, `execute_needs_at_least_one_input`; `review4: the_model_signer_list_holds_eight`, `the_excluded_list_holds_thirty_two`, `assess_reads_the_first_choice`, `a_passkey_assertion_binds_its_vault_contract_tag_and_expiry` | One each, with a mutant in `mutation-check.py` or `shell-mutants.py`. The binding mutants change the contract and the harness's digest together, so only a digest made for something else can notice. |
+| A harness reads an infrastructure failure as a kill | `scripts/shell-mutants.py --self-test`, `tools/test/mutants.mjs --self-test`, both in `tools/test/run-all.sh` | A kill needs a test that failed. Otherwise the run is retried, and then reported as not judged, which fails the run. |
+| `raise_fee_cap`, other methods and lazy deletion missing from the spec | SPEC 1.1, 4.1, 11 | Text only. |
+
+Two more mutants have no test on purpose, because no input can tell them from the real code. Dropping the test-coin floor on `t_new_unguarded_ms` changes nothing, because that delay may not be below `t_new_ms`, whose own floor is the same. Dropping the first `max_inputs == 0` check in `execute` changes nothing on the wasm, because the same error comes a few lines later and a panic rolls back what came between. The core harness rolls back an error the same way, so a core mutant of it lived too, and `execute_needs_at_least_one_input` stays as the rule's test.
+
 ## Section 11, the last methods
 
 Every method is on both protocols through `scripts/protocol-check.sh`, with a positive and a negative in `tests/tests/surface.rs`:
@@ -141,7 +170,7 @@ Every method is on both protocols through `scripts/protocol-check.sh`, with a po
 | `assess`, `add_model_signer`, `set_guard_model` | `assess_checks_*`, `assess_refuses_*`, `assess_needs_no_credit`, `model_signers_*` |
 | `status` | `status_is_plain_*`, `status_says_*` |
 | `stats`, `stats_exclude` | `stats_counts_*`, `cancel_at_zero_credit_*` |
-| `upgrade_propose`, `upgrade_cancel`, `upgrade_apply`, `migrate` | `an_upgrade_lands_*`, `upgrade_authority_*`, `code_without_a_migrate_*`, `migrate_is_private` |
+| `upgrade_propose`, `upgrade_cancel`, `upgrade_apply`, `migrate` | `an_upgrade_lands_*`, `upgrade_authority_*`, `code_without_a_migrate_*`, `upgrade_apply_with_too_little_gas_*`, `migrate_is_private` |
 
 What the film and the page read, each with its own test in `tests/tests/surface.rs`:
 

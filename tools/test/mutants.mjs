@@ -38,7 +38,8 @@ const MUTANTS = [
   ['cold: expiry not bound', 'lib/intent.mjs', 'b.raw(sha256(args)),\n    b.u64(expiresAt),', 'b.raw(sha256(args)),\n    b.u64(0),'],
   ['cold: args not hashed in', 'lib/intent.mjs', 'b.raw(sha256(args)),', 'b.raw(sha256(new Uint8Array(0))),'],
   ['leaf proof: tag dropped', 'lib/intent.mjs', 'return sha256(concat(utf8(LEAF_POP_TAG), createDigestBytes));', 'return createDigestBytes;'],
-  ['freeze: too-long freeze allowed', 'freeze.mjs', 'if (fields.until > max) throw', 'if (false) throw'],
+  ['freeze: too-long freeze allowed', 'freeze.mjs', 'if (named !== undefined && fields.until > max) throw', 'if (false) throw'],
+  ['freeze: the default stops at this clock plus the period', 'freeze.mjs', 'fields.until = named ?? expiresAt + period;', 'fields.until = named ?? max;'],
   ['freeze: digest flag ignored', 'freeze.mjs', "if (raw.includes('--digest')) throw new Error('this tool never signs a digest handed to it. Give it the fields');", "if (raw.includes('--digest')) raw.splice(raw.indexOf('--digest'), 2);"],
   ['freeze: signs without asking', 'freeze.mjs', "if (!a.yes && !(await askYes('Type yes to sign:'))) {", 'if (false) {'],
   ['freeze: wrong vault allowed', 'freeze.mjs', "if (a.vault && /^[0-9a-f]{64}$/.test(file.vaultId) && a.vault !== file.vaultId) {", 'if (false) {'],
@@ -100,9 +101,31 @@ const MUTANTS = [
   ['install: checksum ignored', '../scripts/human/install-near-cli.sh', 'if [ -z "$want" ] || [ "$want" != "$got" ]; then', 'if false; then'],
 ];
 
+// A run that timed out, or stopped with no test failing, says nothing about the mutant, so it is no kill.
+const judge = (r) => {
+  if (r.status === 0) return 'SURVIVED';
+  if (r.status === null || r.error) return 'NOT JUDGED';
+  return /^(?:# fail|ℹ fail) [1-9]/m.test(r.stdout ?? '') ? 'killed' : 'NOT JUDGED';
+};
+
+if (process.argv[2] === '--self-test') {
+  const cases = [
+    [{ status: 0, stdout: 'ℹ fail 0' }, 'SURVIVED'],
+    [{ status: 1, stdout: 'ℹ pass 3\nℹ fail 1\n' }, 'killed'],
+    [{ status: 1, stdout: '# pass 3\n# fail 2\n' }, 'killed'],
+    [{ status: null, stdout: 'ℹ fail 1', error: { code: 'ETIMEDOUT' } }, 'NOT JUDGED'],
+    [{ status: 1, stdout: 'ℹ pass 3\nℹ fail 0\n' }, 'NOT JUDGED'],
+    [{ status: 1, stdout: '' }, 'NOT JUDGED'],
+  ];
+  const wrong = cases.filter(([run, want]) => judge(run) !== want);
+  console.log(`self-test: ${cases.length - wrong.length} of ${cases.length}`);
+  process.exit(wrong.length ? 1 : 0);
+}
+
 const only = process.argv[2];
 let survived = 0;
 let notApplied = 0;
+let notJudged = 0;
 const base = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'undo-mutants-'));
 const freshCopy = () => {
   const repo = join(base, 'repo');
@@ -134,16 +157,13 @@ try {
       continue;
     }
     writeFileSync(path, text.replace(from, to));
-    const r = runTests(repo);
-    if (r.status === 0) {
-      console.log(`SURVIVED ${name}`);
-      survived += 1;
-    } else {
-      console.log(`killed ${name}`);
-    }
+    const verdict = judge(runTests(repo));
+    console.log(`${verdict} ${name}`);
+    if (verdict === 'SURVIVED') survived += 1;
+    if (verdict === 'NOT JUDGED') notJudged += 1;
   }
 } finally {
   rmSync(base, { recursive: true, force: true });
 }
-console.log(`${MUTANTS.length} mutants, survived ${survived}, not applied ${notApplied}`);
-process.exit(survived || notApplied ? 1 : 0);
+console.log(`${MUTANTS.length} mutants, survived ${survived}, not applied ${notApplied}, not judged ${notJudged}`);
+process.exit(survived || notApplied || notJudged ? 1 : 0);

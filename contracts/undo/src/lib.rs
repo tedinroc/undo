@@ -89,6 +89,11 @@ struct Stats {
     vaults_created: u64,
     vaults_active: u64,
     passkeys_completed: u64,
+    /// All vaults' credit, plus what their reservations paid for. It sits in the contract's balance and
+    /// belongs to them, so new code, which the contract's balance pays for, must leave it there.
+    vault_funds: u128,
+    /// Size of the running code, as far as the contract can know it. See `new`.
+    code_bytes: u64,
 }
 
 /// The signer and its constants have no setter. They change only through the upgrade queue: new code
@@ -171,14 +176,19 @@ impl Undo {
                 stats_excluded: Vec::new(),
             },
             upgrade: UpgradeQueue::default(),
-            stats: Stats::default(),
+            // No host call gives the code's size. With no state written yet the account holds its code
+            // and its keys, so this is a little high, and `upgrade_apply` can underestimate new code's
+            // growth by that much. `migrate` then checks the real figure.
+            stats: Stats { code_bytes: env::storage_usage(), ..Stats::default() },
         }
     }
 
     /// The upgrade path's other half. It runs in the same batch as the deploy, so new code that cannot
-    /// read this state fails here and the old code stays.
+    /// read this state, or that has spent what vaults paid in, fails here and the old code stays.
     #[private]
-    pub fn migrate(&self) {
+    pub fn migrate(&mut self, code_bytes: u64) {
+        require!(self.balance_short() == 0, "the new code spends what vaults have paid in");
+        self.stats.code_bytes = code_bytes;
         env::log_str("undo:migrated");
     }
 
@@ -229,6 +239,7 @@ impl Undo {
         storage::insert(
             &id,
             Row { credit: env::attached_deposit().as_yoctonear(), reserved: 0, creator: env::predecessor_account_id(), vault },
+            &mut self.stats.vault_funds,
         );
         self.ask_signer_for_key(&id);
         env::log_str(&format!("undo:created vault={}", hex::encode(id)));
@@ -255,11 +266,11 @@ impl Undo {
         let activated = derived.is_some_and(|key| loaded.row.vault.activate(&key).is_ok());
         if activated {
             self.stats.vaults_active += 1;
-            loaded.commit(&id, Short::Reserved);
+            loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
             env::log_str(&format!("undo:active vault={}", hex::encode(id)));
         } else {
             self.stats.vaults_created = self.stats.vaults_created.saturating_sub(1);
-            let refund = storage::remove(&id, &loaded);
+            let refund = storage::remove(&id, &loaded, &mut self.stats.vault_funds);
             if refund > 0 {
                 let promise = env::promise_batch_create(&loaded.row.creator);
                 env::promise_batch_action_transfer(promise, NearToken::from_yoctonear(refund));
@@ -274,7 +285,7 @@ impl Undo {
         let id = vault_key(&vault);
         let mut loaded = storage::load_row(&id);
         loaded.row.credit = loaded.row.credit.saturating_add(env::attached_deposit().as_yoctonear());
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
     }
 
     /// `K_s` signature plus one `K_u` half-signature per input. Charges the vault's credit and takes
@@ -322,7 +333,7 @@ impl Undo {
                 now(),
             )
             .unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Refuse);
+        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:proposed request={} unlock={}", proposed.id, proposed.base_unlock));
         proposed.id
     }
@@ -363,7 +374,7 @@ impl Undo {
             .vault
             .reclaim(&caller, Intent { nonce, expires_at }, input.outpoint, input.value, fee, half_sig.0, now())
             .unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Refuse);
+        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:proposed request={} unlock={}", proposed.id, proposed.base_unlock));
         proposed.id
     }
@@ -384,7 +395,7 @@ impl Undo {
         };
         loaded.row.vault.cancel(&caller, expires_at, request, now()).unwrap_or_else(|e| fail(e));
         self.note_completed(&mut loaded);
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:cancelled request={request}"));
     }
 
@@ -395,12 +406,17 @@ impl Undo {
         let mut loaded = storage::load(&id);
         let new_key: [u8; 32] = new_k_s.fixed("new_k_s");
         let caller = self.passkey_caller(&id, &loaded, "cancel_all_and_rotate", &new_key, expires_at, Some(nonce), &assertion);
+        let stopped_something = !loaded.row.vault.live_pending(now()).is_empty();
         let grant = loaded
             .row
             .vault
             .cancel_all_and_rotate(&caller, Intent { nonce, expires_at }, new_key, now())
             .unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        // The page's Cancel is this method, so a request it stopped counts as a completed cancel.
+        if stopped_something {
+            self.note_completed(&mut loaded);
+        }
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:rotating grant={grant}"));
         grant
     }
@@ -418,7 +434,7 @@ impl Undo {
         }
         let caller = self.passkey_caller(&id, &loaded, "remove_destination", &script.0, expires_at, Some(nonce), &assertion);
         loaded.row.vault.remove_destination(&caller, Intent { nonce, expires_at }, &script.0, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:destination_removed script={}", hex::encode(&script.0)));
     }
 
@@ -428,7 +444,7 @@ impl Undo {
         let mut loaded = storage::load(&id);
         let caller = self.passkey_caller(&id, &loaded, "add_destination", &script.0, expires_at, Some(nonce), &assertion);
         let grant = loaded.row.vault.add_destination(&caller, Intent { nonce, expires_at }, script.0, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Refuse);
+        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:grant_begun grant={grant} kind=add_destination"));
         grant
     }
@@ -443,12 +459,12 @@ impl Undo {
         let caller = self.passkey_caller(&id, &loaded, "set_policy", &policy, expires_at, Some(nonce), &assertion);
         match loaded.row.vault.set_policy(&caller, Intent { nonce, expires_at }, policy, now()).unwrap_or_else(|e| fail(e)) {
             PolicyOutcome::Applied => {
-                loaded.commit(&id, Short::Reserved);
+                loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
                 env::log_str("undo:policy_tightened");
                 None
             }
             PolicyOutcome::Grant(grant) => {
-                loaded.commit(&id, Short::Refuse);
+                loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
                 env::log_str(&format!("undo:grant_begun grant={grant} kind=loosen_policy"));
                 Some(grant)
             }
@@ -462,7 +478,7 @@ impl Undo {
         let mut loaded = storage::load(&id);
         let caller = self.passkey_caller(&id, &loaded, "set_guard", &guard, expires_at, Some(nonce), &assertion);
         let grant = loaded.row.vault.set_guard(&caller, Intent { nonce, expires_at }, guard.map(|a| a.to_string()), now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Refuse);
+        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:grant_begun grant={grant} kind=set_guard"));
         grant
     }
@@ -475,7 +491,7 @@ impl Undo {
         loaded.fetch_request(&id, request);
         let caller = self.passkey_caller(&id, &loaded, "clear_hold", &request, expires_at, Some(nonce), &assertion);
         loaded.row.vault.clear_hold(&caller, Intent { nonce, expires_at }, request, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:hold_cleared request={request}"));
     }
 
@@ -486,7 +502,7 @@ impl Undo {
         let mut loaded = storage::load_row(&id);
         let caller = Caller::Guard(env::predecessor_account_id().to_string());
         loaded.row.vault.heartbeat(&caller, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Refuse);
+        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
     }
 
     /// The guard's key, with the model's answer and its signature. The contract rebuilds the request
@@ -516,7 +532,7 @@ impl Undo {
 
         let caller = Caller::Guard(env::predecessor_account_id().to_string());
         loaded.row.vault.assess(&caller, request, answer.hold, reason, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:assessed request={request} hold={} reason={} model={}", answer.hold, reason.name(), cfg.guard_model));
     }
 
@@ -553,7 +569,7 @@ impl Undo {
         self.require_operator();
         let hash: [u8; 32] = code_hash.fixed("code_hash");
         let pending = self.upgrade.propose(hash, &self.config.preset.upgrade(), now()).unwrap_or_else(|e| fail(e));
-        env::log_str(&format!("undo:upgrade_proposed code_hash={} unlock={} expires={}", hex::encode(hash), pending.unlock_at, pending.expires_at));
+        env::log_str(&format!("undo:upgrade_proposed code_hash={} unlock={} expires={} free_bytes={}", hex::encode(hash), pending.unlock_at, pending.expires_at, self.free_balance() / storage::cost(1)));
     }
 
     /// The operator passkey. The intent names the proposal, so an old assertion cannot stop a later one
@@ -572,13 +588,19 @@ impl Undo {
     /// Anyone, with the code as the raw call input, whose hash matches, once it unlocks and before it
     /// runs out. Deploys to this account through its own receipt, so it needs no access key: the
     /// contract can have none. The new code's `migrate` runs in the same batch, so code that cannot read
-    /// this state does not land. The attempt uses up the approval either way.
+    /// this state does not land. An attempt that reaches the deploy uses up the approval either way, so
+    /// code the balance cannot pay for without touching what vaults paid in is refused before that:
+    /// anyone can repair it with a plain transfer, and the approval still stands.
     pub fn upgrade_apply(&mut self) {
         let code = env::input().unwrap_or_else(|| env::panic_str("no code"));
         let pending = self.upgrade.take_for_apply(env::sha256_array(&code), now()).unwrap_or_else(|e| fail(e));
+        let code_bytes = code.len() as u64;
+        let needs = storage::cost(env::storage_usage().saturating_sub(self.stats.code_bytes) + code_bytes).saturating_add(self.stats.vault_funds);
+        let short = needs.saturating_sub(env::account_balance().as_yoctonear());
+        require!(short == 0, format!("the new code would spend what vaults have paid in: send this account at least {short} yoctoNEAR first"));
         let promise = env::promise_batch_create(&env::current_account_id());
         env::promise_batch_action_deploy_contract(promise, &code);
-        env::promise_batch_action_function_call(promise, "migrate", &[], NearToken::from_yoctonear(0), Gas::from_tgas(MIGRATE_TGAS));
+        env::promise_batch_action_function_call(promise, "migrate", format!(r#"{{"code_bytes":{code_bytes}}}"#).as_bytes(), NearToken::from_yoctonear(0), Gas::from_tgas(MIGRATE_TGAS));
         // So the transaction's own status says whether the code landed.
         env::promise_return(promise);
         env::log_str(&format!("undo:upgrade_applied code_hash={}", hex::encode(pending.code_hash)));
@@ -589,7 +611,7 @@ impl Undo {
         let id = vault_key(&vault);
         let mut loaded = storage::load(&id);
         loaded.row.vault.apply_grant(grant, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Refuse);
+        loaded.commit(&id, Short::Refuse, &mut self.stats.vault_funds);
     }
 
     /// `K_p`, at once, for one named self-spend: lets an exit pay more than the fee cap, up to 1/20 of
@@ -604,7 +626,7 @@ impl Undo {
             .vault
             .raise_fee_cap(&caller, Intent { nonce, expires_at }, request, cap, now())
             .unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
     }
 
     /// Anyone, after unlock. The first call is the point of no return: it charges the fee budget,
@@ -672,7 +694,7 @@ impl Undo {
                 Gas::from_tgas(cfg.callback_tgas),
             );
         }
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:executing request={request} attempt={} inputs={count}", batch.attempt));
         count as u32
     }
@@ -723,7 +745,7 @@ impl Undo {
                 env::log_str(&format!("undo:signed request={request} input={input} complete={complete}"));
             }
         }
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
     }
 
     /// Anyone, once a Signed request is older than the expiry window. Its bytes go back to the vault's
@@ -736,17 +758,19 @@ impl Undo {
         let tx = loaded.row.vault.requests.get(&request).and_then(|r| btc::final_tx(&loaded.row.vault, r));
         loaded.row.vault.prune_signed(request, now()).unwrap_or_else(|e| fail(e));
         env::log_str(&format!("undo:pruned request={request} tx={}", tx.map(hex::encode).unwrap_or_default()));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
     }
 
-    /// `K_e`: up to the CSV period with one signature. Kills pending requests and grants, and blocks
-    /// propose, execute and every passkey action except cancel.
+    /// `K_e`: up to the CSV period from when it lands, with one signature. A later `until` is cut to that.
+    /// Kills pending requests and grants, and blocks propose, execute and every passkey action except
+    /// cancel.
     pub fn freeze(&mut self, vault: HexBytes, until: u64, nonce: u64, expires_at: u64, signature: HexBytes) {
         let id = vault_key(&vault);
         let mut loaded = storage::load(&id);
         let caller = cold_caller(&id, &loaded, "freeze", &until, expires_at, Some(nonce), &signature);
         loaded.row.vault.freeze(&caller, Intent { nonce, expires_at }, until, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        let until = loaded.row.vault.frozen_until.unwrap_or(until);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:frozen until={until}"));
     }
 
@@ -756,7 +780,7 @@ impl Undo {
         let mut loaded = storage::load(&id);
         let caller = cold_caller(&id, &loaded, "unfreeze", &(), expires_at, Some(nonce), &signature);
         loaded.row.vault.unfreeze(&caller, Intent { nonce, expires_at }, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str("undo:unfrozen");
     }
 
@@ -766,7 +790,7 @@ impl Undo {
         let mut loaded = storage::load(&id);
         let caller = cold_caller(&id, &loaded, "veto_grant", &grant, expires_at, Some(nonce), &signature);
         loaded.row.vault.veto_grant(&caller, Intent { nonce, expires_at }, grant, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str(&format!("undo:vetoed grant={grant}"));
     }
 
@@ -783,7 +807,7 @@ impl Undo {
         let caller = Caller::Cold(loaded.row.vault.k_e_intent.clone());
         let passkey = Passkey { pubkey: new_passkey.pubkey.0, rp_id_hash, backup_eligible: flags.backup_eligible, backup_state: flags.backup_state };
         loaded.row.vault.recover_begin(&caller, Intent { nonce, expires_at }, passkey, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str("undo:recovery_begun");
     }
 
@@ -793,7 +817,7 @@ impl Undo {
         let mut loaded = storage::load(&id);
         let caller = self.passkey_caller(&id, &loaded, "recover_cancel", &(), expires_at, Some(nonce), &assertion);
         loaded.row.vault.recover_cancel(&caller, Intent { nonce, expires_at }, now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str("undo:recovery_cancelled");
     }
 
@@ -802,7 +826,7 @@ impl Undo {
         let id = vault_key(&vault);
         let mut loaded = storage::load(&id);
         loaded.row.vault.recover_finish(now()).unwrap_or_else(|e| fail(e));
-        loaded.commit(&id, Short::Reserved);
+        loaded.commit(&id, Short::Reserved, &mut self.stats.vault_funds);
         env::log_str("undo:recovered");
     }
 
@@ -838,6 +862,9 @@ impl Undo {
                 unlock_at: p.unlock_at,
                 expires_at: p.expires_at,
             }),
+            vault_funds: self.stats.vault_funds.into(),
+            free_balance: self.free_balance().into(),
+            code_bytes: self.stats.code_bytes,
             operator_passkey: HexBytes(c.operator_passkey.clone()),
             guard_model: c.guard_model.clone(),
             model_signers: c.model_signers.iter().map(|(model, key)| ModelSignerView { model: model.clone(), signer: HexBytes(key.to_vec()) }).collect(),
@@ -856,9 +883,18 @@ impl Undo {
             let (vault_ok, vault_lines) = loaded.row.vault.status_lines(now());
             ok &= vault_ok;
             lines.extend(vault_lines);
-            if loaded.row.credit < storage::request_floor() {
-                ok = false;
-                lines.push("storage credit low: new proposals stop until anyone tops it up. Cancel, rotate, freeze and execute do not need it".to_string());
+            let (one, largest) = storage::proposal_cost();
+            if loaded.row.credit < largest {
+                let low = loaded.row.credit < one;
+                ok &= !low;
+                let near = |yocto: u128| format!("{}.{:03}", yocto / 10u128.pow(24), yocto / 10u128.pow(21) % 1000);
+                lines.push(format!(
+                    "storage credit{} {} NEAR: a one-input proposal takes about {} and a 16-input one about {}, and one the credit cannot pay for is refused until anyone tops it up. Cancel, rotate, freeze and execute do not need it",
+                    if low { " low," } else { "" },
+                    near(loaded.row.credit),
+                    near(one),
+                    near(largest),
+                ));
             }
         }
         let c = &self.config;
@@ -868,7 +904,7 @@ impl Undo {
             Some(p) => {
                 ok = false;
                 lines.push(format!(
-                    "upgrade pending: code {} can land from {} until {}. Any owner can leave before then, if they react within the reaction window of {} min",
+                    "upgrade pending: code {} can land from {} until {}. Any owner can leave before then, coin by coin, if they react within the reaction window of {} min. A coin already signed at a false value takes longer",
                     hex::encode(p.code_hash),
                     utc_text(p.unlock_at),
                     utc_text(p.expires_at),
@@ -880,6 +916,14 @@ impl Undo {
         if !c.model_signers.iter().any(|(m, _)| *m == c.guard_model) {
             lines.push(format!("no signer registered for {}: no new holds, and every other rule still holds", c.guard_model));
         }
+        let short = self.balance_short();
+        if short > 0 {
+            ok = false;
+            lines.push(format!("this contract's balance is {short} yoctoNEAR short of what vaults have paid in, so a call that grows storage can fail. A plain transfer to this account repairs it"));
+        } else {
+            lines.push(format!("{} bytes free beyond what vaults have paid in, which is all that new code may add", self.free_balance() / storage::cost(1)));
+        }
+        lines.push(format!("passkeys work from {}. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit", c.origins.join(", ")));
         StatusView { ok, lines }
     }
 
@@ -1026,6 +1070,20 @@ impl Undo {
 }
 
 impl Undo {
+    /// What the contract's balance holds above what storage locks and what vaults have paid in.
+    fn free_balance(&self) -> u128 {
+        env::account_balance().as_yoctonear().saturating_sub(self.balance_held())
+    }
+
+    /// How far the balance is below that. Zero on an instance that was funded for its code and state.
+    fn balance_short(&self) -> u128 {
+        self.balance_held().saturating_sub(env::account_balance().as_yoctonear())
+    }
+
+    fn balance_held(&self) -> u128 {
+        storage::cost(env::storage_usage()).saturating_add(self.stats.vault_funds)
+    }
+
     fn require_operator(&self) {
         require!(env::predecessor_account_id() == self.config.operator, "only the operator");
     }

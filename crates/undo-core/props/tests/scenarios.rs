@@ -247,7 +247,6 @@ fn freeze_blocks_everything_except_cancel_and_only_cold_lifts_it() {
     let grant = h.add_dest(&dest).unwrap();
     let r = h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
     let until = h.now + h.v.csv_period_ms();
-    assert!(matches!(h.freeze(until + 1).unwrap_err(), Error::FreezeTooLong { .. }));
     h.freeze(until).unwrap();
 
     assert!(h.v.grants.is_empty(), "freeze cancels pending grants");
@@ -1793,9 +1792,8 @@ fn a_declared_value_above_all_bitcoin_is_refused() {
 #[test]
 fn a_freeze_must_end_in_the_future() {
     let mut h = H::test_coin();
-    let max_until = h.now + h.v.csv_period_ms();
-    assert_eq!(h.freeze(h.now).unwrap_err(), Error::FreezeTooLong { max_until });
-    assert_eq!(h.freeze(h.now - 1).unwrap_err(), Error::FreezeTooLong { max_until });
+    assert_eq!(h.freeze(h.now).unwrap_err(), Error::FreezeAlreadyOver);
+    assert_eq!(h.freeze(h.now - 1).unwrap_err(), Error::FreezeAlreadyOver);
     assert_eq!(h.v.spend_epoch, 0, "a refused freeze kills nothing");
     h.freeze(h.now + 1).unwrap();
 }
@@ -2119,11 +2117,11 @@ fn status_reads_as_a_designed_state() {
     h.advance(h.v.delay_now(h.now));
     let batch = h.execute(r.id, 16).unwrap();
     assert_eq!(h.v.on_signed(r.id, batch.attempt, 0, [7; 32], [7; 32], None, h.now), SignedOutcome::Failed);
-    assert!(text_of(&h).contains(&format!("signing unavailable since {}", utc_text(h.now))));
+    assert!(text_of(&h).contains(&format!("the signer's last answer failed at {}", utc_text(h.now))));
     assert!(text_of(&h).contains("a coin 6 blocks old can leave by the cold-key exit"));
     let batch = { h.height += RETRY_AFTER_BLOCKS; h.execute(r.id, 16).unwrap() };
     h.sign_batch(r.id, &batch);
-    assert!(!text_of(&h).contains("signing unavailable"));
+    assert!(!text_of(&h).contains("last answer failed"));
 
     let until = h.now + MINUTE;
     h.freeze(until).unwrap();
@@ -2234,4 +2232,334 @@ fn execute_goes_through_the_moment_the_unlock_arrives() {
     h.advance(1);
     assert_eq!(h.now, unlock);
     h.execute(id, 16).unwrap();
+}
+
+// ------------------------------------------------------------------ review 4
+
+const SPEND_3: [u8; 32] = [0x13; 32];
+
+/// A rotation cannot speak for a request past its point of no return, and the line says so.
+#[test]
+fn status_says_an_executed_request_keeps_signing_after_a_rotation() {
+    let mut h = H::test_coin();
+    let id = h.propose(&[(op(1), COIN)], &p2wpkh(0xa1), COIN - 500, None).unwrap().id;
+    h.advance(h.v.requests[&id].unlock - h.now);
+    h.execute(id, 16).unwrap();
+    let spent = h.now;
+    assert!(text_of(&h).contains(&format!("last spend reached signing at {}", utc_text(spent))));
+    h.heartbeat().unwrap();
+    assert!(h.v.status_lines(h.now).0, "an ordinary spend is not a fault: the contract cannot tell whose it was");
+
+    h.rotate(SPEND_2).unwrap();
+    let text = text_of(&h);
+    assert!(text.contains("requests not yet executed are dead, one already executed keeps signing"), "{text}");
+    assert!(!text.contains("every older request is dead"), "{text}");
+    assert!(text.contains(&format!("last spend reached signing at {}, before the spend key was rotated", utc_text(spent))), "{text}");
+
+    // Still after the new key lands, for the rest of the day.
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    h.heartbeat().unwrap();
+    let (ok, lines) = h.v.status_lines(h.now);
+    assert!(!ok && lines.join("\n").contains("before the spend key was rotated"), "{lines:?}");
+    h.advance(DAY - h.v.policy.t_known_ms - 1);
+    assert!(text_of(&h).contains("before the spend key was rotated"), "the day's last millisecond");
+    h.advance(1);
+    let text = text_of(&h);
+    assert!(text.contains("last spend reached signing at") && !text.contains("before the spend key was rotated"), "{text}");
+}
+
+/// The owner's own spend after a rotation landed is an ordinary spend.
+#[test]
+fn a_spend_after_the_new_key_landed_reads_calm() {
+    let mut h = H::test_coin();
+    h.rotate(SPEND_2).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    h.advance(1);
+    h.heartbeat().unwrap();
+    let id = h.propose(&[(op(1), COIN)], &p2wpkh(0xa1), COIN - 500, None).unwrap().id;
+    h.advance(h.v.requests[&id].unlock - h.now);
+    h.execute(id, 16).unwrap();
+    let (ok, lines) = h.v.status_lines(h.now);
+    assert!(ok, "{lines:?}");
+    assert!(!lines.join("\n").contains("before the spend key"), "{lines:?}");
+}
+
+/// A veto, a freeze or a finished recovery takes the waiting key away and leaves this one suspended.
+#[test]
+fn status_says_when_no_new_key_is_waiting() {
+    const WAITING: &str = "a new key lands after its wait unless the cold key vetoes it";
+    const NONE: &str = "no new key is waiting, so the passkey has to rotate again";
+    let mut h = H::test_coin();
+    let grant = h.rotate(SPEND_2).unwrap();
+    assert!(text_of(&h).contains(WAITING));
+    assert!(!text_of(&h).contains(NONE));
+    h.veto(grant).unwrap();
+    assert!(text_of(&h).contains(NONE), "{}", text_of(&h));
+    assert!(!text_of(&h).contains(WAITING));
+    h.rotate(SPEND_3).unwrap();
+    assert!(text_of(&h).contains(WAITING), "pressing again puts it back");
+
+    let until = h.now + MINUTE;
+    h.freeze(until).unwrap();
+    assert!(text_of(&h).contains(NONE));
+    h.advance(MINUTE);
+    assert!(text_of(&h).contains(NONE), "and after the freeze lapses");
+
+    h.rotate(SPEND_2).unwrap();
+    h.recover_begin(passkey(0x77)).unwrap();
+    h.advance(h.v.fixed.t_recover_ms);
+    h.recover_finish().unwrap();
+    assert!(text_of(&h).contains(NONE));
+    assert!(!text_of(&h).contains(WAITING));
+}
+
+/// The other kinds of grant do not read as a key waiting.
+#[test]
+fn only_a_rotation_grant_reads_as_a_key_waiting() {
+    let mut h = H::test_coin();
+    let grant = h.rotate(SPEND_2).unwrap();
+    h.add_dest(&p2wpkh(0xa1)).unwrap();
+    h.veto(grant).unwrap();
+    assert!(text_of(&h).contains("no new key is waiting"), "{}", text_of(&h));
+}
+
+#[test]
+fn funds_movable_is_said_only_when_it_is_true() {
+    let mut h = H::test_coin();
+    assert!(text_of(&h).contains("no heartbeat yet: new-destination delay doubled, funds movable"));
+    let until = h.now + MINUTE;
+    h.freeze(until).unwrap();
+    let text = text_of(&h);
+    assert!(text.contains("no heartbeat yet: new-destination delay doubled") && !text.contains("funds movable"), "{text}");
+    h.advance(MINUTE);
+    assert!(text_of(&h).contains("funds movable"), "the freeze lapsed");
+    h.rotate(SPEND_2).unwrap();
+    assert!(!text_of(&h).contains("funds movable"), "suspended");
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    assert!(text_of(&h).contains("funds movable"), "landed");
+
+    let mut h = H::new({
+        let mut v = test_coin_vault();
+        v.active = false;
+        v
+    });
+    assert!(!text_of(&h).contains("funds movable"), "not active");
+    h.v.active = true;
+    h.v.guard = None;
+    assert!(text_of(&h).contains("no guard: new-destination delay doubled, funds movable"));
+    h.rotate(SPEND_2).unwrap();
+    let text = text_of(&h);
+    assert!(text.contains("no guard: new-destination delay doubled") && !text.contains("funds movable"), "{text}");
+    h.heartbeat().unwrap_err();
+    h.v.guard = Some("guard.test".into());
+    h.heartbeat().unwrap();
+    h.advance(HEARTBEAT_STALE_MS + 1);
+    let text = text_of(&h);
+    assert!(text.contains("guard offline since") && !text.contains("funds movable"), "{text}");
+}
+
+/// The line comes on once a fee at the per-tx cap would be refused, not only at the very top.
+#[test]
+fn the_budget_line_comes_on_when_a_capped_fee_no_longer_fits() {
+    let mut h = H::test_coin();
+    h.heartbeat().unwrap();
+    let cap = h.v.policy.fee_cap_tx;
+    let budget = h.v.policy.fee_budget_24h;
+    let dest = p2wpkh(0xa1);
+    let mut i = 1;
+    let mut spend = |h: &mut H, fee: Sats| {
+        let id = h.propose(&[(op(i), COIN)], &dest, COIN - fee, None).unwrap().id;
+        i += 1;
+        h.advance(h.v.requests[&id].unlock - h.now);
+        h.execute(id, 16).unwrap();
+        h.heartbeat().unwrap();
+    };
+    for _ in 0..4 {
+        spend(&mut h, cap);
+    }
+    assert_eq!(h.v.fee_used_24h(h.now), budget - cap);
+    assert!(!text_of(&h).contains("fee budget"), "one more at the cap still fits");
+    spend(&mut h, 1_000 - 800);
+    assert_eq!(h.v.fee_used_24h(h.now), budget - cap + 200);
+    let text = text_of(&h);
+    assert!(text.contains("24 h fee budget used, 4200 of 5000 sats: a fee above 800 sats waits"), "{text}");
+    assert!(!h.v.status_lines(h.now).0);
+}
+
+#[test]
+fn check_propose_refuses_a_suspended_key() {
+    let mut h = H::test_coin();
+    let outputs = Outputs { dest_script: p2wpkh(0xa1), dest_value: COIN - 500, change_value: None };
+    let inputs = [Input { outpoint: op(1), value: COIN }];
+    assert!(h.v.check_propose(&inputs, &outputs, h.now).is_ok());
+    h.rotate(SPEND_2).unwrap();
+    assert_eq!(h.v.check_propose(&inputs, &outputs, h.now).unwrap_err(), Error::SpendKeySuspended);
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    assert!(h.v.check_propose(&inputs, &outputs, h.now).is_ok());
+}
+
+/// The page's Cancel is the rotation, and the model reads the count.
+#[test]
+fn a_rotation_counts_what_it_stopped_as_cancels() {
+    let mut h = H::test_coin();
+    let dest = p2wpkh(0xa1);
+    h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    h.propose(&[(op(2), COIN)], &dest, COIN - 500, None).unwrap();
+    h.rotate(SPEND_2).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    let id = h.propose(&[(op(3), COIN)], &dest, COIN - 500, None).unwrap().id;
+    assert_eq!(h.v.requests[&id].snapshot.cancels_30d, 2, "two live requests stopped");
+
+    // A second press on a queue that is already dead stops nothing.
+    let mut h = H::test_coin();
+    h.propose(&[(op(1), COIN)], &dest, COIN - 500, None).unwrap();
+    h.rotate(SPEND_2).unwrap();
+    h.rotate(SPEND_3).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    let id = h.propose(&[(op(3), COIN)], &dest, COIN - 500, None).unwrap().id;
+    assert_eq!(h.v.requests[&id].snapshot.cancels_30d, 1);
+
+    // Nor does a press on an empty queue.
+    let mut h = H::test_coin();
+    h.rotate(SPEND_2).unwrap();
+    h.advance(h.v.policy.t_known_ms);
+    h.apply(h.v.grants[0].id).unwrap();
+    let id = h.propose(&[(op(3), COIN)], &dest, COIN - 500, None).unwrap().id;
+    assert_eq!(h.v.requests[&id].snapshot.cancels_30d, 0);
+}
+
+/// A later `until` is cut, because a refusal here means another offline signature in a crisis.
+#[test]
+fn a_freeze_past_the_csv_period_is_cut_to_it() {
+    let mut h = H::test_coin();
+    let most = h.now + h.v.csv_period_ms();
+    h.freeze(most - 1).unwrap();
+    assert_eq!(h.v.frozen_until, Some(most - 1), "a shorter one is what it says");
+    h.freeze(most).unwrap();
+    assert_eq!(h.v.frozen_until, Some(most));
+    h.freeze(most + 1).unwrap();
+    assert_eq!(h.v.frozen_until, Some(most), "the limit counts from now, when it lands");
+    h.freeze(u64::MAX).unwrap();
+    assert_eq!(h.v.frozen_until, Some(most));
+    h.advance(h.v.csv_period_ms());
+    assert!(!h.v.is_frozen(h.now));
+}
+
+#[test]
+fn test_coin_floors_hold() {
+    let bounds = Bounds::test_coin(0);
+    let base = Policy::test_coin(0);
+    assert!(bounds.allows(&base));
+    let allows = |change: fn(&mut Policy)| {
+        let mut p = base;
+        change(&mut p);
+        bounds.allows(&p)
+    };
+    // The waits a vault can set, both ends of each.
+    assert!(allows(|p| p.t_known_ms = 30_000));
+    assert!(!allows(|p| p.t_known_ms = 29_999));
+    assert!(!allows(|p| p.t_known_ms = MINUTE + 1));
+    assert!(allows(|p| p.t_new_ms = MINUTE));
+    assert!(!allows(|p| { p.t_known_ms = 30_000; p.t_new_ms = MINUTE - 1 }));
+    assert!(!allows(|p| p.t_new_ms = 5 * MINUTE + 1));
+    assert!(allows(|p| { p.t_new_ms = MINUTE; p.t_new_unguarded_ms = MINUTE }));
+    assert!(!allows(|p| { p.t_new_ms = MINUTE; p.t_new_unguarded_ms = MINUTE - 1 }));
+    assert!(!allows(|p| p.t_new_unguarded_ms = 10 * MINUTE + 1));
+    // What stays put, and the fee floors.
+    assert!(!allows(|p| p.hold_ms = 5 * MINUTE - 1));
+    assert!(!allows(|p| p.t_stuck_ms = 10 * MINUTE - 1));
+    assert!(allows(|p| p.fee_cap_tx = 500));
+    assert!(!allows(|p| p.fee_cap_tx = 499));
+    assert!(allows(|p| p.fee_budget_24h = 1_000));
+    assert!(!allows(|p| p.fee_budget_24h = 999));
+    assert!(UpgradeRules::test_coin().holds(&bounds), "maxima unchanged");
+}
+
+/// A dead guard fails slow on every preset, so the new-destination delay cannot pass the unguarded one.
+#[test]
+fn the_guarded_delay_cannot_pass_the_unguarded_one() {
+    let bounds = Bounds::mainnet(0);
+    let mut p = Policy::mainnet_proof(0);
+    p.t_new_ms = HOUR;
+    p.t_new_unguarded_ms = HOUR;
+    assert!(bounds.allows(&p));
+    p.t_new_unguarded_ms = HOUR - 1;
+    assert!(!bounds.allows(&p));
+}
+
+#[test]
+fn a_taproot_output_needs_version_one() {
+    let mut script = p2tr(0xa1);
+    assert_eq!(ScriptKind::of(&script), Some(ScriptKind::P2tr));
+    script[0] = 0x52;
+    assert_eq!(ScriptKind::of(&script), None);
+    let mut h = H::test_coin();
+    assert_eq!(h.propose(&[(op(1), COIN)], &script, COIN - 500, None).unwrap_err(), Error::BadDestination);
+}
+
+#[test]
+fn reclaim_pays_the_rate_floor() {
+    let mut h = H::test_coin();
+    let id = h.propose(&[(op(1), 100_000)], &p2wpkh(0xa1), 99_000, None).unwrap().id;
+    h.advance(h.v.requests[&id].unlock - h.now);
+    h.execute(id, 1).unwrap();
+    h.advance(h.v.policy.t_stuck_ms);
+    let outputs = Outputs { dest_script: h.v.vault_spk.clone(), dest_value: COIN - 1, change_value: None };
+    let floor = estimate_vsize(1, &outputs) * MIN_FEE_RATE;
+    assert_eq!(h.reclaim(op(1), COIN, floor - 1).unwrap_err(), Error::FeeRateTooLow { fee: floor - 1, floor });
+    h.reclaim(op(1), COIN, floor).unwrap();
+}
+
+/// The constants the spec names. A test built on the constant itself cannot notice one moving.
+#[test]
+fn the_grant_list_holds_eight() {
+    assert_eq!(MAX_GRANTS, 8);
+    let mut h = H::test_coin();
+    for i in 0..8 {
+        h.add_dest(&p2wpkh(i)).unwrap();
+    }
+    assert_eq!(h.add_dest(&p2wpkh(8)).unwrap_err(), Error::TooManyGrants);
+}
+
+#[test]
+fn a_lapsed_freeze_stops_reading_as_frozen() {
+    let mut h = H::test_coin();
+    let until = h.now + MINUTE;
+    h.freeze(until).unwrap();
+    assert!(text_of(&h).contains("frozen until"));
+    h.advance(MINUTE - 1);
+    assert!(text_of(&h).contains("frozen until"), "still frozen");
+    h.advance(1);
+    assert!(!text_of(&h).contains("frozen until"));
+}
+
+#[test]
+fn dead_requests_are_not_counted_as_pending() {
+    let mut h = H::test_coin();
+    h.propose(&[(op(1), COIN)], &p2wpkh(0xa1), COIN - 500, None).unwrap();
+    assert!(text_of(&h).contains("1 pending, next unlock"));
+    h.rotate(SPEND_2).unwrap();
+    assert!(!text_of(&h).contains("pending, next unlock"), "{}", text_of(&h));
+}
+
+#[test]
+fn recover_cancel_with_none_running_burns_nothing() {
+    let mut h = H::test_coin();
+    assert_eq!(h.recover_cancel().unwrap_err(), Error::NoRecovery);
+    assert_eq!(h.v.recover_cancels, 0);
+}
+
+#[test]
+fn execute_needs_at_least_one_input() {
+    let mut h = H::test_coin();
+    let id = h.propose(&[(op(1), COIN)], &p2wpkh(0xa1), COIN - 500, None).unwrap().id;
+    h.advance(h.v.requests[&id].unlock - h.now);
+    assert_eq!(h.execute(id, 0).unwrap_err(), Error::NothingToSign);
+    assert_eq!(h.v.requests[&id].status, RequestStatus::Pending, "nothing happened");
 }

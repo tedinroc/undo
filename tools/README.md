@@ -5,7 +5,7 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 | Tool | What it does | Network |
 |---|---|---|
 | `escape.mjs` | The Bitcoin escape from a recovery file and a UTXO list | None |
-| `freeze.mjs` | Signs one cold-key intent to a file: `freeze`, `unfreeze`, `veto_grant`, `cancel` | None |
+| `freeze.mjs` | Signs one cold-key intent to a file: `freeze`, `unfreeze`, `veto_grant`, `cancel`. With no `--minutes` a freeze lands at the whole CSV period, however wrong this clock or late the relay | None |
 | `sign-intent.mjs` | Signs `propose_btc` or `reclaim` from a seed file and prints the arguments | None |
 | `human-key.mjs` | Makes the dispenser and funding keys, for `scripts/human/02` and `03` | None |
 | `g1.mjs` | Gate G1 driver. Plan only unless `--live`. Refuses mainnet | NEAR RPC |
@@ -55,7 +55,7 @@ node tools/test/film-e2e.mjs [--real-wait] [--shots DIR] [--report FILE] [--only
 
 It prints one `PASS` or `FAIL` per check and exits 0 only if none failed. Allow about 2 minutes, or 7 with `--real-wait`. At most one at a time: it starts one Chrome, one NEAR node, one bitcoind and one workerd, and stops them on exit and on SIGINT or SIGTERM.
 
-`T_new` on the test instance is 5:00 and cannot be shorter: the `TestCoin` preset's floor and ceiling for it are the same number. So the script moves the contract's clock with the sandbox's fast-forward to 40 s left, waits for both pages to read the jump, and the rest runs in real seconds. `--real-wait` makes run 2 count the whole 5:00.
+`T_new` on the test instance is 5:00, and the page makes every vault on the instance's deployed policy. The `TestCoin` preset lets a vault choose a shorter wait at creation, down to 1:00, but the film's is the deployed one. So the script moves the contract's clock with the sandbox's fast-forward to 40 s left, waits for both pages to read the jump, and the rest runs in real seconds. `--real-wait` makes run 2 count the whole 5:00.
 
 What it says nothing about: MPC, a real phone or Face ID, public RPC, Mutinynet, Cloudflare's limits, a camera. Its labels are `[mock-signer]` and `[virtual authenticator]`.
 

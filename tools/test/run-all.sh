@@ -32,6 +32,7 @@ step "human scripts, under shims" env UNDO_NEAR_RECORD="$record" node --test "$T
 step "near-cli commands against --help, network denied" node "$TOOLS/test/near-cli-check.mjs" "$record"
 step "escape.mjs on a regtest node" node "$TOOLS/test/regtest-escape.mjs"
 step "the spend key alone on a regtest node" node "$TOOLS/test/regtest-key-alone.mjs"
+step "mutation harnesses read a run correctly" sh -c "node '$TOOLS/test/mutants.mjs' --self-test && python3 -I '$REPO/scripts/shell-mutants.py' --self-test"
 [ "$mutants" -eq 0 ] || step "mutants" node "$TOOLS/test/mutants.mjs"
 [ "$sandbox" -eq 0 ] || step "G1 driver and intents on sandbox, protocols 86 and 88" "$TOOLS/test/run-sandbox.sh" 86 88
 [ "$sandbox" -eq 0 ] || step "G2 driver rehearsal: regtest, local NEAR node, mock signer" node "$TOOLS/test/g2-rehearsal.mjs"

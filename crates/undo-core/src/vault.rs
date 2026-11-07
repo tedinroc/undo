@@ -454,6 +454,9 @@ impl Vault {
         scratch.sweep(now);
         scratch.require_active()?;
         scratch.require_not_frozen(now)?;
+        if scratch.k_s_suspended {
+            return Err(Error::SpendKeySuspended);
+        }
         scratch.plan_propose(inputs, outputs, now)
     }
 
@@ -812,7 +815,8 @@ impl Vault {
     // ---------------------------------------------------------------- passkey methods
 
     /// At once: bumps `spend_epoch` and suspends `K_s`. The new key installs after `T_known`, unless
-    /// `K_e` vetoes. A second call replaces a rotation still waiting.
+    /// `K_e` vetoes. A second call replaces a rotation still waiting. Each live request it kills is a
+    /// cancel in the snapshot's count, as it would be through `cancel`.
     pub fn cancel_all_and_rotate(
         &mut self,
         caller: &Caller,
@@ -824,6 +828,9 @@ impl Vault {
         self.require_not_frozen(now)?;
         self.auth_passkey(caller, intent, now)?;
         self.grants.retain(|g| !matches!(g.kind, GrantKind::RotateSpend { .. }));
+        for _ in self.live_pending(now) {
+            self.cancels.push(now);
+        }
         self.bump_epoch();
         self.k_s_suspended = true;
         let delay = self.policy.t_known_ms;
@@ -1006,8 +1013,10 @@ impl Vault {
 
     // ---------------------------------------------------------------- cold-key methods
 
-    /// One signature, for up to the CSV period. Bumps `spend_epoch` and cancels pending grants. It
-    /// may also renew a running freeze. Only `K_e` lifts it early.
+    /// One signature, for up to the CSV period from when it lands. A later `until` is cut to that and
+    /// not refused: a shorter freeze is safe, and a refusal in a crisis means another offline signature.
+    /// Bumps `spend_epoch` and cancels pending grants. It may also renew a running freeze. Only `K_e`
+    /// lifts it early.
     pub fn freeze(
         &mut self,
         caller: &Caller,
@@ -1017,11 +1026,10 @@ impl Vault {
     ) -> Result<(), Error> {
         self.sweep(now);
         self.auth_cold(caller, intent, now)?;
-        let max_until = now.saturating_add(self.csv_period_ms());
-        if until > max_until || until <= now {
-            return Err(Error::FreezeTooLong { max_until });
+        if until <= now {
+            return Err(Error::FreezeAlreadyOver);
         }
-        self.frozen_until = Some(until);
+        self.frozen_until = Some(until.min(now.saturating_add(self.csv_period_ms())));
         self.bump_epoch();
         self.grants.clear();
         Ok(())

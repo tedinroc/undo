@@ -323,7 +323,7 @@ test('freeze.mjs: signs from fields, refuses digests, asks first, leaks nothing'
   const written = readFileSync(out, 'utf8');
   assert.ok(!written.includes(secret), 'the intent file holds no secret');
   const intent = JSON.parse(written);
-  assert.equal(intent.args.until, now + 6 * 30_000, 'default freeze is the whole CSV period');
+  assert.equal(intent.args.until, intent.args.expires_at + 6 * 30_000, 'the default asks for past its expiry, and the contract cuts it to the whole CSV period');
   assert.equal(intent.args.vault, VAULT);
   assert.equal(intent.digest, rustOk('cold-digest', CONTRACT, VAULT, 'freeze', String(intent.args.until), String(intent.args.expires_at), '0'));
   assert.equal(rustOk('cold-check', intent.digest, intent.args.signature, secret), 'signed by intent key');

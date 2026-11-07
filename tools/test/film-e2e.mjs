@@ -9,8 +9,8 @@
 //   Run 2  no cancel: execute at zero, signed, the spend mined.
 //   Run 3  the general key at its ceiling and being refused in a burst: the cancel still goes out on the owner key.
 //
-// The test instance's wait is fixed at 5:00: the TestCoin preset has the same floor and ceiling for it, so no vault can
-// read shorter. The script moves the contract's clock with the sandbox's fast-forward to under a minute left, and the
+// The test instance's wait is 5:00, and the page makes every vault on the deployed policy. The TestCoin preset lets a
+// vault choose down to 1:00 at creation, but the film's wait is the deployed one. The script moves the contract's clock with the sandbox's fast-forward to under a minute left, and the
 // pages must follow the block time. The last stretch runs in real seconds. --real-wait makes run 2 count the whole 5:00.
 //
 //   node tools/test/film-e2e.mjs [--real-wait] [--shots DIR] [--report FILE] [--only 1,2,3]
