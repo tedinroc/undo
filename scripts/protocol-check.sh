@@ -18,7 +18,8 @@ export CARGO_TARGET_DIR="$TARGET" CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
 # Host test code needs none of the wasm flags.
 unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS
 
-tests=(protocol shell review_script review_contract review_relay review_fckey review1 review1_growth review2 review3 review4 surface)
+# review5's first test runs the sandbox clock a little over a day. On these nodes that takes under a minute.
+tests=(protocol shell review_script review_contract review_relay review_fckey review1 review1_growth review2 review3 review4 review5 surface)
 measure=0
 case "${1:-}" in
   --measure) measure=1; tests=(measure); shift ;;

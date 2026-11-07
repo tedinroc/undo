@@ -127,12 +127,24 @@ impl SeenRing {
     }
 }
 
+/// Outflow to anywhere but the vault itself, for the known-destination cap. `at` starts at propose and
+/// moves to now at each execute that asks the signer for this request, and when its last signature
+/// lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "borsh", derive(borsh::BorshSerialize, borsh::BorshDeserialize))]
 struct OutflowEntry {
     at: Ms,
     amount: Sats,
     request: RequestId,
+}
+
+impl OutflowEntry {
+    /// A pending request holds its reservation for as long as it lives, however long its expiry or a hold
+    /// makes that. After execute the entry counts for a day from `at`, so what reaches the signer in any
+    /// 24 h stays within the cap, and a deleted request's outflow still counts for its day.
+    fn counts(&self, pending: &[RequestId], now: Ms) -> bool {
+        pending.contains(&self.request) || now < self.at.saturating_add(DAY)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -374,8 +386,8 @@ impl Vault {
                 .is_some_and(|beat| now.saturating_sub(beat) <= HEARTBEAT_STALE_MS)
     }
 
-    /// New-destination delay right now. It fails slow: a dead guard doubles the delay and blocks
-    /// nothing.
+    /// New-destination delay right now. It fails slow: a dead guard switches to the unguarded delay,
+    /// which the bounds keep at or above the guarded one, and blocks nothing.
     pub fn delay_now(&self, now: Ms) -> Ms {
         if self.guard_online(now) {
             self.policy.t_new_ms
@@ -414,7 +426,7 @@ impl Vault {
     pub fn outflow_used_24h(&self, now: Ms) -> Sats {
         self.outflow_window
             .iter()
-            .filter(|e| now < e.at.saturating_add(DAY))
+            .filter(|e| e.counts(&self.pending, now))
             .fold(0, |sum, e| sum.saturating_add(e.amount))
     }
 
@@ -424,8 +436,11 @@ impl Vault {
         self.fee_window.len()
     }
 
-    /// The same for the 24 h outflow window. A known destination's tier reads only the last day, so
-    /// this matters for the row's size and not for any rule.
+    /// The same for the outflow window: pending requests, and what reached the signer in the last day.
+    /// Execute asks for a paying request's signatures only within a day of its first execute, and the
+    /// answer that completes it, which can land up to the signer's answer time after the last ask,
+    /// moves its time once more. So this holds the first executes of at most two days and that answer
+    /// time, plus the pending cap.
     pub fn outflow_window_entries(&self) -> usize {
         self.outflow_window.len()
     }
@@ -605,6 +620,23 @@ impl Vault {
                 if !request.in_flight.is_empty() && height < retry_at_height {
                     return Err(Error::InFlight { retry_at_height });
                 }
+                // Its outflow counts for a day from its last signature request, and a proposal made after
+                // that day was checked without it. So from a day after its first execute, execute asks
+                // the signer for nothing more for a request that pays out. An answer to an earlier ask
+                // can still land after that, and the one that completes the request moves its outflow's
+                // time. Reclaim, open after `T_stuck`, is the way out for its coins.
+                if request.tier != Tier::SelfSpend {
+                    let mut closed_at = request.first_execute_at.unwrap_or(now).saturating_add(DAY);
+                    // Every execute here moves the entry to now, so this build's entry outlasts that
+                    // close. One kept from an earlier build is timed at propose and leaves a day after
+                    // it, and a retry with no entry left would sign outflow that counts nowhere.
+                    if now < closed_at && !self.outflow_window.iter().any(|e| e.request == id) {
+                        closed_at = request.proposed_at.saturating_add(DAY).min(now);
+                    }
+                    if now >= closed_at {
+                        return Err(Error::RetryWindowClosed { closed_at });
+                    }
+                }
             }
             RequestStatus::Signed => return Err(Error::AlreadySigned),
         }
@@ -616,7 +648,9 @@ impl Vault {
         request.attempt += 1;
         request.in_flight = indices.clone();
         request.last_attempt_height = height;
-        Ok(SignBatch { attempt: request.attempt, indices })
+        let attempt = request.attempt;
+        self.stamp_outflow(id, now);
+        Ok(SignBatch { attempt, indices })
     }
 
     /// Callback from the signer. `recomputed` is the digest the shell rebuilt from current request
@@ -660,6 +694,7 @@ impl Vault {
                     entry.state = OutpointState::Spent { request: id };
                 }
             }
+            self.stamp_outflow(id, now);
         }
         SignedOutcome::Stored { complete }
     }
@@ -1169,7 +1204,16 @@ impl Vault {
             self.kill_pending(id);
         }
         self.fee_window.retain(|(at, _)| now < at.saturating_add(DAY));
-        self.outflow_window.retain(|e| now < e.at.saturating_add(DAY));
+        let pending = &self.pending;
+        self.outflow_window.retain(|e| e.counts(pending, now));
+    }
+
+    /// The request's outflow counts for a day from now: execute has asked the signer for it, or its last
+    /// signature has landed.
+    fn stamp_outflow(&mut self, id: RequestId, now: Ms) {
+        for entry in self.outflow_window.iter_mut().filter(|e| e.request == id) {
+            entry.at = now;
+        }
     }
 
     /// Pending to deleted: outpoints freed, reserved outflow released.

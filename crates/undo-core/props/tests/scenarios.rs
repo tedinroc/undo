@@ -1805,7 +1805,8 @@ fn the_outflow_window_leaves_the_row_after_a_day() {
     h.advance(h.v.delay_now(h.now));
     h.execute(r.id, 16).unwrap();
     assert_eq!(h.v.outflow_window_entries(), 1, "an executed spend stays counted");
-    h.advance(DAY - h.v.delay_now(h.now) - 1);
+    // A day from the execute, which asked the signer for it, not from the propose.
+    h.advance(DAY - 1);
     let (caller, intent) = (h.pass_caller(), h.pk());
     h.tx(|v, now| v.remove_destination(&caller, intent, &[0x00], now)).unwrap();
     assert_eq!(h.v.outflow_window_entries(), 1, "one millisecond short of a day");
@@ -2088,7 +2089,7 @@ fn status_reads_as_a_designed_state() {
     let mut h = H::test_coin();
     let (ok, _) = h.v.status_lines(h.now);
     assert!(!ok, "a guard is named and has never beaten");
-    assert!(text_of(&h).contains("guard offline, no heartbeat yet: new-destination delay doubled, funds movable"));
+    assert!(text_of(&h).contains("guard offline, no heartbeat yet: new-destination delay 10 min instead of 5 min, funds movable"));
     assert!(text_of(&h).contains("cold-key exit: a coin 6 blocks old can leave with the recovery file"));
 
     h.heartbeat().unwrap();
@@ -2099,7 +2100,7 @@ fn status_reads_as_a_designed_state() {
     h.advance(HEARTBEAT_STALE_MS);
     assert!(h.v.status_lines(h.now).0, "exactly twenty minutes is still online");
     h.advance(1);
-    assert!(text_of(&h).contains(&format!("guard offline since {}: new-destination delay doubled, funds movable", utc_text(beat))));
+    assert!(text_of(&h).contains(&format!("guard offline since {}: new-destination delay 10 min instead of 5 min, funds movable", utc_text(beat))));
     assert!(!h.v.status_lines(h.now).0);
 
     let (caller, intent) = (h.pass_caller(), h.pk());
@@ -2108,7 +2109,7 @@ fn status_reads_as_a_designed_state() {
     assert!(text_of(&h).contains("The cold key can veto it"));
     h.advance(h.v.policy.t_new_ms);
     h.apply(h.v.grants[0].id).unwrap();
-    assert!(text_of(&h).contains("no guard: new-destination delay doubled, funds movable"));
+    assert!(text_of(&h).contains("no guard: new-destination delay 10 min instead of 5 min, funds movable"));
     assert!(h.v.status_lines(h.now).0, "no guard at all is a choice, not a fault");
 
     // The signer's last answer failed, then a good one clears it.
@@ -2252,7 +2253,7 @@ fn status_says_an_executed_request_keeps_signing_after_a_rotation() {
 
     h.rotate(SPEND_2).unwrap();
     let text = text_of(&h);
-    assert!(text.contains("requests not yet executed are dead, one already executed keeps signing"), "{text}");
+    assert!(text.contains("requests not yet executed are dead. One already executed can still ask the signer for its missing signatures"), "{text}");
     assert!(!text.contains("every older request is dead"), "{text}");
     assert!(text.contains(&format!("last spend reached signing at {}, before the spend key was rotated", utc_text(spent))), "{text}");
 
@@ -2328,11 +2329,11 @@ fn only_a_rotation_grant_reads_as_a_key_waiting() {
 #[test]
 fn funds_movable_is_said_only_when_it_is_true() {
     let mut h = H::test_coin();
-    assert!(text_of(&h).contains("no heartbeat yet: new-destination delay doubled, funds movable"));
+    assert!(text_of(&h).contains("no heartbeat yet: new-destination delay 10 min instead of 5 min, funds movable"));
     let until = h.now + MINUTE;
     h.freeze(until).unwrap();
     let text = text_of(&h);
-    assert!(text.contains("no heartbeat yet: new-destination delay doubled") && !text.contains("funds movable"), "{text}");
+    assert!(text.contains("no heartbeat yet: new-destination delay 10 min instead of 5 min") && !text.contains("funds movable"), "{text}");
     h.advance(MINUTE);
     assert!(text_of(&h).contains("funds movable"), "the freeze lapsed");
     h.rotate(SPEND_2).unwrap();
@@ -2349,10 +2350,10 @@ fn funds_movable_is_said_only_when_it_is_true() {
     assert!(!text_of(&h).contains("funds movable"), "not active");
     h.v.active = true;
     h.v.guard = None;
-    assert!(text_of(&h).contains("no guard: new-destination delay doubled, funds movable"));
+    assert!(text_of(&h).contains("no guard: new-destination delay 10 min instead of 5 min, funds movable"));
     h.rotate(SPEND_2).unwrap();
     let text = text_of(&h);
-    assert!(text.contains("no guard: new-destination delay doubled") && !text.contains("funds movable"), "{text}");
+    assert!(text.contains("no guard: new-destination delay 10 min instead of 5 min") && !text.contains("funds movable"), "{text}");
     h.heartbeat().unwrap_err();
     h.v.guard = Some("guard.test".into());
     h.heartbeat().unwrap();

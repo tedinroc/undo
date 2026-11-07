@@ -320,7 +320,7 @@ async fn a_rotation_after_execute_does_not_read_as_cancelled() -> Result<()> {
     h.rotate(&mut v, &ed("r4-late-new").verifying_key().to_bytes()).await?;
     let (ok, text) = status(&h, &v).await?;
     assert!(!ok);
-    assert!(text.contains("requests not yet executed are dead, one already executed keeps signing"), "{text}");
+    assert!(text.contains("requests not yet executed are dead. One already executed can still ask the signer for its missing signatures, a self-spend with no time limit and one that pays out for at most 24 h after its first execute, after which its coins come back by reclaim with a new key"), "{text}");
     assert!(!text.contains("every older request is dead"), "{text}");
     assert!(text.contains("before the spend key was rotated"), "{text}");
     assert_eq!(h.request(&v, id).await?["status"], "Signing");
@@ -341,7 +341,7 @@ async fn a_rotation_after_execute_does_not_read_as_cancelled() -> Result<()> {
     h.execute_with(h.execute_call(&v, id, Some(1)), 1, false).await?.into_result()?;
     h.rotate(&mut v, &ed("r4-split-new").verifying_key().to_bytes()).await?;
     assert!(!h.reads_cancelled(&v, id).await?);
-    assert!(status(&h, &v).await?.1.contains("one already executed keeps signing"));
+    assert!(status(&h, &v).await?.1.contains("One already executed can still ask the signer for its missing signatures"));
     h.execute_with(h.execute_call(&v, id, None), 1, false).await?.into_result()?;
     assert_eq!(h.request(&v, id).await?["status"], "Signed");
     Ok(())
@@ -391,12 +391,12 @@ async fn status_says_funds_movable_only_when_they_are() -> Result<()> {
     let args = h.create_args(&k, &call).await?;
     h.create_raw(args, call.deposit_milli).await?.into_result()?;
     let mut v = vault_of(&h, k, 6);
-    assert!(status(&h, &v).await?.1.contains("delay doubled, funds movable"));
+    assert!(status(&h, &v).await?.1.contains("delay 10 min instead of 5 min, funds movable"));
     h.rotate(&mut v, &ed("r4-mov-new").verifying_key().to_bytes()).await?;
     let until = h.now_ms().await? + 60_000;
     cold(&h, &v, "freeze", &until, json!({"until": until})).await?.into_result()?;
     let text = status(&h, &v).await?.1;
-    assert!(text.contains("frozen until") && text.contains("delay doubled") && !text.contains("funds movable"), "{text}");
+    assert!(text.contains("frozen until") && text.contains("delay 10 min instead of 5 min") && !text.contains("funds movable"), "{text}");
     Ok(())
 }
 
@@ -444,7 +444,7 @@ async fn the_signer_line_promises_no_retry() -> Result<()> {
     assert!(h.request(&v, id).await?.is_null());
     let text = status(&h, &v).await?.1;
     assert!(text.contains("the signer's last answer failed at"), "{text}");
-    assert!(text.contains("a request still signing can retry"), "{text}");
+    assert!(text.contains("a request still signing can retry, a self-spend with no time limit and one that pays out for at most 24 h after its first execute, after which its coins come back by reclaim, at most one per "), "{text}");
     assert!(!text.contains("retry is open") && !text.contains("signing unavailable"), "{text}");
     Ok(())
 }
