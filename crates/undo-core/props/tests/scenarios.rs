@@ -2241,7 +2241,7 @@ const SPEND_3: [u8; 32] = [0x13; 32];
 
 /// A rotation cannot speak for a request past its point of no return, and the line says so.
 #[test]
-fn status_says_an_executed_request_keeps_signing_after_a_rotation() {
+fn status_says_an_executed_request_can_still_be_signed_after_a_rotation() {
     let mut h = H::test_coin();
     let id = h.propose(&[(op(1), COIN)], &p2wpkh(0xa1), COIN - 500, None).unwrap().id;
     h.advance(h.v.requests[&id].unlock - h.now);
