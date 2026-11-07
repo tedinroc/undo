@@ -88,6 +88,7 @@ describe('rules with no page around them', () => {
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } }), /today's limit/);
     assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling', calls_fit: true } }), null, 'a vault no longer fits, but this tab can still send');
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'state_store_down' } }), /state_store_down/);
+    assert.match(relaySentence({ reachable: true, general: { up: false, why: 'relay_reserve' } }), /keeping what it has left for cancels/);
   });
 
   test('amount is the coins, before fee', () => {

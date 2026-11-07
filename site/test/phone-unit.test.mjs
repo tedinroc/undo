@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { BLOCKED_MS, classifyPasskeyError, inAppBrowser, isMobile, passkeyProblem, sensePasskeys } from '../pages/p/sense.mjs';
+import { OWN_PATH_LINE, ownCancelFile, ownCancelFileName, ownCancelWords, relayIsWhy, relayRefusedIt } from '../pages/p/own-cancel.mjs';
+import { relayBodyProblem } from '../lib/relay-table.mjs';
 
 const PAGES = join(dirname(fileURLToPath(import.meta.url)), '../pages');
 const read = (path) => readFileSync(join(PAGES, path), 'utf8');
@@ -94,4 +96,28 @@ test('the button says only what the design allows, and no text on the page says 
   assert.match(read('p/h7.mjs'), /label: 'operator'/);
   assert.equal(/\b5:00\b/.test(page), false, 'no fixed clock text');
   assert.equal(/Date\.now\(\)\s*[-+]\s*\d{5}/.test(page), false);
+});
+
+test('AUDIT-1: a cancel the relay will not send stays on the page as a file tools/cancel.mjs sends, and the page says how', () => {
+  for (const code of ['not_this_relays', 'daily_ceiling', 'rate_limited', 'relay_down', 'rpc_down', 'tx_refused', 'relay_reserve']) assert.equal(relayRefusedIt(code), true, code);
+  for (const code of ['assertion_refused', 'already_sent', 'bad_request', 'would_refuse']) assert.equal(relayRefusedIt(code), false, `${code} says the cancel itself would not work`);
+  for (const why of ['daily_ceiling', 'not_this_relays', 'relay_down', 'owner_key_low']) assert.equal(relayIsWhy(why), true, why);
+  for (const why of ['no_passkey_here', 'origin_not_allowed', 'wrong_site_for_passkey', 'frozen', 'not_cancellable']) assert.equal(relayIsWhy(why), false, why);
+  const args = { vault: 'cd'.repeat(32), new_k_s: 'aa'.repeat(32), nonce: 3, expires_at: Date.UTC(2026, 10, 7, 13, 5), assertion: { authenticator_data: '00'.repeat(37), client_data_json: '7b7d', signature: '00'.repeat(64) } };
+  const file = JSON.parse(ownCancelFile({ contract: 'tmp.example', method: 'cancel_all_and_rotate', args }));
+  assert.deepEqual(Object.keys(file), ['format', 'contract', 'method', 'args']);
+  assert.equal(file.format, 'undo-owner-call-v1', 'the format tools/cancel.mjs reads');
+  assert.equal(relayBodyProblem({ method: file.method, args: file.args }), null, 'in the shape the relay and the contract take');
+  assert.equal(ownCancelFileName(args.vault), 'undo-cancel-cdcdcdcd.json');
+  const words = ownCancelWords({ expiresAt: args.expires_at, vaultHex: args.vault });
+  assert.match(words, /until 13:05 UTC/);
+  assert.match(words, /node tools\/cancel\.mjs --file undo-cancel-cdcdcdcd\.json --account YOUR-ACCOUNT/);
+  assert.match(OWN_PATH_LINE, /tools\/cancel\.mjs/);
+  assert.match(OWN_PATH_LINE, /tools\/freeze\.mjs --method cancel/);
+  const page = read('p/phone.mjs');
+  assert.match(page, /if \(signed && relayRefusedIt\(err\.code\)\) P\.signed = signed;/, 'a refused tap keeps its signed call');
+  assert.match(page, /onRelayRefused\(err, \{ method: 'cancel_all_and_rotate', args: callArgs/);
+  assert.match(page, /'Save the signed cancel'/);
+  assert.match(page, /'Sign a cancel to send yourself'/);
+  assert.match(page, /ownCancelNodes\(\),\n\s+h\('button', \{ id: 'cancel'/, 'the request screen shows it too, after a refused tap');
 });
