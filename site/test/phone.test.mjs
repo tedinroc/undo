@@ -16,7 +16,7 @@ import { base64ToBytes } from './phone-helpers.mjs';
 import { buildCreateArgs, buildPropose, newVaultKeys, rpIdHashOf, vaultIdOf } from '../lib/intents.mjs';
 import { NearReader } from '../lib/near-read.mjs';
 import { fundsPowTarget, solvePow } from '../lib/pow.mjs';
-import { executeTgas } from '../lib/relay-table.mjs';
+import { executeTgas, OWN_ACCOUNT_PATH } from '../lib/relay-table.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
 import { stageAvailable, startStage } from './stage.mjs';
@@ -253,6 +253,69 @@ const clockMs = (text) => {
 const noHorizontalScroll = () => cdp.page('return document.documentElement.scrollWidth <= window.innerWidth;');
 const noScrollAtAll = () => cdp.page('return document.documentElement.scrollHeight <= window.innerHeight;');
 
+// ---------------------------------------------------------------- the two phone sizes the README and the film need
+
+const PHONE_SIZES = [[390, 844], [375, 667]];
+
+async function setPhoneSize(width, height) {
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 2, mobile: true });
+  // The screen, not the window: a page wider than the phone widens the window with it.
+  await waitFor(`the phone at ${width}x${height}`, () => cdp.page(`return screen.width === ${width} && screen.height === ${height};`));
+  // The resize event, the page's refit on the next frame, and a frame after that.
+  await cdp.page('return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(r))));');
+}
+
+/**
+ * `check` at 390x844 and at 375x667, each with a screenshot taken first, and the page left at 390x844. Both sizes are
+ * looked at before any failure is reported, so a run on a broken page still leaves both screenshots.
+ */
+async function atPhoneSizes(name, check) {
+  const failed = [];
+  try {
+    for (const [width, height] of PHONE_SIZES) {
+      await setPhoneSize(width, height);
+      await shot(`${name}-${width}x${height}`);
+      try {
+        await check({ size: `${width}x${height}`, width, height });
+      } catch (err) {
+        failed.push(err);
+      }
+    }
+  } finally {
+    await setPhoneSize(390, 844);
+  }
+  if (failed.length) throw failed[0];
+}
+
+/** No sideways scroll on a phone this wide: nothing wider than the screen, and the window not widened to fit it. */
+const fitsAcross = (width) => cdp.page(`return document.documentElement.scrollWidth <= ${width} && innerWidth <= ${width};`);
+
+/** All of the element on the phone's screen with the page at its top: what a person sees without scrolling. */
+async function assertWhole(selector, { size, width, height }) {
+  const r = await cdp.page(`scrollTo(0, 0); const b = document.querySelector(${JSON.stringify(selector)})?.getBoundingClientRect();
+    return b ? { top: Math.round(b.top), bottom: Math.round(b.bottom), left: Math.round(b.left), right: Math.round(b.right) } : null;`);
+  assert.ok(r, `no ${selector} at ${size}`);
+  assert.ok(r.top >= 0 && r.left >= 0 && r.bottom <= height && r.right <= width, `${selector} is not whole on the ${size} screen: ${JSON.stringify(r)}`);
+}
+
+/** How many lines `phrase` takes inside `selector`. A command or flag set on one line reads as one. */
+const linesOf = (selector, phrase) => cdp.page(`const root = document.querySelector(${JSON.stringify(selector)});
+  if (!root) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = []; let text = '';
+  while (walker.nextNode()) { nodes.push([walker.currentNode, text.length]); text += walker.currentNode.data; }
+  const at = text.indexOf(${JSON.stringify(phrase)});
+  if (at < 0) return null;
+  const locate = (i) => { for (let k = nodes.length - 1; k >= 0; k -= 1) if (nodes[k][1] <= i) return [nodes[k][0], i - nodes[k][1]]; return null; };
+  const range = document.createRange();
+  range.setStart(...locate(at));
+  range.setEnd(...locate(at + ${JSON.stringify(phrase)}.length));
+  return new Set([...range.getClientRects()].filter((b) => b.width > 0).map((b) => Math.round(b.bottom))).size;`);
+
+const digitsMode = () => cdp.page('return document.documentElement.dataset.digits ?? null;');
+const cancelledLayout = () => cdp.page(`const top = (id) => { const e = document.getElementById(id); return e ? Math.round(e.getBoundingClientRect().top) : null; };
+  return { digits: top('digits'), stamp: top('stamp'), key: top('key-line') };`);
+
 // ---------------------------------------------------------------- the film's path
 
 test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap stamps it, the contract agrees, a reload stays stamped. [mock-signer] [virtual authenticator]', { skip, timeout: 120_000 }, async (t) => {
@@ -303,7 +366,13 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
   await clickOn('#cancel');
   await waitState('cancelled');
   assert.ok(Math.abs((await digitsTop()) - topBefore) <= 1, `the digits stay where they were when the stamp lands: ${topBefore} then ${await digitsTop()}`);
+  assert.equal(await digitsMode(), 'held', 'and hold that frame');
   assert.ok(await noScrollAtAll(), 'and the stamp fits under them');
+  await shot('02a-cancelled-stamp');
+  // Then they settle where a reload draws them: one layout for the cancelled screen, however it was reached.
+  await waitFor('the digits to settle', async () => (await digitsMode()) === 'still', 5000);
+  const settled = await cancelledLayout();
+  assert.ok(settled.digits < topBefore, `they moved up to the top of the screen: ${topBefore} then ${settled.digits}`);
   const keyLineTop = await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;');
   await waitFor('the hash, once the chain says the cancel ran', hashOnScreen);
   assert.equal(await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;'), keyLineTop, 'its slot was kept, so the line under it does not jump');
@@ -336,12 +405,16 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
     assert.equal(await textOf('#coin-line'), 'The coin never moved.');
   }
   await shot('02-cancelled');
+  await atPhoneSizes('02-cancelled', async (at) => {
+    assert.ok(await fitsAcross(at.width), at.size);
+    assert.ok(await noScrollAtAll(), `all of it on one ${at.size} screen`);
+  });
 
   // The digits stay where they stopped.
   await sleep(1500);
   assert.equal(await cdp.page('return document.getElementById("digits").dataset.clock;'), shown.clock);
 
-  assert.ok(Math.abs((await digitsTop()) - topBefore) <= 1, 'and they stay there when the coin line lands');
+  assert.deepEqual(await cancelledLayout(), settled, 'and they stay there when the coin line lands');
   assert.ok(await noScrollAtAll(), 'all of it on one screen');
 
   // Sticky: chain plus what this tab saw.
@@ -349,7 +422,13 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
   await waitState('cancelled');
   const again = await cdp.page(`return { clock: document.getElementById('digits')?.dataset.clock ?? null, hash: document.querySelector('.hash')?.innerText ?? null, stamp: document.getElementById('stamp').innerText, slam: document.getElementById('stamp').classList.contains('slam') };`);
   assert.deepEqual(again, { clock: shown.clock, hash: shown.hash, stamp: 'CANCELLED', slam: false }, 'and it does not stamp again');
+  assert.equal(await digitsMode(), 'still');
+  assert.deepEqual(await cancelledLayout(), settled, 'the same layout as live, after a reload');
   await shot('03-cancelled-after-reload');
+  await atPhoneSizes('03-cancelled-after-reload', async (at) => {
+    assert.ok(await fitsAcross(at.width), at.size);
+    assert.ok(await noScrollAtAll(), `all of it on one ${at.size} screen`);
+  });
 
   // Another device with only the vault id: still cancelled, read from the chain, with no number it did not see.
   await cdp.page('sessionStorage.clear();');
@@ -409,6 +488,10 @@ test('at zero Cancel still works; once the contract has signed there is no stamp
   assert.equal(await textOf('#too-late-unsent'), 'No local regtest node has that transaction yet. Anyone can send it.');
   assert.equal((await cdp.page('return document.body.innerText;')).includes('local regtest txid'), false);
   await shot('05-too-late');
+  await atPhoneSizes('05-too-late', async (at) => {
+    assert.ok(await fitsAcross(at.width), `the address wraps at ${at.size}, and nothing runs off the side`);
+    await assertWhole('#too-late-to', at);
+  });
   await reload();
   await waitState('too_late');
   await waitFor('the same after a reload', () => exists('#too-late-unsent'));
@@ -461,6 +544,11 @@ test('relay down: no button, a plain sentence, the clock still the contract\'s, 
     assert.ok(clockMs(await cdp.page('return document.getElementById("digits").dataset.clock;')) < clockMs(a), 'the clock keeps falling');
     assert.ok(await noScrollAtAll(), 'and nothing has pushed it off the screen');
     await shot('07-relay-down');
+    await atPhoneSizes('07-relay-down', async (at) => {
+      await assertWhole('#sign-own', at);
+      assert.ok(await fitsAcross(at.width), at.size);
+      for (const piece of ['tools/cancel.mjs', 'tools/freeze.mjs --method cancel']) assert.equal(await linesOf('#tool', piece), 1, `${piece} on one line at ${at.size}`);
+    });
   });
   await waitState('request', 12_000);
   assert.ok(await exists('#cancel'), 'the status poll brought the button back');
@@ -553,10 +641,50 @@ test('the relay refuses, or the contract refuses: its own words, verbatim, and t
     assert.equal(await textOf('#notice'), 'Not cancelled.');
     await waitState('request');
     await shot('09-refused-verbatim');
+    await waitFor('the signed cancel to save', () => exists('#save-cancel'));
+    await atPhoneSizes('09-refused-verbatim', async (at) => {
+      await assertWhole('#cancel', at);
+      assert.ok(await fitsAcross(at.width), at.size);
+      const gap = await cdp.page('return document.getElementById("cancel").getBoundingClientRect().top - document.getElementById("save-cancel").getBoundingClientRect().bottom;');
+      assert.ok(gap >= 8, `a gap between Save and Cancel at ${at.size}: ${gap} px`);
+      for (const piece of ['node tools/cancel.mjs', `--file undo-cancel-${v.vaultHex.slice(0, 8)}.json`, '--account YOUR-ACCOUNT']) {
+        assert.equal(await linesOf('#own-path', piece), 1, `${piece} on one line at ${at.size}`);
+      }
+    });
   });
   // The button works after that: a real tap, a real stamp.
   await clickOn('#cancel');
   await waitState('cancelled');
+});
+
+test('a vault this relay did not make: the code once and its sentence once, the signed cancel to save, whole on a phone screen', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('not-ours');
+  // A made-up coin, so the unknown-coin flag shows too: the longest this screen gets.
+  await thiefProposes(v);
+  const live = await (await fetch(`${stage.origin}/api/relay`)).json();
+  const message = `this relay sends cancels only for vaults it made. ${OWN_ACCOUNT_PATH}`;
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  await intercept('*/api/relay*', async (req) => (req.method !== 'POST' ? { status: 200, body: live } : { status: 422, body: { ok: false, code: 'not_this_relays', message } }), async () => {
+    await clickOn('#cancel');
+    await waitState('no_button');
+    await waitFor('the signed cancel to save', () => exists('#save-cancel'));
+    await shot('06-not-this-relays');
+    assert.equal(await cdp.page('return document.getElementById("why").dataset.why;'), 'not_this_relays');
+    assert.ok(await exists('#coin-check'));
+    const text = await cdp.page('return document.body.innerText;');
+    const count = (phrase) => text.toLowerCase().split(phrase.toLowerCase()).length - 1;
+    assert.equal(count('sends cancels only for vaults it made'), 1, `the sentence once: ${text}`);
+    assert.equal(count('This relay is a convenience'), 0, 'and the relay\'s other sentences are not set over the page\'s own');
+    assert.equal(await textOf('#verbatim'), 'not_this_relays', 'the code, once');
+    await atPhoneSizes('06-not-this-relays', async (at) => {
+      await assertWhole('#save-cancel', at);
+      assert.ok(await fitsAcross(at.width), at.size);
+      for (const piece of ['node tools/cancel.mjs', `--file undo-cancel-${v.vaultHex.slice(0, 8)}.json`, '--account YOUR-ACCOUNT']) {
+        assert.equal(await linesOf('#own-path', piece), 1, `${piece} on one line at ${at.size}`);
+      }
+    });
+  });
 });
 
 // ---------------------------------------------------------------- a wrong link
@@ -644,6 +772,11 @@ test('WebAuthn blocked: the sheet never appears, the page says so, and hides the
     assert.equal(await exists('#retry-passkey'), true);
     assert.ok(await noHorizontalScroll());
     await shot('11-webauthn-blocked');
+    await atPhoneSizes('11-webauthn-blocked', async (at) => {
+      await assertWhole('#retry-passkey', at);
+      assert.ok(await fitsAcross(at.width), at.size);
+      assert.equal(await linesOf('#tool', 'tools/freeze.mjs --method cancel'), 1, `the command on one line at ${at.size}`);
+    });
   } finally {
     await clearInjected();
   }
@@ -659,6 +792,10 @@ test('no WebAuthn at all, no platform authenticator on a phone, no secure page: 
     assert.match(await textOf('#why'), /no passkeys/);
     assert.equal(await exists('#cancel'), false);
     await shot('12-no-webauthn');
+    await atPhoneSizes('12-no-webauthn', async (at) => {
+      assert.ok(await fitsAcross(at.width), at.size);
+      assert.equal(await linesOf('#tool', 'tools/freeze.mjs --method cancel'), 1, `the command on one line at ${at.size}`);
+    });
     await go('/p/', {});
     await waitState('no_vault');
     assert.match(await textOf('#why'), /no passkeys/);
@@ -674,6 +811,10 @@ test('no WebAuthn at all, no platform authenticator on a phone, no secure page: 
     await waitState('no_button');
     assert.match(await textOf('#why'), /no Face ID, fingerprint or screen lock/);
     await shot('13-no-platform');
+    await atPhoneSizes('13-no-platform', async (at) => {
+      assert.ok(await fitsAcross(at.width), at.size);
+      assert.equal(await linesOf('#tool', 'tools/freeze.mjs --method cancel'), 1, `the command on one line at ${at.size}`);
+    });
   } finally {
     await clearInjected();
   }
@@ -1237,6 +1378,8 @@ test('attack 11: the relay\'s answer held back: the stamp lands first, and the h
     await waitState('cancelled', 15_000);
     assert.equal(await hashOnScreen(), null, 'nothing is shown before the chain says so');
     assert.ok(await exists('#near-tx'), 'but its place is kept');
+    await waitFor('the digits to settle', async () => (await digitsMode()) === 'still', 5000);
+    assert.equal(await hashOnScreen(), null, 'the hash is still held back');
     const keyLine = await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;');
     await waitFor('the hash', hashOnScreen, 15_000);
     assert.equal(await cdp.page('return document.getElementById("key-line").getBoundingClientRect().top;'), keyLine);

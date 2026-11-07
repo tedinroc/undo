@@ -14,7 +14,7 @@ import { buildRecovery } from '/tools/lib/recovery.mjs';
 import { runH7 } from './h7.mjs';
 import { runOperatorCheck } from './operator-check.mjs';
 import { ClockFace, h, hashBlock, satsText, screen, setState, show, sumInputs } from './kit.mjs';
-import { OWN_PATH_LINE, ownCancelFile, ownCancelFileName, ownCancelWords, relayIsWhy, relayRefusedIt } from './own-cancel.mjs';
+import { OWN_PATH_PARTS, ownCancelFile, ownCancelFileName, ownCancelParts, RECOVERY_PATH_PARTS, relayIsWhy, relayRefusedIt } from './own-cancel.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
 import { parsePhoneFragment, recallCredential, recallSeen, rememberCredential, rememberSeen, thiefLink, writeFragment } from './phone-fragment.mjs';
 import { openElsewhere, passkeyProblem, problemWords, screenAwake, sensePasskeys } from './sense.mjs';
@@ -112,6 +112,12 @@ async function main() {
 
   P.fragment = parsePhoneFragment(location.hash);
   window.addEventListener('hashchange', () => location.reload());
+  // A turned phone or a browser bar that comes and goes changes the room, so the control is fitted again.
+  let refit = 0;
+  window.addEventListener('resize', () => {
+    cancelAnimationFrame(refit);
+    refit = requestAnimationFrame(() => { if (P.screen && P.screen !== 'cancelled') keepControlOnScreen(); });
+  });
   // Test mode is for one phone check, and a final build sets this off, so `#h7=1` is then only an ignored field.
   if (P.fragment.h7 && config.h7) {
     runH7(ctx, P.fragment, P.relay);
@@ -400,8 +406,13 @@ function onCancelled(live) {
   const reading = P.face?.text ?? null;
   if (reading && !P.frozenText) P.frozenText = reading;
   P.stampLive = live;
-  // The digits stay exactly where they were when the stamp lands, because this frame is on film.
-  if (live && P.face?.wrap.isConnected) P.pin = { top: P.face.wrap.getBoundingClientRect().top };
+  // The digits stay exactly where they were when the stamp lands, because this frame is on film. Then they settle
+  // where a reload draws them, so the cancelled screen has one layout however it was reached.
+  if (live && P.face?.wrap.isConnected) {
+    const pin = { top: P.face.wrap.getBoundingClientRect().top };
+    P.pin = pin;
+    setTimeout(() => settleDigits(pin), STAMP_HOLD_MS);
+  }
   if (P.frozenText) {
     P.frozenBy[P.r] = P.frozenText;
     saveSeen();
@@ -619,6 +630,9 @@ function onTapFailed(err) {
   judge();
 }
 
+/** Refusals the no-button screen puts in its own headline. */
+const SAID_BY_THE_SCREEN = new Set(['not_this_relays']);
+
 /** `signed` is the call the relay was given. When the relay, not the cancel, was the problem, the page keeps it. */
 function onRelayRefused(err, signed = null) {
   P.tap = null;
@@ -630,6 +644,8 @@ function onRelayRefused(err, signed = null) {
     if (err.code === 'relay_down') P.relay = { ...P.relay, reachable: false, owner: { up: false, why: 'relay_down' } };
     else if (err.code === 'daily_ceiling') P.relay = { ...P.relay, owner: { up: false, why: 'daily_ceiling', resets_at: err.resetsAt } };
     else if (err.code === 'rate_limited') P.notice = { warn: true, say: `Not cancelled. Too many tries on this vault. Wait ${err.retryAfterS ?? 10} s and tap again.`, words: null };
+    // The screen that follows says this one in its own headline, so the relay's sentence would say it twice.
+    else if (SAID_BY_THE_SCREEN.has(err.code)) P.notice = { warn: true, say: 'Not cancelled.', words: err.code };
     else P.notice = { warn: true, say: 'Not cancelled.', words: err.verbatim ?? `${err.code}: ${err.message}` };
     P.statusAt = 0;
   } else {
@@ -721,9 +737,14 @@ function ownCancelNodes() {
   const held = heldSigned();
   if (!held) return null;
   return [
-    h('p', { class: 'small', id: 'own-path' }, ownCancelWords({ expiresAt: held.expiresAt, vaultHex: P.v })),
+    h('p', { class: 'small', id: 'own-path' }, partNodes(ownCancelParts({ expiresAt: held.expiresAt, vaultHex: P.v }))),
     h('button', { class: 'go quiet', type: 'button', id: 'save-cancel', onclick: saveSigned }, 'Save the signed cancel'),
   ];
+}
+
+/** Words as text, and each command in one piece that never breaks inside a flag. */
+function partNodes(parts) {
+  return parts.map((p) => (typeof p === 'string' ? p : h('code', { class: 'cmd' }, p.cmd)));
 }
 
 function saveSigned() {
@@ -848,8 +869,48 @@ function clockBlock(s) {
 }
 
 function afterAttach() {
-  P.face?.fit();
-  if (P.screen === 'cancelled') pinDigits();
+  const root = document.documentElement;
+  if (P.screen === 'cancelled') {
+    screen().classList.remove('snug');
+    P.face?.fit();
+    pinDigits();
+    root.dataset.digits = P.pin && !P.pin.settled ? 'held' : 'still';
+    return;
+  }
+  delete root.dataset.digits;
+  keepControlOnScreen();
+}
+
+/** The control a screen is for: Cancel, the slot standing in for it, or the last button in the column. */
+function screenControl() {
+  return document.getElementById('cancel') ?? screen().querySelector('.slot') ?? [...screen().querySelectorAll('button')].pop() ?? null;
+}
+
+const overflowY = () => document.documentElement.scrollHeight - window.innerHeight;
+
+/**
+ * Cancel, or what a screen offers in its place, whole on the screen, whatever else has something to say. The digits give
+ * up size first, to 60% of what fits, then the sentences get smaller, then the digits go on down to 40%. Each step is
+ * measured, because fonts and phones differ. A screen with no control just gets the digits as large as they fit.
+ */
+function keepControlOnScreen() {
+  const face = P.face;
+  screen().classList.remove('snug');
+  if (!face) return;
+  face.cap = null;
+  face.fit();
+  if (!screenControl() || !face.wrap.isConnected || overflowY() <= 0) return;
+  const full = face.size;
+  const shrinkTo = (floor) => {
+    for (let i = 0; i < 4 && overflowY() > 0 && face.size > floor; i += 1) {
+      face.cap = Math.max(floor, face.size - overflowY() - 2);
+      face.fit();
+    }
+  };
+  shrinkTo(Math.floor(full * 0.6));
+  if (overflowY() <= 0) return;
+  screen().classList.add('snug');
+  shrinkTo(Math.floor(full * 0.4));
 }
 
 /** Room for what can still land under the stamp: the hash, and the coin line with its address. */
@@ -858,6 +919,10 @@ const ROOM_FOR_LATER = 130;
 function pinDigits() {
   if (!P.pin || !P.face?.wrap.isConnected) return;
   const { wrap } = P.face;
+  if (P.pin.settled) {
+    wrap.style.marginTop = '';
+    return;
+  }
   if (P.pin.margin === undefined) {
     const last = screen().lastElementChild?.getBoundingClientRect().bottom ?? 0;
     const room = window.innerHeight - last - (P.coinStill ? 0 : ROOM_FOR_LATER);
@@ -865,6 +930,28 @@ function pinDigits() {
     P.pin.margin = base + Math.max(0, Math.min(P.pin.top - wrap.getBoundingClientRect().top, room));
   }
   wrap.style.marginTop = `${P.pin.margin}px`;
+}
+
+/** How long the stamp's frame holds before the digits move up, and how long the move takes. */
+const STAMP_HOLD_MS = 1600;
+const SETTLE_MS = 450;
+
+function settleDigits(pin) {
+  if (P.pin !== pin || pin.settled) return;
+  pin.settled = true;
+  const wrap = P.face?.wrap;
+  if (P.screen !== 'cancelled' || !wrap?.isConnected) return;
+  const done = () => {
+    wrap.classList.remove('settling');
+    if (P.pin === pin) document.documentElement.dataset.digits = 'still';
+  };
+  wrap.classList.add('settling');
+  if (P.face.cap !== null) {
+    P.face.cap = null;
+    P.face.fit();
+  }
+  wrap.style.marginTop = '';
+  setTimeout(done, SETTLE_MS + 50);
 }
 
 const drawers = {
@@ -888,7 +975,7 @@ const drawers = {
       h('p', { class: 'say', id: 'why', 'data-why': P.button.why }, words),
       resetLine() ? h('p', { class: 'line' }, resetLine()) : null,
       ownCancelNodes(),
-      showTool && !heldSigned() ? h('p', { class: 'small', id: 'tool' }, relayIsWhy(P.button.why) ? OWN_PATH_LINE : 'If you hold this vault\'s recovery file, any NEAR testnet account can send the cancel: tools/freeze.mjs --method cancel') : null,
+      showTool && !heldSigned() ? h('p', { class: 'small', id: 'tool' }, partNodes(relayIsWhy(P.button.why) ? OWN_PATH_PARTS : RECOVERY_PATH_PARTS)) : null,
       signHere ? h('button', { class: 'go quiet', type: 'button', id: 'sign-own', onclick: () => onCancelTap(true) }, 'Sign a cancel to send yourself') : null,
       retry,
     ];

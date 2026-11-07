@@ -26,7 +26,7 @@ a { color: inherit; }
 .label { font: 500 14px/1.2 var(--mono); color: var(--dim); }
 .addr { font: 600 17px/1.25 var(--mono); overflow-wrap: anywhere; margin: 3px 0 10px; }
 .sats { font: 800 44px/1.05 var(--sans); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-top: 2px; }
-.small { font: 500 14px/1.3 var(--sans); color: var(--dim); margin: 3px 0 0; }
+.small { font: 500 14px/1.3 var(--sans); color: var(--dim); margin: 3px 0 0; overflow-wrap: anywhere; }
 .small.warnline { color: #FFB4AE; font-weight: 700; }
 
 /* ---- the clock: every character sits in a fixed slot */
@@ -50,7 +50,9 @@ a { color: inherit; }
   -webkit-user-select: none; user-select: none; }
 .go:disabled { opacity: 0.4; }
 .go.quiet { background: transparent; color: var(--white); border: 2px solid var(--line); font-size: 22px; font-weight: 700; }
-.go + .go { margin-top: 10px; }
+.go + .go, .go + #cancel { margin-top: 10px; }
+/* Second to Cancel on its screen, so it takes less of it. */
+#save-cancel { font-size: 18px; min-height: 44px; padding: 10px 12px; }
 .small + .go { margin-top: 10px; }
 #cancel, .slot { display: flex; align-items: center; justify-content: center; width: 100%; height: clamp(116px, 22vh, 190px); flex: none; border-radius: 20px; }
 #cancel { border: 0; background: var(--red); color: var(--white); font: 800 68px/1 var(--sans); letter-spacing: -0.02em; padding: 0;
@@ -58,12 +60,12 @@ a { color: inherit; }
 #cancel:active { background: #D22B22; }
 .slot { border: 2px solid var(--line); font: 800 32px/1.1 var(--sans); letter-spacing: -0.015em; text-align: center; padding: 10px; }
 
-/* ---- sentences */
-.say { font: 800 30px/1.14 var(--sans); letter-spacing: -0.018em; margin: 10px 0; }
+/* ---- sentences. An address or a hash can be in any of them, and wraps rather than running off the side */
+.say { font: 800 30px/1.14 var(--sans); letter-spacing: -0.018em; margin: 10px 0; overflow-wrap: anywhere; }
 .say.big { font-size: 40px; line-height: 1.08; }
-.line { font: 500 19px/1.3 var(--sans); margin: 8px 0; }
+.line { font: 500 19px/1.3 var(--sans); margin: 8px 0; overflow-wrap: anywhere; }
 .line.dim { color: var(--dim); }
-.notice { font: 700 18px/1.25 var(--sans); margin: 8px 0 0; color: var(--white); }
+.notice { font: 700 18px/1.25 var(--sans); margin: 8px 0 0; color: var(--white); overflow-wrap: anywhere; }
 .notice.warn { color: #FFB4AE; }
 .words { font: 500 14px/1.35 var(--mono); overflow-wrap: anywhere; white-space: pre-wrap; margin: 6px 0; color: var(--white); }
 .hashslot { min-height: 70px; }
@@ -109,3 +111,19 @@ a.hash { text-decoration: underline; text-decoration-thickness: 1px; text-underl
 textarea.report { width: 100%; height: 40vh; background: var(--ground); color: var(--white); }
 .foot { font: 500 13px/1.3 var(--sans); color: var(--dim); margin: 10px 0 0; }
 button.link { background: none; border: 0; padding: 6px 0; color: var(--dim); font: 500 15px/1.2 var(--sans); text-decoration: underline; text-underline-offset: 3px; touch-action: manipulation; }
+
+/* ---- a crowded screen: the control stays whole on it. phone.mjs shrinks the digits first, then adds this */
+#screen.snug .say { font-size: 24px; }
+#screen.snug .say.big { font-size: 30px; }
+#screen.snug .line { font-size: 17px; }
+#screen.snug .addr { font-size: 15px; margin-bottom: 6px; }
+#screen.snug .sats { font-size: 34px; }
+#screen.snug .words { font-size: 13px; }
+#screen.snug .fee, #screen.snug #synced { display: none; }
+
+/* ---- a command in a sentence: one piece, so a line never breaks inside a flag */
+.cmd { font: 500 0.93em/1 var(--mono); white-space: nowrap; }
+
+/* ---- after the stamp has held its frame, the digits move up to where a reload draws them */
+.clockwrap.settling { transition: margin-top 0.45s cubic-bezier(0.2, 0.8, 0.2, 1); }
+@media (prefers-reduced-motion: reduce) { .clockwrap.settling { transition: none; } }

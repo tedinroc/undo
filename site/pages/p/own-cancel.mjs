@@ -28,10 +28,27 @@ export const ownCancelFileName = (vaultHex) => `undo-cancel-${vaultHex.slice(0, 
 
 const utcTime = (ms) => `${new Date(ms).toISOString().slice(11, 16)} UTC`;
 
-/** What the page says about a signed call it holds, in plain words. */
-export function ownCancelWords({ expiresAt, vaultHex }) {
-  return `This page signed a cancel that the relay did not send. Any NEAR testnet account can send it, until ${utcTime(expiresAt)}: save it, then run node tools/cancel.mjs --file ${ownCancelFileName(vaultHex)} --account YOUR-ACCOUNT`;
+// Words and commands, in order. A command is `{ cmd }`, which the page sets in one unbroken piece, so a line never
+// breaks inside a flag and leaves "--" at the end of one line and "method" at the start of the next.
+const cmd = (text) => ({ cmd: text });
+export const partsText = (parts) => parts.map((p) => (typeof p === 'string' ? p : p.cmd)).join('');
+
+/** What the page says about a signed call it holds, in plain words, with the command to send it. */
+export function ownCancelParts({ expiresAt, vaultHex }) {
+  return [
+    `The relay didn't send the cancel this page signed. Any NEAR testnet account can, until ${utcTime(expiresAt)}: save it, then run `,
+    cmd('node tools/cancel.mjs'), ' ', cmd(`--file ${ownCancelFileName(vaultHex)}`), ' ', cmd('--account YOUR-ACCOUNT'),
+  ];
 }
 
+export const ownCancelWords = (fields) => partsText(ownCancelParts(fields));
+
 /** What it says with no signed call in hand. */
-export const OWN_PATH_LINE = 'The relay is a convenience, and its limits are shared. Any NEAR testnet account can send a cancel: tools/cancel.mjs sends one this page signs, tools/freeze.mjs --method cancel signs one with the recovery file, and the cold key always works.';
+export const OWN_PATH_PARTS = [
+  'The relay is a convenience, and its limits are shared. Any NEAR testnet account can send a cancel: ', cmd('tools/cancel.mjs'),
+  ' sends one this page signs, ', cmd('tools/freeze.mjs --method cancel'), ' signs one with the recovery file, and the cold key always works.',
+];
+export const OWN_PATH_LINE = partsText(OWN_PATH_PARTS);
+
+/** With no relay in the way, only the recovery file is left to this page to name. */
+export const RECOVERY_PATH_PARTS = ['If you hold this vault\'s recovery file, any NEAR testnet account can send the cancel: ', cmd('tools/freeze.mjs --method cancel')];

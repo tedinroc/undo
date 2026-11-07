@@ -50,6 +50,8 @@ export class ClockFace {
     this.wrap = h('div', { class: 'clockwrap' }, this.el);
     this.text = null;
     this.minuteWidth = 1;
+    // The most the digits may take, in px, when a screen needs the room for its control. Null: as large as fits.
+    this.cap = null;
     this.resize = () => this.fit();
     window.addEventListener('resize', this.resize);
   }
@@ -65,7 +67,12 @@ export class ClockFace {
     this.el.style.fontSize = '100px';
     const width = this.el.getBoundingClientRect().width;
     // A short phone gives the clock a quarter of its height at most, so Cancel stays on the screen.
-    if (width > 0) this.el.style.fontSize = `${Math.floor(Math.min((room / width) * 100, window.innerHeight * 0.26))}px`;
+    if (width > 0) this.el.style.fontSize = `${Math.floor(Math.min((room / width) * 100, window.innerHeight * 0.26, this.cap ?? Infinity))}px`;
+  }
+
+  /** The digits' size now, in px. */
+  get size() {
+    return Number.parseFloat(this.el.style.fontSize) || 0;
   }
 
   set(text) {

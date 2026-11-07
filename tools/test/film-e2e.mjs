@@ -540,6 +540,10 @@ async function tapCancel(v, { lastRequest }) {
   check('the phone shows the hash and names its chain', Boolean(hash) && shown.includes('local NEAR sandbox tx') && shown.includes(hash), hash);
   check('no hash in the link: nothing a screen claims can be written into a link', !(await phone.js('location.hash')).includes('tx='));
   await thief.shot('frozen');
+  // The phone holds the stamp's frame, then its digits settle where a reload draws them: the frame the film keeps.
+  const digitsMode = () => phone.js('document.documentElement.dataset.digits ?? null');
+  await phone.waitFor('the phone\'s digits to settle', async () => (await digitsMode()) === 'still', 10_000).catch(() => null);
+  check('the phone\'s digits settle after the stamp, to one layout for the cancelled screen', (await digitsMode()) === 'still', await digitsMode());
   await phone.shot('cancelled');
 
   await sleep(2500);
