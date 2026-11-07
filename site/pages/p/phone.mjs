@@ -34,6 +34,8 @@ const COIN_MS = 15_000;
 const FINAL_MS = 3000;
 const INTENT_MS = 10 * 60_000;
 const READ_FAILS_TO_SAY = 3;
+// A vault read sent with the boot reads stands in for the first tick's only while it is about as fresh as a tick's own.
+const EARLY_READ_MS = 3000;
 // A node a few blocks behind answers null for a request it has not reached, and that is within what a reader lets
 // through. So a seen request reads as gone only when it stays gone. A stamp cannot be taken back.
 const NULL_READS_TO_BELIEVE = 3;
@@ -46,6 +48,8 @@ const P = {
   balance: null, fundedTxid: null, stopped: false, sheetNote: null, hang: false, tx: null, txSent: null, ksSeen: null, frozenBy: {}, pin: null,
   // A cancel this page signed and the relay did not send, for tools/cancel.mjs. And whether this relay refused this vault.
   signed: null, notOurs: false,
+  // The first tick's vault and request reads, sent with the boot reads.
+  early: null,
 };
 let ctx;
 
@@ -63,8 +67,18 @@ async function main() {
   document.getElementById('chip').textContent = config.labels.chip;
 
   const reader = new NearReader({ urls: config.rpc, timeoutMs: 6000 });
+  const views = contractViews(reader, config.contract);
+  const relay = new RelayClient({ relay: config.relay, funds: config.funds });
+  // Needs no contract and no relay: the contract this config names may already be gone when a deploy asks for it.
+  const asked = parsePhoneFragment(location.hash);
+  const operatorCheck = Boolean(asked.opproof && asked.opfor);
+  // None of these first reads waits on another, so they all go out now, and each is awaited where the page used to
+  // send it: the relay's status, the contract's instance and clock, and the vault the link names with its request.
+  const status = operatorCheck ? null : relay.status();
+  let reads = operatorCheck ? null : contractReads(views, reader);
+  P.early = operatorCheck || (asked.h7 && config.h7) ? null : earlyVaultReads(views, asked);
   ctx = {
-    config, reader, views: contractViews(reader, config.contract), relay: new RelayClient({ relay: config.relay, funds: config.funds }),
+    config, reader, views, relay,
     skew: new SkewTracker(), esplora: bitcoinReader(config.esplora), instance: null, credentials: null, sense: await sensePasskeys(window), awake: screenAwake(window),
   };
   try {
@@ -73,25 +87,26 @@ async function main() {
   } catch {
     ctx.credentials = null;
   }
-  // Needs no contract and no relay: the contract this config names may already be gone when a deploy asks for it.
-  const asked = parsePhoneFragment(location.hash);
-  if (asked.opproof && asked.opfor) {
+  if (operatorCheck) {
     runOperatorCheck(ctx, { nonce: asked.opproof, instance: asked.opfor });
     return;
   }
-  P.relay = await ctx.relay.status();
+  P.relay = await status;
   P.statusAt = Date.now();
 
   for (;;) {
     try {
-      ctx.instance = await ctx.views.instance();
-      ctx.skew.add(await reader.blockTime());
+      // In this order, so a failure shows the same words it did when the reads went one after another.
+      ctx.instance = await reads.instance;
+      ctx.skew.add(await reads.block);
       P.skewAt = Date.now();
       break;
     } catch (err) {
       setState('read_down');
       show(h('p', { class: 'say' }, 'Can\'t read the NEAR contract right now.'), h('p', { class: 'words' }, err.verbatim ?? err.message));
       await new Promise((r) => { setTimeout(r, 3000); });
+      reads = contractReads(views, reader);
+      P.early = null;
     }
   }
 
@@ -112,6 +127,35 @@ async function main() {
     return;
   }
   watchVault(P.fragment.v);
+}
+
+/** A read started now and awaited later. Marked handled here, so one the page never waits for raises no alarm. */
+function started(promise) {
+  promise.catch(() => {});
+  return promise;
+}
+
+/** The contract's instance and its clock, both at once. */
+function contractReads(views, reader) {
+  return { instance: started(views.instance()), block: started(reader.blockTime()) };
+}
+
+/** The first tick's reads of the vault a link names and its request, sent with the boot reads. Null without a vault. */
+function earlyVaultReads(views, fragment) {
+  if (!fragment.v || fragment.refused.includes('v')) return null;
+  const reads = new Map([['vault', started(views.vault(fragment.v))]]);
+  if (fragment.r !== undefined && fragment.r !== null) reads.set(`request:${fragment.r}`, started(views.request(fragment.v, fragment.r)));
+  return { v: fragment.v, reads, at: Date.now() };
+}
+
+/** The first tick takes what boot already asked for, once, if it is recent. Every later read is fresh. */
+function readOnce(key, read) {
+  const early = P.early?.v === P.v && Date.now() - P.early.at <= EARLY_READ_MS ? P.early.reads.get(key) : undefined;
+  if (early) {
+    P.early.reads.delete(key);
+    return early;
+  }
+  return read();
 }
 
 function watchVault(v) {
@@ -201,7 +245,9 @@ async function tick() {
       })
       : null;
     const known = idsToRead();
-    const [vault, ...rows] = await Promise.all([ctx.views.vault(P.v), ...known.map((id) => ctx.views.request(P.v, id))]);
+    const reading = Promise.all([readOnce('vault', () => ctx.views.vault(P.v)), ...known.map((id) => readOnce(`request:${id}`, () => ctx.views.request(P.v, id)))]);
+    P.early = null;
+    const [vault, ...rows] = await reading;
     // A lagging node also answers null for a vault it has not heard of. Null only means no vault until one is seen.
     if (vault) {
       known.forEach((id, i) => noteRead(id, rows[i]));
