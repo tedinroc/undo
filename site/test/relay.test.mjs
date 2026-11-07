@@ -2143,18 +2143,24 @@ test('funds: a claim taken over charges nothing, so its drop gives nothing back.
 });
 
 test('funds: a coin that went out stays charged, even when the state store fails to record it', async () => {
-  const ns = stateWith((op) => {
-    if (op === 'fundedDone') throw new Error('gone');
-    return null;
-  });
-  const { world, r, vault } = fundedRelay({ UNDO_STATE: ns, CEILING_FUNDS_SATS: 2000 });
-  const out = await r.funds(vault(0), { ip: '192.0.2.1' });
-  assert.deepEqual([out.status, out.body.code], [503, 'state_store_down']);
-  assert.equal(world.posts.length, 1, 'the coin went out');
-  assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 2000, 'so its charge stands');
-  const next = await r.funds(vault(1), { ip: '192.0.2.2' });
-  assert.deepEqual([next.status, next.body.code], [429, 'daily_ceiling']);
-  assert.equal(world.posts.length, 1, 'and no second coin under a ceiling of one');
+  // Esplora took the coin, then the store failed: marking its inputs spent, or recording the vault as paid.
+  for (const failing of ['commitCoin', 'fundedDone']) {
+    const ns = stateWith((op) => {
+      if (op === failing) throw new Error('gone');
+      return null;
+    });
+    const { world, r, vault } = fundedRelay({ UNDO_STATE: ns, CEILING_FUNDS_SATS: 2000 });
+    const out = await r.funds(vault(0), { ip: '192.0.2.1' });
+    assert.equal(world.posts.length, 1, `${failing}: the coin went out`);
+    assert.equal((await r.state.call('status', { now: NOW })).spent.funds, 2000, `${failing}: so its charge stands`);
+    assert.deepEqual([out.status, out.body.code], [503, 'state_store_down'], failing);
+    assert.match(out.body.message, /\bwent out\b/, `${failing}: the answer says the coin went out, not that the store is down`);
+    const again = await r.funds(vault(0), { ip: '192.0.2.2' });
+    assert.deepEqual([again.status, again.body.code], [429, 'rate_limited'], `${failing}: and so does its claim`);
+    const next = await r.funds(vault(1), { ip: '192.0.2.3' });
+    assert.deepEqual([next.status, next.body.code], [429, 'daily_ceiling'], failing);
+    assert.equal(world.posts.length, 1, `${failing}: and no second coin under a ceiling of one`);
+  }
 });
 
 test('funds: a claim that moved nothing gives back its own charge, found by when it was made, whatever the clock reads at the drop', async () => {
@@ -2190,19 +2196,25 @@ test('state: a drop gives back only what its own claim charged, on the day it ch
   assert.deepEqual(await drop('v2', second), { ok: true, dropped: true });
   assert.equal(await spent(), 4000, 'v1, and v2\'s first claim. The second charged nothing, so it gave nothing back');
 
-  // Paid: a drop after the coin is recorded changes nothing. With a clock that did not move, as in these tests, the
-  // paid row even carries the claim's own time.
+  // Paid: a drop after the coin is recorded changes nothing. The record is written later than the claim, so the
+  // claim's own time no longer matches it. A drop that names the record's time, as a clock that did not move between
+  // the claim and the record would, changes nothing either: a recorded coin is never dropped, whatever the times.
   const paid = await ask('v3');
-  await state.call('fundedDone', { vault: 'v3', txid: 'aa', now: paid.at });
-  assert.deepEqual(await drop('v3', paid), { ok: true, dropped: false });
-  assert.equal(await spent(), 6000);
-  assert.deepEqual(await ask('v3'), { ok: true, already: true, txid: 'aa' }, 'and the vault stays paid');
+  const recorded = paid.at + 30_000;
+  await state.call('fundedDone', { vault: 'v3', txid: 'aa', now: recorded });
+  for (const at of [paid.at, recorded]) {
+    const out = await state.call('fundedDrop', { vault: 'v3', at, charged: 2000 });
+    assert.equal(await spent(), 6000, `a drop at ${at - NOW} ms gives nothing back once the coin is recorded`);
+    assert.deepEqual(out, { ok: true, dropped: false });
+    assert.deepEqual(await ask('v3', recorded + 1000), { ok: true, already: true, txid: 'aa' }, 'and the vault stays paid');
+  }
 
   // No claim, or none named: nothing dropped and nothing given back, whatever the call says it charged.
-  for (const body of [{ vault: 'none', charged: 2000 }, { vault: 'none', at: NOW, charged: 2000 }, { vault: 'v1', charged: 2000 }]) {
-    assert.deepEqual(await state.call('fundedDrop', body), { ok: true, dropped: false }, JSON.stringify(body));
+  for (const body of [{ vault: 'none', at: NOW, charged: 2000 }, { vault: 'none', charged: 2000 }, { vault: 'v1', charged: 2000 }]) {
+    const out = await state.call('fundedDrop', body);
+    assert.equal(await spent(), 6000, `no claim matches ${JSON.stringify(body)}, so nothing comes back`);
+    assert.deepEqual(out, { ok: true, dropped: false }, JSON.stringify(body));
   }
-  assert.equal(await spent(), 6000);
 
   // Across midnight: back to the day it was charged on, never off today's ceiling.
   const late = await ask('v4', Date.UTC(2026, 10, 1, 23, 59, 59));

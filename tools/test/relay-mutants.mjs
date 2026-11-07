@@ -168,15 +168,18 @@ const MUTANTS = [
   ['funds: no limit or ceiling on coins', S, 'if (!out.ok) return out;', ''],
   ['funds: a coin is not leased', S, "this.markCoins(picked, 'reserved', now + LEASE_MS);", ''],
   ['funds: a spent coin comes back on refresh', S, "this.sql.exec(\"INSERT OR IGNORE INTO dispenser_utxos VALUES (?, ?, ?, 'free', NULL)\", c.txid", "this.sql.exec(\"INSERT OR REPLACE INTO dispenser_utxos VALUES (?, ?, ?, 'free', NULL)\", c.txid"],
+  // The record is written later than its claim, so the at check alone refuses a drop by the claim's time. This one
+  // is killed by a drop that names the record's own time, where only the txid check holds.
   ['funds: a drop forgets a paid vault, and gives back its coin\'s charge', S, 'SELECT at FROM funded_vaults WHERE vault = ? AND txid IS NULL', 'SELECT at FROM funded_vaults WHERE vault = ?'],
   ['funds: a late drop takes back a claim another call took over', S, 'if (!row || row.at !== at) return { ok: true, dropped: false };', 'if (!row) return { ok: true, dropped: false };'],
-  ['funds: a drop that names no claim reads as dropped', S, 'if (!row || row.at !== at) return { ok: true, dropped: false };', 'if (row?.at !== at) return { ok: true, dropped: false };'],
+  ['funds: a drop that matches no standing claim gives back what it names', S, 'if (!row || row.at !== at) return { ok: true, dropped: false };', 'if (row && row.at !== at) return { ok: true, dropped: false };'],
   ['funds: a claim taken over gives back a charge it never made', S, 'let charged = 0;', 'let charged = sats;'],
   ['funds: a claim that moved nothing keeps its charge', S, '        charged = sats;\n', ''],
   ['funds: a drop gives its sats back to the next day\'s ceiling', S, 'charged, dayOf(at), FUNDS', 'charged, dayOf(at) + 1, FUNDS'],
   ['funds: a drop gives back what a coin costs, not what its claim charged', F, 'charged: claim.charged', 'charged: conf.sats'],
   ['funds: a drop names the time of the drop, not of its claim', F, 'at: claim.at', 'at: relay.nowFn()'],
   ['funds: a coin out whose record failed gives its claim back', F, 'paid.keepClaim = true;', ''],
+  ['funds: a coin out whose inputs were not marked spent gives its claim back', F, "      try {\n        await relay.state.call('commitCoin', { coins, change });\n", "      await relay.state.call('commitCoin', { coins, change });\n      try {\n"],
 
   // ---------------------------------------------------------------- what the phone shows
   ['phone: a request of an old epoch is not cancelled', RS, "if (request.epoch !== vault.spend_epoch) return state('cancelled'", "if (false) return state('cancelled'"],
@@ -231,6 +234,7 @@ const MUTANTS = [
   ['h7: each try\'s S form swapped', HR, "${t.s === 'h' ? 'high-S' : 'low-S'}", "${t.s === 'h' ? 'low-S' : 'high-S'}"],
   ['h7: no high-S claimed after one try', HR, 'if (tries.length >= 8) return', 'if (tries.length >= 1) return'],
   ['h7: the call names swapped', HR, "const call = t.m === 'r' ? 'cancel_all_and_rotate' : 'cancel';", "const call = t.m === 'r' ? 'cancel' : 'cancel_all_and_rotate';"],
+  ['h7: the report leaves out the S-form sentence', HR, '  lines.push(sFormSentence(tries));\n', ''],
 ].map(([name, file, from, to, chrome = null]) => ({ name, file, from, to, chrome }));
 
 // ---------------------------------------------------------------- which tests

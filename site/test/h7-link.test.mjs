@@ -196,12 +196,16 @@ test('the report says which call each try was and its S form, and claims no high
   assert.deepEqual([callOf(line(mixed, 'Try 2:')), sForms(line(mixed, 'Try 2:'))], ['cancel_all_and_rotate', ['high-S']], mixed.join('\n'));
   const found = sFormSentence([tryOf('c', 'l'), tryOf('r', 'h')]);
   assert.match(found, /\bhigh-S\b.*\btry 2 of 2\b/, 'a high-S try is named, with its place among the tries');
+  assert.ok(mixed.includes(found), `the report carries that sentence as its own line\n${mixed.join('\n')}`);
   for (let n = 1; n < 8; n += 1) {
     const sofar = sFormSentence(Array(n).fill(tryOf('c', 'l')));
     assert.match(sofar, new RegExp(`\\b${n} of 8\\b`), `${n} tries`);
     assert.doesNotMatch(sofar, /^No high-S/, `no claim of none after ${n} tries`);
   }
-  const eight = sFormSentence(Array(8).fill(tryOf('c', 'l')));
+  const eightTries = Array(8).fill(tryOf('c', 'l'));
+  const eight = sFormSentence(eightTries);
   assert.match(eight, /^No high-S\b.*\b8 tries\b/, 'after eight tries, the claim of none');
   assert.doesNotMatch(eight, /\bof 8\b/);
+  const eightReport = lines({ proofS: 'l', tries: eightTries });
+  assert.ok(eightReport.includes(eight), `and the report carries it\n${eightReport.join('\n')}`);
 });
