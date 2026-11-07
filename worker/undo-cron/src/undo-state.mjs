@@ -146,7 +146,8 @@ export class UndoState {
   static OPS = {
     /**
      * An owner call is charged only for a vault this relay made, and only once per signed call (`call`). One the relay
-     * could not check (`checked: false`) counts on its own per-vault rows and its own share of the owner ceiling.
+     * could not check (`checked: false`) counts on its own per-vault rows and its own share of the owner ceiling: a
+     * tenth, and a fifth for a vault's first such call of the day.
      */
     charge({ key, method, ipHash = null, vault = null, now, ceiling, checked = true, call = null }) {
       const spec = RELAY_METHODS[method];
@@ -159,7 +160,10 @@ export class UndoState {
       const rows = unchecked
         ? [{ name: `${method}:unchecked`, limit: spec.uncheckedPerVaultMinute, span: MINUTE }, { name: `${key}:unchecked:day`, limit: spec.uncheckedPerVaultDay, span: DAY }]
         : [{ name: method, limit: spec.perVaultMinute, span: MINUTE }, { name: `${key}:day`, limit: spec.perVaultDay, span: DAY }];
-      const share = unchecked ? { bucket: UNCHECKED, ceiling: Math.floor(ceiling * OWNER_UNCHECKED_SHARE) } : null;
+      // A vault's first unchecked call of the day may go past the shared tenth, up to a fifth. Junk sprayed over other
+      // vaults then cannot use up a recovered owner's one cancel unless it reaches a tenth's worth of other vaults first.
+      const firstToday = unchecked && !this.first('SELECT count FROM vault_counter WHERE vault = ? AND method = ? AND window_start = ? AND count > 0', vault, `${key}:unchecked:day`, Math.floor(now / DAY) * DAY);
+      const share = unchecked ? { bucket: UNCHECKED, ceiling: Math.floor(ceiling * OWNER_UNCHECKED_SHARE) * (firstToday ? 2 : 1) } : null;
       const out = this.chargeNow({ key, method, ipHash, vault, now, ceiling, cost: spec.costMicro, perIpHour: spec.perIpHour, share, rows });
       if (out.ok && owner) {
         this.sql.exec('INSERT INTO owner_sent VALUES (?, ?, ?)', vault, call, now);

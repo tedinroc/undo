@@ -33,7 +33,11 @@ export const RELAY_METHODS = Object.freeze({
   cancel_all_and_rotate: { key: OWNER, tgas: 30, costMicro: 600, perVaultMinute: 6, perVaultDay: 12, uncheckedPerVaultMinute: 2, uncheckedPerVaultDay: 4 },
 });
 
-/** Calls the relay could not check may take at most this share of the owner ceiling, so they never stop a checked cancel. */
+/**
+ * Calls the relay could not check may take at most this share of the owner ceiling, so they never stop a checked cancel.
+ * A vault's first such call of the day may go up to twice this, so junk on other vaults cannot use up the one cancel of
+ * an owner whose new passkey the relay has not seen. Twice this is the most they ever take.
+ */
 export const OWNER_UNCHECKED_SHARE = 0.1;
 
 /**

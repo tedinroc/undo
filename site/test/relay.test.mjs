@@ -1493,8 +1493,36 @@ test('AUDIT-2: with the vault read down, junk counts apart and never uses up wha
   const m = relayWith(many, { CEILING_OWNER_MICRO: 20 * RELAY_METHODS.cancel.costMicro }, { made: [...ids, VAULT] });
   const spray = [];
   for (const id of ids) spray.push(await m.relay('cancel', { vault: id, request: 1, expires_at: NOW + 60_000, auth: { Cold: 'ab'.repeat(65) } }));
-  assert.equal(spray.filter((a) => a.body.ok).length, 2, 'unchecked calls take at most a tenth of the owner ceiling, across all vaults');
+  assert.equal(spray.filter((a) => a.body.ok).length, 4, 'unchecked calls take a tenth of the owner ceiling across all vaults, and first calls of the day at most a fifth');
   assert.equal((await m.relay('cancel_all_and_rotate', await rotateBody())).body.ok, true, 'and a checked cancel still has the rest');
+});
+
+test('AUDIT-2: after a passkey recovery, with reads down, junk on other vaults cannot use up the recovered owner\'s cancel', async () => {
+  const soft = softCredentials({ secret: label('recovered-passkey'), origin: 'https://site.test', rpId: 'site.test' });
+  const fresh = toHex((await createPasskey({ credentials: soft, rpId: 'site.test' })).pubkey);
+  const others = Array.from({ length: 26 }, (_, i) => toHex(label(`other-${i}`)));
+  // The chain holds the recovered owner's new passkey. The relay's row still has the one the vault was made with, so
+  // with no read the owner's rotation cannot be checked and counts as unchecked, like junk.
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow({ passkey: fresh }) } });
+  const r = relayWith(world, {}, { made: [...others, VAULT] });
+  world.viewDown = true;
+  const junk = [];
+  for (const id of others) {
+    for (let k = 0; k < 2; k += 1) junk.push(await r.relay('cancel', { vault: id, request: 1, expires_at: NOW + 60_000 + k, auth: { Cold: 'cd'.repeat(65) } }));
+  }
+  const tenth = Math.floor((CEILING_OWNER_DEFAULT_MICRO * 0.1) / RELAY_METHODS.cancel.costMicro);
+  const out = await r.relay('cancel_all_and_rotate', await rotateBody({ soft }));
+  assert.deepEqual([out.status, out.body.code ?? 'sent'], [200, 'sent'], 'the recovered owner\'s first cancel of the day still goes');
+  assert.equal(junk.filter((a) => a.body.ok).length, tenth + 1, 'junk on 26 other vaults filled the shared tenth, and the last vault\'s first call went past it');
+
+  // First calls are the only ones past the tenth, and together never more than a fifth.
+  const more = Array.from({ length: 80 }, (_, i) => toHex(label(`more-${i}`)));
+  for (const id of more) await r.made(id);
+  const firsts = [];
+  for (const id of more) firsts.push(await r.relay('cancel', { vault: id, request: 1, expires_at: NOW + 60_000, auth: { Cold: 'ce'.repeat(65) } }));
+  assert.equal(firsts.filter((a) => a.body.ok).length, 2 * tenth - (tenth + 2), 'first calls on other vaults go only up to a fifth');
+  const { spent } = await r.state.call('status', { now: NOW });
+  assert.equal(spent.owner, 2 * tenth * RELAY_METHODS.cancel.costMicro, 'unchecked calls took a fifth of the owner ceiling at most');
 });
 
 test('AUDIT-2: a send that never reached the chain gives back every count it took', async () => {
