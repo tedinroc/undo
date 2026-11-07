@@ -64,10 +64,10 @@ claim() { # suite, claim, label, text, then binary:test pairs
   fi
 }
 
-suite_line() { # suite, label, what
+suite_line() { # suite, label, what. A whole suite is no claim: its total is INFO, and only a failure counts
   local s; s="$(cat "$logs/$1.status")"
   if [ "$s" = "0" ]; then
-    pass "tier-B $2 $3: $(counts "$1") in $(cat "$logs/$1.secs") s"
+    echo "INFO tier-B $2 $3: $(counts "$1") in $(cat "$logs/$1.secs") s"
   else
     fail "tier-B $2 $3: cargo test exit $s, $(counts "$1"). Last lines:"
     tail -25 "$logs/$1.log" | sed 's/^/    /'

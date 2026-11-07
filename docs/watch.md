@@ -15,7 +15,7 @@ https://undo-btc.pages.dev/p/#v=<vault>&r=<request>
 
 - **Amount.** Counted the way the phone page counts it: every coin when there is no change, otherwise the amount sent.
 - **Destination.** The first 14 characters of the address. The phone page shows all of it.
-- **Time.** `unlocks in M:SS` is read off the chain's clock when the alert is sent, and rounded up. If this computer's clock is behind the chain, the later of the two clocks is used, so any error makes the time look shorter, not longer.
+- **Time.** `unlocks in M:SS` is read off the chain's clock when the alert is sent, and rounded up. Within 30 s of each other, the later of this computer's clock and the chain's is used, so a node a block behind makes the time look shorter, not longer. Past 30 s, this computer's clock is taken to be wrong: the alert counts down from the chain's clock and the watcher prints one `CLOCK` line. Whether a request is still alive is decided on the chain's clock alone, so a fast clock never hides one.
 - **Link.** Tapping the alert opens the phone page. The vault and the request travel in the `#` fragment, which a browser never sends to a server. There is no query string.
 
 The watcher skips a request that is already signing, was cancelled by a rotation, or has expired, and says so in its log. When an alerted request leaves the queue, the log says whether it was cancelled or executed, and how many seconds after the alert.

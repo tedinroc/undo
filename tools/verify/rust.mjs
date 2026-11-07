@@ -36,9 +36,24 @@ export function toolsCheck(repo) {
   return built.get(repo);
 }
 
-/** libbitcoinconsensus on every input: true, false, or null when the referee could not be built. */
-export function consensusVerdict(repo, raw, spk, values) {
+/**
+ * libbitcoinconsensus on every input: { verdict, why }. verdict is true when every input passes (exit 0), false when
+ * the referee ran and refused an input (exit 1, with an "input N: refused" line), and null otherwise: the referee was
+ * not built, or it crashed or answered anything else. A crash is never read as a refusal, so a broken referee cannot
+ * make a "refused" control pass.
+ */
+export function consensusJudge(repo, raw, spk, values) {
   const c = toolsCheck(repo);
-  if (!c.bin) return null;
-  return spawnSync(c.bin, ['verify', raw, spk, values.join(',')], { encoding: 'utf8' }).status === 0;
+  if (!c.bin) return { verdict: null, why: c.why, crashed: false };
+  const out = spawnSync(c.bin, ['verify', raw, spk, values.join(',')], { encoding: 'utf8' });
+  if (out.status === 0 && /^consensus ok$/m.test(out.stdout ?? '')) return { verdict: true, why: null, crashed: false };
+  if (out.status === 1 && /^input \d+: refused: /m.test(out.stdout ?? '')) return { verdict: false, why: null, crashed: false };
+  const said = `${out.stderr ?? ''}`.trim().split('\n')[0]?.slice(0, 160) ?? '';
+  const how = out.status === null ? `was killed by ${out.signal ?? 'a signal'}` : `exited ${out.status}`;
+  return { verdict: null, why: `the referee ${how} without a verdict${said ? `: ${said}` : ''}`, crashed: true };
+}
+
+/** The verdict alone: true, false, or null when there is none (not built, or crashed). */
+export function consensusVerdict(repo, raw, spk, values) {
+  return consensusJudge(repo, raw, spk, values).verdict;
 }

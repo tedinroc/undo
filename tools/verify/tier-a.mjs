@@ -17,7 +17,8 @@
 // 5. Static: the contract calls nothing outside itself but the signer's `sign` and
 //    `derived_public_key`, so it never reads Bitcoin through MPC.
 //
-// A network failure is SKIP (network), never PASS and never FAIL. Exit 0 with no FAIL, 1 with any.
+// A network failure is SKIP (network), never PASS and never FAIL. A line about something this run did not fetch or
+// judge, only read from proofs/, is INFO. Exit 0 with no FAIL, 1 with any.
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,7 +30,7 @@ import { randomBytes, secp256k1 } from '../lib/crypto.mjs';
 import { coldKeys, publicSecp, spendKeys } from '../lib/keys.mjs';
 import { buildRecovery } from '../lib/recovery.mjs';
 import { parseSignerKey } from '../lib/vault-client.mjs';
-import { buildBin, cargoAvailable, consensusVerdict, toolsCheck } from './rust.mjs';
+import { buildBin, cargoAvailable, consensusJudge } from './rust.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const argv = process.argv.slice(2);
@@ -37,7 +38,7 @@ const flag = argv.indexOf('--config');
 const configPath = resolve(flag >= 0 && argv[flag + 1] ? argv[flag + 1] : process.env.UNDO_CONFIG ?? join(REPO, 'deploy/testnet.json'));
 const shown = (p) => (p.startsWith(REPO) ? relative(REPO, p) : 'the config named by UNDO_CONFIG');
 
-const tally = { PASS: 0, FAIL: 0, SKIP: 0 };
+const tally = { PASS: 0, FAIL: 0, SKIP: 0, INFO: 0 };
 const line = (status, id, label, text) => {
   tally[status] += 1;
   console.log(`${status} ${id} [${label}] ${text}`);
@@ -132,8 +133,7 @@ async function guarded(id, label, what, fn) {
 // ------------------------------------------------------------------ Rust referees, built on demand
 
 const cargo = cargoAvailable();
-const consensus = () => toolsCheck(REPO);
-const consensusAccepts = (raw, spk, values) => consensusVerdict(REPO, raw, spk, values);
+const consensusAccepts = (raw, spk, values) => consensusJudge(REPO, raw, spk, values);
 
 // ------------------------------------------------------------------ the signer's answers
 
@@ -211,7 +211,7 @@ async function deployed(config) {
     const why = `${shown(configPath)} holds a placeholder: no contract is deployed yet`;
     line('SKIP', 'C13', net, `deployed code hash against the built wasm hash: ${why}`);
     line('SKIP', 'C11', net, `no full-access key on the contract: ${why}`);
-    line('SKIP', 'status', net, `the contract's status view: ${why}`);
+    line('SKIP', 'C06', net, `the contract's status view: ${why}`);
     return;
   }
   const urls = config.rpc;
@@ -229,11 +229,11 @@ async function deployed(config) {
     if (full.length > 0) throw new Error(`${config.contract} has ${full.length} full-access key(s): ${full.map((k) => k.public_key).join(', ')}. Its owner could replace the code at once, without the upgrade wait`);
     line('PASS', 'C11', net, `${config.contract} has no full-access key (${list.keys.length ? `${list.keys.length} function-call key(s)` : 'no access key at all'}): code changes only through upgrade_propose and its public wait`);
   });
-  await guarded('status', net, 'status view', async () => {
+  await guarded('C06', net, 'status view', async () => {
     const out = await view(urls, config.contract, 'status', {});
     if (out.error) throw new Error(`status refused: ${out.error}`);
     if (typeof out.value?.ok !== 'boolean' || !Array.isArray(out.value.lines)) throw new Error('status is not { ok, lines }');
-    line('PASS', 'status', net, `${config.contract} status answers ok=${out.value.ok}, verbatim:`);
+    line('PASS', 'C06', net, `${config.contract} status answers ok=${out.value.ok}, verbatim:`);
     for (const l of out.value.lines) console.log(`    ${l}`);
   });
 }
@@ -247,7 +247,7 @@ async function signerArgs(config) {
   const urls = live ? config.rpc : config.replay.near_rpc;
   const signer = live ? config.signer : config.replay.signer ?? 'v1.signer-prod.testnet';
   console.log(`\n== tier A: the signer ${signer} still parses the contract's sign arguments (read-only)`);
-  await guarded('signer', net, 'signer arguments', async () => {
+  await guarded('C12', net, 'signer arguments', async () => {
     const good = await rpc(urls, 'query', {
       request_type: 'call_function', account_id: signer, method_name: 'sign', finality: 'final',
       args_base64: Buffer.from(JSON.stringify({ request: { path: 'undo/verify', payload_v2: { Ecdsa: '00'.repeat(31) + '01' }, domain_id: 0 } })).toString('base64'),
@@ -259,7 +259,7 @@ async function signerArgs(config) {
     const parsed = /ProhibitedInView/.test(good.error ?? '');
     const controlRefused = /payload_v2|deserial/i.test(control.error ?? '');
     if (!parsed || !controlRefused) throw new Error(`the signer's answers changed: request "${good.error ?? 'no error'}", control "${control.error ?? 'no error'}"`);
-    line('PASS', 'signer', net, `${signer} parses the contract's exact sign arguments (a view stops at ProhibitedInView), and a control with a wrong field fails to parse. Nothing was signed`);
+    line('PASS', 'C12', net, `${signer} parses the contract's exact sign arguments (a view stops at ProhibitedInView), and a control with a wrong field fails to parse. Nothing was signed`);
   });
 }
 
@@ -367,15 +367,18 @@ async function replayBitcoin({ id, what, txid, raw, spk, values, esplora, expect
     if (err instanceof NetworkDown) line('SKIP', id, 'replay', `Mutinynet txid ${txid} (${what}): SKIP (network): ${err.message}; judging the raw hex in proofs/ instead`);
     else line('FAIL', id, 'replay', err.message);
   }
-  const accepted = consensusAccepts(raw, spk, values);
-  if (accepted === null) line('SKIP', id, 'consensus-lib', `Mutinynet txid ${txid}: libbitcoinconsensus not run: ${consensus().why}`);
+  const { verdict: accepted, why, crashed } = consensusAccepts(raw, spk, values);
+  if (crashed) line('FAIL', id, 'consensus-lib', `Mutinynet txid ${txid} (${what}): no verdict: ${why}`);
+  else if (accepted === null) line('SKIP', id, 'consensus-lib', `Mutinynet txid ${txid}: libbitcoinconsensus not run: ${why}`);
   else if (accepted) line('PASS', id, 'consensus-lib', `Mutinynet txid ${txid} (${what}): libbitcoinconsensus accepts every input of the ${fetched ? 'fetched' : 'recorded'} bytes`);
   else line('FAIL', id, 'consensus-lib', `Mutinynet txid ${txid} (${what}): libbitcoinconsensus refuses it`);
 }
 
 function refusedControl({ id, what, raw, spk, values, nodeText }) {
-  const accepted = consensusAccepts(raw, spk, values);
-  if (accepted === null) return line('SKIP', id, 'consensus-lib', `${what}: not judged: ${consensus().why}`);
+  const { verdict: accepted, why, crashed } = consensusAccepts(raw, spk, values);
+  // A crash is no refusal: a control passes only on the referee's own "refused" answer.
+  if (crashed) return line('FAIL', id, 'consensus-lib', `${what}: no verdict: ${why}`);
+  if (accepted === null) return line('SKIP', id, 'consensus-lib', `${what}: not judged: ${why}`);
   if (accepted) return line('FAIL', id, 'consensus-lib', `${what}: libbitcoinconsensus accepts it, and it must not`);
   return line('PASS', id, 'consensus-lib', `${what}: libbitcoinconsensus refuses it here too. The Mutinynet node's answer when it was sent, recorded in proofs/: ${nodeText}`);
 }
@@ -392,7 +395,8 @@ async function replayMutinynet(config) {
     await replayBitcoin({ id: 'C12', what: 'G2 co-signed spend: the spend key and the contract-requested MPC signature', txid: g2.cosigned.txid, raw: g2.cosigned.raw, spk, values: [cosignValue], esplora, expectHeight: g2.cosigned.mined_height });
     refusedControl({ id: 'C02', what: 'G2 control: the same spend with no spend-key signature, the MPC one alone', raw: g2.cosigned.ku_control.raw, spk, values: [cosignValue], nodeText: g2.cosigned.ku_control.text });
     await replayBitcoin({ id: 'C04', what: 'G2 escape: the cold key alone, from the recovery file, once the coin was CSV old', txid: g2.escape.txid, raw: g2.escape.raw, spk, values: [escapeValue], esplora, expectHeight: g2.escape.mined_height, coin: { txid: g2.escape.coin.split(':')[0] } });
-    line('PASS', 'C04', 'replay', `G2 escape sent before the coin was CSV old: the Mutinynet node refused it, recorded in proofs/g2.json at tip ${g2.escape.early.tip_before}, coin height ${g2.escape.early.coin_height}: ${g2.escape.early.text}`);
+    // Read from proofs/ only: nothing here fetches or judges it again, so it is INFO, not PASS.
+    line('INFO', 'C04', 'live-mutinynet, recorded in G2, 2026-10-31', `G2 escape sent before the coin was CSV old: the Mutinynet node refused it at tip ${g2.escape.early.tip_before}, coin height ${g2.escape.early.coin_height}: ${g2.escape.early.text}. Not fetched again: a refused transaction leaves nothing on chain to fetch`);
     refusedControl({ id: 'C04', what: 'G2 control: the escape signed one block below CSV', raw: g2.escape.csv_control.raw, spk, values: [escapeValue], nodeText: g2.escape.csv_control.text });
   } else line('SKIP', 'C12', 'replay', 'proofs/g2.json is not in this tree');
 
@@ -404,8 +408,13 @@ async function replayMutinynet(config) {
       refusedControl({ id: 'C03', what: `spend key alone, sent to Mutinynet ${s2.node_answer.at_utc}: would have been txid ${s2.refused_tx.mutinynet_txid_it_would_have_had}`, raw: s2.refused_tx.raw_hex, spk, values: [s2.funding_coin.value_sats], nodeText: s2.node_answer.text_verbatim });
       try {
         const out = JSON.parse((await getText(`${esplora}/tx/${s2.funding_coin.mutinynet_txid}/outspend/${s2.funding_coin.vout}`)).text);
-        if (out.spent && out.txid === s2.refused_tx.mutinynet_txid_it_would_have_had) line('FAIL', 'C03', 'replay', 'the refused spend is the one that spent the coin');
-        else line('PASS', 'C03', 'replay', `Mutinynet coin ${s2.funding_coin.mutinynet_txid}:${s2.funding_coin.vout}: ${out.spent ? `spent later by ${out.txid}, the cold-key return, not by the refused spend` : 'still unspent'}`);
+        const coin = `Mutinynet coin ${s2.funding_coin.mutinynet_txid}:${s2.funding_coin.vout}`;
+        const back = s2.coin_return?.mutinynet_txid ?? null;
+        if (out.spent && out.txid === s2.refused_tx.mutinynet_txid_it_would_have_had) line('FAIL', 'C03', 'replay', `${coin}: the refused spend is the one that spent the coin`);
+        else if (out.spent && back && out.txid === back) line('PASS', 'C03', 'replay', `${coin}: spent later by Mutinynet txid ${out.txid}, the cold-key return proofs/s2-refusal.json records, not by the refused spend`);
+        else if (out.spent) line('FAIL', 'C03', 'replay', `${coin}: spent by Mutinynet txid ${out.txid}, which is ${back ? `not the cold-key return proofs/s2-refusal.json records (${back})` : 'not in proofs/s2-refusal.json'}`);
+        else if (back) line('FAIL', 'C03', 'replay', `${coin}: the API says unspent, but proofs/s2-refusal.json records its cold-key return ${back}`);
+        else line('PASS', 'C03', 'replay', `${coin}: still unspent`);
       } catch (err) {
         if (err instanceof NetworkDown) line('SKIP', 'C03', 'replay', `Mutinynet coin ${s2.funding_coin.mutinynet_txid}: SKIP (network): ${err.message}`);
         else line('FAIL', 'C03', 'replay', err.message);
@@ -486,5 +495,5 @@ await replayNear(config);
 await replayMutinynet(config);
 recoveryDryRun();
 staticChecks();
-console.log(`\nTIER A: ${tally.PASS} PASS, ${tally.SKIP} SKIP, ${tally.FAIL} FAIL in ${Math.round((Date.now() - started) / 1000)} s${config.placeholder ? '. The deployed-contract lines are SKIP because the config is a placeholder' : ''}`);
+console.log(`\nTIER A: ${tally.PASS} PASS, ${tally.SKIP} SKIP, ${tally.FAIL} FAIL${tally.INFO ? `, ${tally.INFO} INFO` : ''} in ${Math.round((Date.now() - started) / 1000)} s${config.placeholder ? '. The deployed-contract lines are SKIP because the config is a placeholder' : ''}`);
 process.exit(tally.FAIL ? 1 : 0);

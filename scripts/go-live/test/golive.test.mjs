@@ -618,3 +618,104 @@ test('sandbox 90: the temporary instance and its relay keys are deleted and its 
   assert.equal(real.code, 3, real.out);
   assert.ok(await sb.near.account('v1.btc.test.near'));
 });
+
+// ---------------------------------------------------------------- step 60: the real instance ends with no full-access key
+
+test('10 dry run says the deployer key stays on the real instance until step 60, and that the deployer can replace or delete a temporary one', () => {
+  const op = opFile('dry60');
+  const wasm = WASM ?? join(GOLIVE, 'lib.mjs');
+  const real = node('10-deploy-instance.mjs', ['--dry-run', '--offline', '--name', 'v1', '--operator-passkey', op.path, '--wasm', wasm]);
+  assert.equal(real.code, 0, real.out);
+  assert.match(real.out, /the real instance: the deployer key added here stays on it until 60-lock-instance\.mjs removes it/);
+  const temp = node('10-deploy-instance.mjs', ['--dry-run', '--offline', '--temp', '--wasm', wasm]);
+  assert.equal(temp.code, 0, temp.out);
+  assert.match(temp.out, /the deployer can replace or delete it at any time/);
+  assert.doesNotMatch(temp.out, /can never upgrade/);
+});
+
+test('60 refuses before anything: no mode, --live without the yes flag, a tmp- name, a name not recorded, one recorded as temporary, mainnet', async () => {
+  const record = join(WORK, 'lock-record.json');
+  writeFileSync(record, JSON.stringify({ instances: [
+    { account: 'v1.s.undo-btc.testnet', temp: false, code_hash: 'x', operator_passkey: '02'.padEnd(66, '1'), created_at: 'then' },
+    { account: 'v2.s.undo-btc.testnet', temp: true, code_hash: 'x', created_at: 'then' },
+    { account: 'v1.p.test.near', temp: false, code_hash: 'x', created_at: 'then' },
+  ] }));
+  const cases = [
+    [['--name', 'v1', '--record', record, '--offline'], /give --dry-run or --live/],
+    [['--live', '--name', 'v1', '--record', record], /cannot be undone: add --yes-delete-the-last-key/],
+    [['--dry-run', '--name', 'tmp-x', '--record', record, '--offline'], /temporary instance: it keeps the deployer key/],
+    [['--dry-run', '--name', 'v9', '--record', record, '--offline'], /v9\.s\.undo-btc\.testnet is not in the instance record/],
+    [['--dry-run', '--name', 'v2', '--record', record, '--offline'], /is not recorded as the real instance/],
+    [['--live', '--offline', '--yes-delete-the-last-key', '--name', 'v1', '--record', record], /--offline is for a dry run/],
+  ];
+  for (const [args, why] of cases) {
+    const r = node('60-lock-instance.mjs', args);
+    assert.equal(r.code, 3, `${args.join(' ')}\n${r.out}`);
+    assert.match(r.out, why);
+  }
+  const dry = node('60-lock-instance.mjs', ['--dry-run', '--offline', '--name', 'v1', '--record', record]);
+  assert.equal(dry.code, 0, dry.out);
+  assert.match(dry.out, /PLAN tx 1: signer v1\.s\.undo-btc\.testnet -> receiver v1\.s\.undo-btc\.testnet[\s\S]*DeleteKey <s\.undo-btc\.testnet's own public key/);
+  assert.match(dry.out, /DRY RUN: nothing sent\. This step cannot be undone/);
+  const main = await fakeRpc('mainnet');
+  try {
+    for (const [network, extra] of [['testnet', []], ['sandbox', ['--parent', 'p.test.near']]]) {
+      const r = await nodeAsync('60-lock-instance.mjs', ['--dry-run', '--name', 'v1', '--record', record, '--network', network, '--rpc', main.url, ...extra]);
+      assert.equal(r.code, 3, `${network}\n${r.out}`);
+      assert.match(r.out, /mainnet/);
+    }
+  } finally {
+    main.close();
+  }
+});
+
+test('sandbox 60: the real instance fails the readback while the deployer key is on it; the lock removes it after the yes flag; a rerun sends nothing; step 90 still refuses it', { skip: noSandbox, timeout: 180_000 }, async () => {
+  const { fullAccessVerdict } = await import('../checks.mjs');
+  const contract = 'v1.btc.test.near';
+  const op = opFile('real');
+  const again = deploy(['--live', '--name', 'v1', '--operator-passkey', op.path]);
+  assert.equal(again.code, 0, again.out);
+  assert.match(again.out, /INFO \[mock-signer\] v1\.btc\.test\.near still has 1 full-access key\(s\)/);
+  assert.match(again.out, /NEXT: 60-lock-instance\.mjs --dry-run --name v1/);
+  assert.equal(await fullAccessVerdict({ near: sb.near, contract, mode: 'require-none', label: 'mock-signer' }), 'FAIL', 'the final readback fails while the key is there');
+  const lock = (args) => node('60-lock-instance.mjs', [...sb.common, '--parent', sb.parent.accountId, '--record', sb.record, '--name', 'v1', ...args], sb.env);
+  const dry = lock(['--dry-run']);
+  assert.equal(dry.code, 0, dry.out);
+  assert.match(dry.out, new RegExp(`DeleteKey ${sb.parent.publicKey.replace(/[+]/g, '\\+')}`));
+  const unconfirmed = lock(['--live']);
+  assert.equal(unconfirmed.code, 3, unconfirmed.out);
+  assert.equal((await sb.near.rpc('query', { request_type: 'view_access_key_list', account_id: contract, finality: 'final' })).keys.length, 1, 'nothing was sent without the yes flag');
+  const r = lock(['--live', '--yes-delete-the-last-key']);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /SENT \[mock-signer\] deleted the deployer's full-access key from v1\.btc\.test\.near: local NEAR sandbox tx \w+/);
+  assert.match(r.out, /PASS \[mock-signer\] v1\.btc\.test\.near has no full-access key/);
+  assert.doesNotMatch(r.out, /^FAIL/m);
+  const keys = (await sb.near.rpc('query', { request_type: 'view_access_key_list', account_id: contract, finality: 'final' })).keys;
+  assert.equal(keys.filter((k) => k.access_key.permission === 'FullAccess').length, 0);
+  assert.equal(await fullAccessVerdict({ near: sb.near, contract, mode: 'require-none', label: 'mock-signer' }), 'PASS');
+  const recorded = JSON.parse(readFileSync(sb.record, 'utf8')).instances.find((i) => i.account === contract);
+  assert.match(recorded.locked_tx, /^\w{43,44}$/);
+  const rerun = lock(['--live', '--yes-delete-the-last-key']);
+  assert.equal(rerun.code, 0, rerun.out);
+  assert.match(rerun.out, /NOTHING TO SEND: v1\.btc\.test\.near has no full-access key/);
+  const teardown = node('90-teardown-temp.mjs', [...sb.common, '--parent', sb.parent.accountId, '--record', sb.record, '--config', join(WORK, 'none.json'), '--live', '--name', 'v1'], sb.env);
+  assert.equal(teardown.code, 3, teardown.out);
+  assert.ok(await sb.near.account(contract));
+});
+
+test('secrets-put.mjs --live run directly makes the account check itself: an id on another account\'s row sets nothing', { skip: noSite }, () => {
+  const f = fixtureFiles();
+  const dir = join(WORK, 'direct-secrets');
+  mkdirSync(dir, { recursive: true });
+  const calls = join(dir, 'calls');
+  const otherId = '2'.repeat(32);
+  const stub = join(dir, 'wrangler');
+  writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${calls}'\ncase "$*" in\n  whoami) printf '%s\\n' 'You are logged in, associated with the email someone-else@example.com.' '| tedinroc Account (member) | ${'1'.repeat(32)} |' '| another Account | ${otherId} |' ;;\n  *"secret put"*) cat > /dev/null; echo "Success! Uploaded secret" ;;\nesac\n`);
+  chmodSync(stub, 0o755);
+  const out = spawnSync(process.execPath, [join(GOLIVE, 'secrets-put.mjs'), '--target', 'worker', '--secrets', f.secretsPath, '--live'], {
+    encoding: 'utf8', env: { ...process.env, WRANGLER: stub, CLOUDFLARE_ACCOUNT_ID: otherId },
+  });
+  assert.equal(out.status, 3, `${out.stdout}${out.stderr}`);
+  assert.match(`${out.stdout}${out.stderr}`, /the account check failed, so no secret was set: deploy: refused: the row for CLOUDFLARE_ACCOUNT_ID does not name the tedinroc account/);
+  assert.equal(readFileSync(calls, 'utf8').includes('secret put'), false, 'no secret was handed to wrangler');
+});

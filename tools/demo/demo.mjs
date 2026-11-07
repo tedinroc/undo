@@ -19,7 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { fromHex, toHex } from '../lib/bytes.mjs';
 import { randomBytes, secp256k1 } from '../lib/crypto.mjs';
 import { p2wpkhSpk } from '../lib/btc.mjs';
-import { consensusVerdict, toolsCheck } from '../verify/rust.mjs';
+import { consensusJudge, toolsCheck } from '../verify/rust.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const argv = process.argv.slice(2);
@@ -186,10 +186,14 @@ async function main() {
   say('PASS', 'demo-4', net, `after ${mmss(wait)} the relay called execute (NEAR ${config.network} tx ${executed.hash}), ${instance.signer} signed, and the contract assembled the Bitcoin transaction (${signed.sigs.length} signature(s))`);
 
   // 5. The signed transaction, judged by the consensus library against the made-up coin.
-  const verdict = consensusVerdict(REPO, finalTx, v2.script_pubkey, [coin.value]);
-  const control = consensusVerdict(REPO, finalTx, v2.script_pubkey, [coin.value + 1]);
-  if (verdict === null) say('SKIP', 'demo-5', 'consensus-lib', `the signed transaction was not judged: ${toolsCheck(REPO).why}`);
-  else if (verdict && !control) say('PASS', 'demo-5', 'consensus-lib', `libbitcoinconsensus accepts the contract's final transaction for the made-up ${coin.value} sat coin, and refuses it for a wrong value. Nothing was broadcast`);
+  const judged = consensusJudge(REPO, finalTx, v2.script_pubkey, [coin.value]);
+  const controlJudged = consensusJudge(REPO, finalTx, v2.script_pubkey, [coin.value + 1]);
+  const verdict = judged.verdict;
+  const control = controlJudged.verdict;
+  // A referee that crashed gave no verdict, and a control it did not judge proves nothing.
+  if (judged.crashed || controlJudged.crashed) say('FAIL', 'demo-5', 'consensus-lib', `no verdict: ${judged.why ?? controlJudged.why}`);
+  else if (verdict === null) say('SKIP', 'demo-5', 'consensus-lib', `the signed transaction was not judged: ${toolsCheck(REPO).why}`);
+  else if (verdict === true && control === false) say('PASS', 'demo-5', 'consensus-lib', `libbitcoinconsensus accepts the contract's final transaction for the made-up ${coin.value} sat coin, and refuses it for a wrong value. Nothing was broadcast`);
   else say('FAIL', 'demo-5', 'consensus-lib', `libbitcoinconsensus: real value ${verdict ? 'accepted' : 'refused'}, wrong value ${control ? 'accepted' : 'refused'}`);
 }
 

@@ -9,7 +9,8 @@
 #
 # Every line reads PASS, SKIP or FAIL, a claim number from CLAIMS.md, and a label for where it ran:
 # [live-testnet] [live-mutinynet] [replay] [consensus-lib] [unit] [static], or [mock-signer] against
-# a local stage. A network failure prints SKIP (network), never FAIL. Exit 0 means no FAIL.
+# a local stage. A network failure prints SKIP (network), never FAIL. INFO lines are totals, or a
+# record read from proofs/ that this run did not check again. Exit 0 means no FAIL.
 # UNDO_CONFIG names another deployment file than deploy/testnet.json.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"

@@ -69,6 +69,17 @@ function run(target, args, { input = '' } = {}) {
   return spawnSync('/bin/sh', ['-c', `${wranglerCmd()} ${args}`], { cwd, input, encoding: 'utf8', env: process.env });
 }
 
+/**
+ * The same account check 30-secrets.sh makes, made again here, so running this file directly cannot skip it: wrangler
+ * whoami must show the public account on the row of CLOUDFLARE_ACCOUNT_ID (worker/undo-cron/require-account.sh).
+ */
+function requireAccount() {
+  const out = spawnSync('bash', ['-c', 'source "$1" && golive_require_account_lib && require_account', 'account-check', join(REPO, 'scripts', 'go-live', 'env.sh')], { encoding: 'utf8', env: process.env });
+  const said = `${out.stdout ?? ''}${out.stderr ?? ''}`.trim().split('\n').filter(Boolean);
+  if (out.status !== 0) throw new Refused(`the account check failed, so no secret was set: ${said.at(-1) ?? `exit ${out.status}`}`);
+  console.log(said.at(-1) ?? 'deploy: account checked');
+}
+
 function main() {
   const a = parseArgs(process.argv.slice(2), { target: 'text', secrets: 'text', dispenser: 'text', canary: 'text', 'dry-run': 'flag', live: 'flag' });
   if (!['worker', 'pages'].includes(a.target) || !a.secrets || Boolean(a['dry-run']) === Boolean(a.live)) throw new UsageError(USAGE);
@@ -83,6 +94,7 @@ function main() {
     return 0;
   }
   if (!wranglerCmd()) throw new Refused('WRANGLER is not set: run this through 30-secrets.sh');
+  requireAccount();
   let failed = 0;
   for (const [name, { value }] of values) {
     const out = run(a.target, put(name), { input: value });

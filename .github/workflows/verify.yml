@@ -65,7 +65,7 @@ jobs:
           UNDO_TOOLS_CHECK_BIN: ${{ github.workspace }}/tools/rust-check/target/debug/undo-tools-check
         run: |
           files=()
-          for f in tools/test/offline.test.mjs tools/test/g2-units.test.mjs tools/test/watch.test.mjs; do
+          for f in tools/test/offline.test.mjs tools/test/g2-units.test.mjs tools/test/watch.test.mjs tools/test/judge-floor.test.mjs; do
             [ -f "$f" ] && files+=("$f")
           done
           node --test "${files[@]}"

@@ -4,7 +4,8 @@
 //
 // What an alert says is what the contract already shows anyone: the amount, the destination and the unlock time.
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { segwitAddress, sha256d } from './btc.mjs';
 import { base58Encode, concat, fromHex, toHex, utf8 } from './bytes.mjs';
 import { randomBytes, sha256 } from './crypto.mjs';
@@ -124,6 +125,15 @@ export function checkWatchConfig(raw) {
   });
 }
 
+/**
+ * A path as the watcher prints it: the default folder as ~/.undo-watch/NAME, anything else by its file name alone.
+ * Output may be filmed or pasted, so it never carries a folder or a user name.
+ */
+export function shownPath(path) {
+  const p = resolve(path);
+  return dirname(p) === join(homedir(), '.undo-watch') ? `~/.undo-watch/${basename(p)}` : basename(p);
+}
+
 /** Where the config may live: never inside a git work tree, so a topic cannot be committed by accident. */
 export function gitTreeAbove(path) {
   let dir = resolve(dirname(path));
@@ -137,7 +147,7 @@ export function gitTreeAbove(path) {
 
 /** Writes a file that holds the topic: mode 600, in a folder of mode 700, and never over an existing one unless asked. */
 export function writePrivateFile(path, text, { force = false } = {}) {
-  if (!force && existsSync(path)) throw new ConfigError(`config: ${path} exists. Pass --force to replace it`);
+  if (!force && existsSync(path)) throw new ConfigError(`config: ${shownPath(path)} exists. Pass --force to replace it`);
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const tmp = `${path}.tmp-${process.pid}`;
   const fd = openSync(tmp, 'wx', 0o600);
@@ -155,7 +165,7 @@ export function loadWatchConfig(path) {
   try {
     text = readFileSync(path, 'utf8');
   } catch (err) {
-    throw new ConfigError(err.code === 'ENOENT' ? `config: no file at ${path}. Run: node tools/watch.mjs init` : `config: ${err.code}`);
+    throw new ConfigError(err.code === 'ENOENT' ? `config: no file ${shownPath(path)} there. Run: node tools/watch.mjs init` : `config: ${err.code}`);
   }
   let raw;
   try {
@@ -164,7 +174,7 @@ export function loadWatchConfig(path) {
     throw new ConfigError('config: not JSON');
   }
   const mode = statSync(path).mode & 0o077;
-  if (mode !== 0) throw new ConfigError(`config: ${path} can be read by other users. Run: chmod 600 ${path}`);
+  if (mode !== 0) throw new ConfigError(`config: ${shownPath(path)} can be read by other users. Run chmod 600 on it`);
   return checkWatchConfig(raw);
 }
 
@@ -277,11 +287,21 @@ export function contractReads(pool, contract, { nowFn = () => Date.now() } = {})
   };
 }
 
+/** The chain's own clock: the last block's time plus the time since it was heard. Liveness is decided on this alone. */
+export const chainClockOf = (sample, now) => sample.blockMs + (now - sample.heardAt);
+
+/** How far this machine's clock may sit from the chain's before it is taken to be wrong: a lagging node, not a bad clock. */
+export const CLOCK_TOLERANCE_MS = 30_000;
+
 /**
- * The chain's now, as late as either clock allows: this machine's, or the last block plus the time since it was
- * heard. The later of the two gives the shorter "unlocks in", which is the safe side to be wrong on.
+ * What an alert counts down from. Within CLOCK_TOLERANCE_MS, the later of this machine's clock and the chain's, which
+ * gives the shorter "unlocks in", the safe side when a node lags a block. Past it, this machine's clock is wrong and
+ * the chain's is used, so a fast clock neither reads "unlocked" early nor, through liveness, hides a live request.
  */
-export const chainNowOf = (sample, now) => Math.max(now, sample.blockMs + (now - sample.heardAt));
+export const chainNowOf = (sample, now) => {
+  const chain = chainClockOf(sample, now);
+  return Math.abs(now - chain) <= CLOCK_TOLERANCE_MS ? Math.max(now, chain) : chain;
+};
 
 // ---------------------------------------------------------------- what an alert says
 
@@ -431,8 +451,8 @@ export class StateStore {
     this.requests = {};
     if (existsSync(path)) {
       const raw = JSON.parse(readFileSync(path, 'utf8'));
-      if (raw.format !== STATE_FORMAT) throw new Error(`state: ${path} is not a watcher state file`);
-      if (raw.contract !== contract || raw.vault !== vault || raw.network !== network) throw new Error(`state: ${path} is for another vault or contract`);
+      if (raw.format !== STATE_FORMAT) throw new Error(`state: ${shownPath(path)} is not a watcher state file`);
+      if (raw.contract !== contract || raw.vault !== vault || raw.network !== network) throw new Error(`state: ${shownPath(path)} is for another vault or contract`);
       this.requests = raw.requests ?? {};
     }
   }
@@ -536,8 +556,16 @@ export class Watcher {
       this.state.set(id, { outcome: 'skipped', why: 'gone before it was read', seen_at: seenAt, gone_at: seenAt });
       return { kind: 'skipped', id, why: 'gone before it was read' };
     }
-    const chainNow = chainNowOf(sample, this.nowFn());
-    const dead = liveness(request, v, chainNow);
+    const now = this.nowFn();
+    const chainNow = chainNowOf(sample, now);
+    const skew = now - chainClockOf(sample, now);
+    if (Math.abs(skew) > CLOCK_TOLERANCE_MS && !this.warnedSkew) {
+      this.warnedSkew = true;
+      this.log(`CLOCK ${this.label()} this machine's clock is ${Math.round(Math.abs(skew) / 1000)} s ${skew > 0 ? 'ahead of' : 'behind'} the chain's: alerts count down from the chain's clock`);
+      this.record({ event: 'clock_skew', skew_ms: skew });
+    }
+    // On the chain's clock alone: this machine's clock running ahead must never mark a live request expired.
+    const dead = liveness(request, v, chainClockOf(sample, now));
     if (dead) {
       this.state.set(id, { outcome: 'skipped', why: dead, seen_at: seenAt, proposed_at: request.proposed_at });
       this.log(`SKIP r=${id} ${this.label()} not alerted: ${dead}`);

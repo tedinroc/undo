@@ -16,7 +16,7 @@ import { createInterface } from 'node:readline';
 import { parseArgs, UsageError } from './lib/args.mjs';
 import {
   CONFIG_FORMAT, ConfigError, contractReads, DEFAULT_NTFY, DEFAULT_PAGE_ORIGIN, gitTreeAbove, loadWatchConfig, makeTopic, NETWORKS, ntfyPublisher, RpcDown, RpcPool,
-  StateStore, statePathFor, TESTNET_RPC, testAlert, topicTag, vaultFrom, Watcher, writePrivateFile, checkWatchConfig,
+  shownPath, StateStore, statePathFor, TESTNET_RPC, testAlert, topicTag, vaultFrom, Watcher, writePrivateFile, checkWatchConfig,
 } from './lib/watch.mjs';
 
 const DEFAULT_CONFIG = process.env.UNDO_WATCH_CONFIG || join(homedir(), '.undo-watch', 'config.json');
@@ -54,7 +54,7 @@ function init(argv) {
   if (local && (!a['page-origin'] || !a['ntfy-server'])) throw new UsageError('--page-origin and --ntfy-server are needed in local mode, both on this machine');
   const path = resolve(a.config ?? DEFAULT_CONFIG);
   const tree = gitTreeAbove(path);
-  if (tree) throw new ConfigError(`config: ${path} is inside a git work tree. The topic must never be committed: pick a folder outside any repo`);
+  if (tree) throw new ConfigError(`config: ${shownPath(path)} is inside a git work tree. The topic must never be committed: pick a folder outside any repo`);
   const raw = {
     format: CONFIG_FORMAT,
     network,
@@ -70,7 +70,7 @@ function init(argv) {
   const config = checkWatchConfig(raw);
   writePrivateFile(path, `${JSON.stringify(raw, null, 2)}\n`, { force: Boolean(a.force) });
   const server = new URL(config.ntfy_server).host;
-  console.log(`Wrote ${path} (mode 600). It holds your ntfy topic: keep it out of every repo, screenshot and film.`);
+  console.log(`Wrote ${shownPath(path)} (mode 600). It holds your ntfy topic: keep it out of every repo, screenshot and film.`);
   console.log('');
   console.log('On the phone that will cancel:');
   console.log('  1. Install the ntfy app (App Store: "ntfy", by Philipp Heckel; or Google Play / F-Droid).');
@@ -292,7 +292,7 @@ async function phoneTest(argv) {
     const path = join(dirname(configPath), `phone-test-${topicTag(config.ntfy_topic)}-${Date.now()}.json`);
     writePrivateFile(path, `${JSON.stringify(report, null, 1)}\n`);
     if (pass) writePrivateFile(phoneTestPath(configPath, config.ntfy_topic), `${JSON.stringify(report, null, 1)}\n`, { force: true });
-    console.log(`Saved ${path}`);
+    console.log(`Saved ${shownPath(path)}, beside the config`);
   }
   if (!pass) {
     console.log('Not good enough to film. Common causes: Show Previews not Always, a Focus mode, Low Power Mode, the app never opened since install. Fix one, then run this again.');
