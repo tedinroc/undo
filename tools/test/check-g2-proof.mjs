@@ -45,10 +45,11 @@ if (bin && s.pass && problems.length === 0) {
   const cosign = valueOf('cosign');
   const escape = valueOf('escape');
   need(verify(p.cosigned.raw, [cosign]) === 0, 'consensus refuses the co-signed spend');
-  need(verify(p.cosigned.raw, [cosign + 1]) !== 0, 'control passed: a wrong value was accepted');
-  need(verify(p.cosigned.ku_control.raw, [cosign]) !== 0, 'consensus accepts the spend with no K_u signature');
+  // Exit 1 is the referee's refusal. A crash (a panic exits 101) is no refusal, so it fails a control too.
+  need(verify(p.cosigned.raw, [cosign + 1]) === 1, 'control: a wrong value was not refused');
+  need(verify(p.cosigned.ku_control.raw, [cosign]) === 1, 'consensus does not refuse the spend with no K_u signature');
   need(verify(p.escape.raw, [escape]) === 0, 'consensus refuses the escape');
-  need(verify(p.escape.csv_control.raw, [escape]) !== 0, 'consensus accepts the escape one block short');
+  need(verify(p.escape.csv_control.raw, [escape]) === 1, 'consensus does not refuse the escape one block short');
 }
 
 if (problems.length) {

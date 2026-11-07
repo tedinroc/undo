@@ -485,6 +485,8 @@ class Driver {
     wrong[0] += 1;
     const control = spawnSync(checkBin, ['verify', rawHex, spkHex, wrong.join(',')], { encoding: 'utf8' });
     if (control.status === 0) throw new Fail(step, 'consensus_control_passed', 'a wrong value was accepted, so this check proves nothing');
+    // Exit 1 is the referee's refusal; a crash is not one, and would make this control prove nothing.
+    if (control.status !== 1) throw new Fail(step, 'consensus_control_not_judged', `the referee gave no verdict on the wrong value (exit ${control.status})`);
     return { accepted: 'libbitcoinconsensus, every input', wrong_value_control: 'refused' };
   }
 

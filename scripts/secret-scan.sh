@@ -40,6 +40,9 @@ SECRET_PATTERNS=(
   "github_pat_[A-Za-z0-9_]{30,}"
   "sk-[A-Za-z0-9_-]{30,}"
   "AKIA[0-9A-Z]{16}"
+  # An ntfy topic is the password to the phone alerts: in the watcher's config field, or in an ntfy.sh URL.
+  "ntfy_topic[\"' :=]+[\"'][A-Za-z0-9_-]{16,}"
+  "ntfy\.sh/[A-Za-z0-9_-]{16,}"
   # An env-style assignment holding a literal rather than a reference.
   "[A-Z_]*(API_KEY|API_TOKEN|SECRET)[A-Z_]*=[^ \$\"'{<(]{8,}"
 )

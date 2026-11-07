@@ -59,9 +59,14 @@ must_pass "a vault id" "{\"vault\": \"$hex64\"}"
 must_pass "a digest in a sentence" "digest $hex64 was signed"
 must_pass "a checksum field" "checksum = \"$hex64\""
 must_pass "an empty secret field" "\"secret\": \"\""
+topic="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 22)"
+must_hit "a watcher config's ntfy topic" "{\"ntfy_server\": \"https://ntfy.sh\", \"ntfy_topic\": \"$topic\"}"
+must_hit "an ntfy.sh topic URL" "subscribe at https://ntfy.sh/$topic"
+must_pass "an ntfy.sh docs link" "see https://ntfy.sh/docs/publish/"
+must_pass "a topic placeholder" "https://ntfy.sh/<topic>"
 
 for path in proofs/vault-recovery.json recovery.json proofs/recovery-1.json my-seed.txt seed-backup.txt x.seed \
-  dispenser.json funding-key.json cold-file.json vault-cold-key.txt; do
+  dispenser.json funding-key.json cold-file.json vault-cold-key.txt .undo-watch/config.json undo-watch.json undo-watch-config.json; do
   if git -C "$REPO" check-ignore -q --no-index "$path"; then
     echo "PASS ignored: $path"
   else
