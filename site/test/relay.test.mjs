@@ -1599,6 +1599,46 @@ async function createBody(name) {
   });
 }
 
+test('made rows: two sends of one create_vault, the first refused at the node. The relay keeps a row exactly when a create landed', async () => {
+  const world = fakeWorld();
+  // The node refuses the next send_tx it sees, once, as a node can. Every later one lands.
+  let refuseNext = true;
+  const inner = world.fetchFn;
+  world.fetchFn = async (url, init = {}) => {
+    const body = init.body && !String(url).startsWith(ESPLORA) ? JSON.parse(init.body) : {};
+    if (body.method === 'send_tx' && refuseNext) {
+      refuseNext = false;
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { name: 'HANDLER_ERROR', code: -32000, message: 'Server error', cause: { name: 'INVALID_TRANSACTION', info: {} }, data: { TxExecutionError: { InvalidTxError: { InvalidChain: null } } } } }));
+    }
+    return inner(url, init);
+  };
+  const r = relayWith(world);
+  const built = await createBody('race');
+  const landedCreates = () => [...world.included].map(decodeTx).filter((t) => t.actions.some((a) => a.method === 'create_vault')).length;
+  const rowOf = async (vault) => (await r.state.call('madeVault', { vault })).row;
+
+  // A double submit: both bodies pass every check, and the one that wrote the row is refused by the node.
+  const answers = await Promise.all([r.relay('create_vault', built.args, { pow: 0 }), r.relay('create_vault', built.args, { pow: 0, ip: '198.51.100.8' })]);
+  const codes = answers.map((a) => a.body.code ?? 'sent').sort();
+  assert.deepEqual(codes, ['already_sent', 'tx_refused'], 'the second sends nothing while the first is under way');
+  assert.equal(landedCreates(), 0);
+  assert.equal(await rowOf(built.vaultHex), null, 'no create landed, so no row');
+  assert.match(answers.find((a) => a.body.code === 'already_sent').body.message, /Read the vault in a moment/);
+
+  // Asked again, it lands and the row is there.
+  assert.equal((await r.relay('create_vault', built.args, { pow: 0, ip: '198.51.100.9' })).body.ok, true);
+  assert.equal(landedCreates(), 1);
+  assert.ok(await rowOf(built.vaultHex), 'a create landed, so its row is kept');
+
+  // A row older than a send can take, for a vault the chain does not show: a new send of it goes, and when the node
+  // refuses that one, the row it did not write stays.
+  const old = await createBody('race-old');
+  await r.state.call('made', { vault: old.vaultHex, passkey: old.args.passkey.pubkey, k_e_intent: old.args.k_e_intent, now: NOW - 3 * 60_000 });
+  refuseNext = true;
+  assert.equal((await r.relay('create_vault', old.args, { pow: 0, ip: '198.51.100.10' })).body.code, 'tx_refused');
+  assert.ok(await rowOf(old.vaultHex), 'a refused send takes back only a row it wrote');
+});
+
 test('AUDIT-4: status calls general up only when a new vault and a 4-input execute fit above the reserve, and each send agrees', async () => {
   const { ownerReserveYocto } = await import('../lib/relay-table.mjs');
   const reserve = ownerReserveYocto(CEILING_OWNER_DEFAULT_MICRO);

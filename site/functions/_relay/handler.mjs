@@ -481,6 +481,8 @@ class Relay {
       throw new Refusal('state_store_down', { message: 'the state store is not answering' });
     }
     if (!out.ok) throw new Refusal('bad_request', { message: 'that vault cannot be recorded' });
+    // Two sends of one create: the second sends nothing, so the row stays with the send that can land.
+    if (out.busy) throw new Refusal('already_sent', { message: 'this relay is sending that create_vault now. Read the vault in a moment.' });
     if (out.made) charged.made = vault;
   }
 

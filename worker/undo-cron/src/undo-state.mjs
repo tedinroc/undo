@@ -168,10 +168,16 @@ export class UndoState {
       return out;
     },
 
-    /** A create_vault this relay is about to send. `made` says whether this call wrote the row, so only it takes it back. */
+    /**
+     * A create_vault this relay is about to send. `made` says whether this call wrote the row, so only it takes the row
+     * back if its own send never reaches the chain. A row written in the last two minutes means another send of the same
+     * create is under way: `busy`, and the handler sends nothing, so a node refusing one of two sends cannot take away
+     * the row of the one that landed. An older row stays as it is, and is never this call's to take back.
+     */
     made({ vault, passkey, k_e_intent: cold, now }) {
       if (![vault, passkey, cold].every((v) => typeof v === 'string' && /^[0-9a-f]+$/.test(v))) return { ok: false, code: 'bad_request' };
-      if (this.madeRow(vault)) return { ok: true, made: false };
+      const row = this.first('SELECT at FROM made_vaults WHERE vault = ?', vault);
+      if (row) return { ok: true, made: false, busy: now - row.at < CLAIM_MS };
       this.sql.exec('INSERT INTO made_vaults VALUES (?, ?, ?, ?)', vault, passkey, cold, now);
       return { ok: true, made: true };
     },
