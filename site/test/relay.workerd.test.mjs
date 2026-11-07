@@ -253,7 +253,8 @@ test('bundles: wrangler 3 builds both from this tree, with no source map, no loc
 
 test('GET /api/relay: the shape the page reads, from the real Durable Object by script name', { skip }, async () => {
   const s = await status('main');
-  assert.deepEqual(Object.keys(s), ['ok', 'relay_account', 'contract', 'pow_bits', 'owner', 'general', 'funds']);
+  assert.deepEqual(Object.keys(s), ['ok', 'relay_account', 'contract', 'pow_bits', 'owner', 'general', 'owner_runway_days', 'funds']);
+  assert.ok(typeof s.owner_runway_days === 'number' && s.owner_runway_days > 3, `the stage relay's runway: ${s.owner_runway_days} days`);
   assert.equal(s.contract, stage.contract);
   assert.equal(s.relay_account, stage.relay.accountId);
   assert.equal(s.pow_bits, POW_BITS);
