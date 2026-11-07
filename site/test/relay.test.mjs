@@ -1586,3 +1586,51 @@ test('AUDIT-4: general sends stop short of what the owner key keeps for a day of
   const { ownerReserveYocto } = await import('../lib/relay-table.mjs');
   assert.equal(ownerReserveYocto(CEILING_OWNER_DEFAULT_MICRO), reserve, 'the table says the same');
 });
+
+/** A create_vault body the relay's checks take, for a vault the fake chain does not have. */
+async function createBody(name) {
+  const soft = softCredentials({ secret: label(`${name}-passkey`), origin: 'https://site.test', rpId: 'site.test' });
+  const made = await createPasskey({ credentials: soft, rpId: 'site.test' });
+  const { buildCreateArgs, newVaultKeys, rpIdHashOf } = await import('../lib/intents.mjs');
+  return buildCreateArgs({
+    contract: CONTRACT, keys: newVaultKeys({ seed: label(`${name}-seed`), cold: label(`${name}-cold`) }), passkeyPub: made.pubkey, rpIdHash: rpIdHashOf('site.test'),
+    km: secp256k1.getPublicKey(label('km'), true), guard: ACCOUNT, policy: POLICY, csv: 6, expiresAt: NOW + 60_000,
+    assert: async (digest) => (await getAssertion({ credentials: soft, digest, rpId: 'site.test' })).args,
+  });
+}
+
+test('AUDIT-4: status calls general up only when a new vault and a 4-input execute fit above the reserve, and each send agrees', async () => {
+  const { ownerReserveYocto } = await import('../lib/relay-table.mjs');
+  const reserve = ownerReserveYocto(CEILING_OWNER_DEFAULT_MICRO);
+  const storage = 182n * 10n ** 19n;
+  const world = fakeWorld({ vaults: { [VAULT]: vaultRow() }, requests: { 1: requestRow(), 4: requestRow({ inputs: Array(4).fill({}) }) } });
+  const r = relayWith(world, {}, { made: [VAULT] });
+  // Free balance this many mN above the reserve. A create holds 161 mN, a 4-input execute 183, a proposal 41.
+  const above = (milli) => { world.account = { amount: `${reserve + storage + BigInt(milli) * 10n ** 21n}`, storage_usage: 182 }; };
+  const general = async () => {
+    const g = (await r.status()).body.general;
+    return [g.up, g.why, g.calls_fit ?? false];
+  };
+  const built = await createBody('band');
+
+  // The band the review found: a proposal fits and a new vault does not. Status said up, and the create was refused.
+  above(100);
+  assert.deepEqual(await general(), [false, 'relay_reserve', true], 'not up, but a film already under way still fits');
+  assert.equal((await r.relay('create_vault', built.args, { pow: 0 })).body.code, 'relay_reserve', 'the create is refused, as status says');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 1 })).body.ok, true, 'a one-input execute goes, as calls_fit says');
+
+  // A new vault fits, a 4-input execute does not: still not up.
+  above(170);
+  assert.deepEqual(await general(), [false, 'relay_reserve', true]);
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 4 })).body.code, 'relay_reserve');
+
+  // Under a proposal's hold: nothing general fits, and status does not offer the calls either.
+  above(30);
+  assert.deepEqual(await general(), [false, 'relay_reserve', false]);
+
+  // Both fit: up, and both go.
+  above(200);
+  assert.deepEqual(await general(), [true, null, false]);
+  assert.equal((await r.relay('create_vault', built.args, { pow: 0 })).body.ok, true, 'the create goes');
+  assert.equal((await r.relay('execute', { vault: VAULT, request: 4 })).body.ok, true, 'and a 4-input execute');
+});

@@ -34,6 +34,14 @@ const STORAGE_YOCTO_PER_BYTE = 10_000_000_000_000_000_000n;
 const HOLD_YOCTO_PER_TGAS = 1_000_000_000_000_000_000_000n;
 const HOLD_YOCTO_BASE = 1_000_000_000_000_000_000_000n;
 const holdYocto = (tgas, deposit = 0n) => BigInt(tgas) * HOLD_YOCTO_PER_TGAS + HOLD_YOCTO_BASE + deposit;
+const createHold = () => holdYocto(RELAY_METHODS.create_vault.tgas + RELAY_METHODS.create_vault.heartbeatTgas, milliNear(RELAY_METHODS.create_vault.depositMilli));
+const executeHold = (inputs, instance) => holdYocto(executeTgas(inputs, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas }));
+// Status calls general up only when a new vault, which is what a page offers on it, and an execute of this many
+// inputs both fit above the owner key's reserve. These are the sums reserveCheck makes on each send, so the two agree.
+// A bigger execute is decided by its own send, which reads its input count first.
+const STATUS_EXECUTE_INPUTS = 4;
+// What scripts/go-live/10-deploy-instance.mjs sets, for a status that could not read the instance in time.
+const DEFAULT_GAS = { sign_tgas: 30, callback_tgas: 10 };
 const NOT_THIS_RELAYS = `this relay sends cancels only for vaults it made. ${OWN_ACCOUNT_PATH}`;
 const CANNOT_PAY = /NotEnoughAllowance|NotEnoughBalance|LackBalanceForState|AccessKeyNotFound|InvalidAccessKeyError/;
 // The relay's clock against the chain's. The contract decides at the edge.
@@ -159,6 +167,34 @@ class Relay {
     return ownerReserveYocto(this.ceilings.owner);
   }
 
+  /** The instance's gas settings for status, as far as a short read gets them: a slow RPC leaves the last known. */
+  async statusGas() {
+    let timer;
+    try {
+      const value = await Promise.race([
+        this.instance(this.reader()),
+        new Promise((resolve) => { timer = setTimeout(() => resolve(null), KEY_READ_MS + 500); }),
+      ]);
+      return value ?? this.instanceCache?.value ?? DEFAULT_GAS;
+    } catch {
+      return this.instanceCache?.value ?? DEFAULT_GAS;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Null when general sends fit above the owner key's reserve, else what status says: relay_reserve, and calls_fit when
+   * a proposal and a one-input execute still fit, so a page mid-film does not say it can't send.
+   */
+  reserveStatus(free, gas) {
+    if (free === null) return null;
+    const fits = (hold) => free - hold >= this.ownerReserve;
+    if (fits(createHold()) && fits(executeHold(STATUS_EXECUTE_INPUTS, gas))) return null;
+    const callsFit = fits(holdYocto(RELAY_METHODS.propose_btc.tgas)) && fits(executeHold(1, gas));
+    return { up: false, why: 'relay_reserve', ...(callsFit ? { calls_fit: true } : {}) };
+  }
+
   async readStatus() {
     const now = this.nowFn();
     if (this.statusCacheMs && this.statusCache && now - this.statusCache.at < this.statusCacheMs) return this.statusCache.value;
@@ -180,24 +216,28 @@ class Relay {
     const owner = { up: true, why: null, degraded: false, resets_at: null };
     const general = { up: true, why: null, resets_at: null };
     let free = null;
-    if (!this.keyText(OWNER)) Object.assign(owner, { up: false, why: 'relay_not_configured' });
+    const [key, gas] = await Promise.all([this.keyText(OWNER) ? this.ownerKey() : null, this.statusGas()]);
+    if (!key) Object.assign(owner, { up: false, why: 'relay_not_configured' });
     else {
-      const key = await this.ownerKey();
       free = key.free ?? null;
       if (key.why) Object.assign(owner, { up: false, why: key.why });
     }
     if (!this.bucketConfigured(GENERAL)) Object.assign(general, { up: false, why: 'relay_not_configured' });
-    // The cheapest general send would eat into what the owner key keeps for cancels.
-    else if (free !== null && free - holdYocto(RELAY_METHODS.propose_btc.tgas) < this.ownerReserve) Object.assign(general, { up: false, why: 'relay_reserve' });
+    // A new vault or a typical execute would eat into what the owner key keeps for cancels.
+    else Object.assign(general, this.reserveStatus(free, gas));
+    const callsCost = RELAY_METHODS.propose_btc.costMicro + RELAY_METHODS.execute.costMicro;
     if (read === null) {
       if (owner.up) owner.degraded = true;
       if (general.up) Object.assign(general, { up: false, why: 'state_store_down' });
+      // Nothing general goes out with the state store down.
+      delete general.calls_fit;
     } else {
+      if (general.calls_fit && read.spent.general + callsCost > this.ceilings.general) delete general.calls_fit;
       if (owner.up && read.spent.owner + RELAY_METHODS.cancel_all_and_rotate.costMicro > this.ceilings.owner) Object.assign(owner, { up: false, why: 'daily_ceiling', resets_at: read.resets_at });
       // Up means a new vault still fits: making one is what a page offers on this. `charge` decides each call.
       if (general.up && read.spent.general + RELAY_METHODS.create_vault.costMicro > this.createCeiling()) {
         // A vault no longer fits, but one proposal and its execute may. A page mid-film must not say it can't send.
-        const callsFit = read.spent.general + RELAY_METHODS.propose_btc.costMicro + RELAY_METHODS.execute.costMicro <= this.ceilings.general;
+        const callsFit = read.spent.general + callsCost <= this.ceilings.general;
         Object.assign(general, { up: false, why: 'daily_ceiling', resets_at: read.resets_at }, callsFit ? { calls_fit: true } : null);
       }
     }
@@ -272,7 +312,7 @@ class Relay {
       case 'create_vault': {
         const vault = toHex(vaultIdOfCreateArgs(this.contract, args));
         if ((await view('vault', { vault })) !== null) throw new Refusal('would_refuse', { message: 'that vault exists' });
-        charged.hold = holdYocto(spec.tgas + spec.heartbeatTgas, milliNear(spec.depositMilli));
+        charged.hold = createHold();
         return [
           callAction('create_vault', { args }, spec.tgas, milliNear(spec.depositMilli)),
           callAction('heartbeat', { vault }, spec.heartbeatTgas),
@@ -325,7 +365,7 @@ class Relay {
     }
     await this.chargeInputs(args, request.inputs.length, charged);
     const tgas = executeTgas(request.inputs.length, { signTgas: instance.sign_tgas, callbackTgas: instance.callback_tgas });
-    charged.hold = holdYocto(tgas);
+    charged.hold = executeHold(request.inputs.length, instance);
     return [callAction('execute', args, tgas)];
   }
 
