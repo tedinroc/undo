@@ -188,6 +188,16 @@ async function stageOn(rig, { port, softPasskey, relayEnv, miner }) {
     useApi(fn) {
       apiOverride = fn;
     },
+    /**
+     * A POST to the in-Node relay as the address `ip` would send it. A test that makes many vaults through the relay
+     * gives each its own address, because the relay limits creates per address and the page's own calls come from
+     * 127.0.0.1. Answers `{ status, body }`.
+     */
+    async api(path, body, { ip = '127.0.0.1' } = {}) {
+      if (!handler) throw new Error('the stage has no relay handler');
+      const response = await handler(new Request(`${origin}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'cf-connecting-ip': ip }, body: JSON.stringify(body) }));
+      return { status: response.status, body: await response.json() };
+    },
     async stop() {
       server.close();
       server.closeAllConnections?.();
