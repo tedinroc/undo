@@ -12,6 +12,7 @@ import { fromHex, toHex } from '/tools/lib/bytes.mjs';
 import { randomBytes } from '/tools/lib/crypto.mjs';
 import { buildRecovery } from '/tools/lib/recovery.mjs';
 import { runH7 } from './h7.mjs';
+import { runOperatorCheck } from './operator-check.mjs';
 import { ClockFace, h, hashBlock, satsText, screen, setState, show, sumInputs } from './kit.mjs';
 import { OWN_PATH_LINE, ownCancelFile, ownCancelFileName, ownCancelWords, relayIsWhy, relayRefusedIt } from './own-cancel.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
@@ -71,6 +72,12 @@ async function main() {
     ctx.credentials = await credentialsFor(config, { browser, soft: config.softPasskey ? { secret: randomBytes(32), origin: location.origin } : null });
   } catch {
     ctx.credentials = null;
+  }
+  // Needs no contract and no relay: the contract this config names may already be gone when a deploy asks for it.
+  const asked = parsePhoneFragment(location.hash);
+  if (asked.opproof && asked.opfor) {
+    runOperatorCheck(ctx, { nonce: asked.opproof, instance: asked.opfor });
+    return;
   }
   P.relay = await ctx.relay.status();
   P.statusAt = Date.now();

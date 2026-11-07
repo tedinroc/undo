@@ -974,14 +974,15 @@ test('the fragment and report functions, in the page that ships them', { skip, t
   await go('/p/', {});
   const out = await cdp.page(`const f = await import('/p/phone-fragment.mjs'); const r = await import('/p/h7-report.mjs');
     const parsed = f.parsePhoneFragment('#v=${'a'.repeat(64)}&tx=8gZ1dzfAhVn1jZ1dzfAhVn1jZ1dzfAhVn1jZ&f=0:07.9&h7=1&log=c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x&junk=1&q=blank.one');
-    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz&log=<');
-    const tries = r.decodeTries(parsed.log);
+    const bad = f.parsePhoneFragment('#tx=<script>&f=9&op=zz&log=<&opproof=zz');
+    const tries = r.decodeTries('c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x');
     const again = tries.map(r.encodeTry).join('~');
     return { parsed, bad, tries, again, built: f.buildPhoneFragment({ v: 'b', tx: 'x', f: '0:01.0', r: 3 }), s0: r.sFormSentence([]), s8: r.sFormSentence(Array(8).fill({ s: 'l' })), s3: r.sFormSentence([{ s: 'l' }, { s: 'l' }, { s: 'h' }]) };`);
   assert.equal(out.parsed.f, undefined, 'a link says nothing about what happened');
   assert.equal(out.parsed.tx, undefined);
   assert.equal(out.parsed.junk, undefined);
-  assert.deepEqual(out.bad.refused.sort(), ['log', 'op']);
+  assert.equal(out.parsed.log, undefined, 'nor what the test mode did: that is kept in sessionStorage');
+  assert.deepEqual(out.bad.refused.sort(), ['opproof']);
   assert.equal(out.again, 'c.h.1.2.3.b.4.abc~r.l.5.6.7.n.8.x');
   assert.equal(out.tries[0].blurred, true);
   assert.equal(out.tries[1].hash, null);

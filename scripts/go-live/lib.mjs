@@ -6,10 +6,11 @@
 // keys come from NEAR_CREDENTIALS_DIR/sandbox/<account>.json, and the label on its lines is [mock-signer].
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { b } from '../../tools/lib/borsh.mjs';
 import { base58Encode, concat, fromHex, toHex, utf8 } from '../../tools/lib/bytes.mjs';
-import { sha256 } from '../../tools/lib/crypto.mjs';
+import { randomBytes, sha256 } from '../../tools/lib/crypto.mjs';
+import { OPERATOR_PROOF_FORMAT, operatorProofDigest } from '../../tools/lib/operator-proof.mjs';
 import { loadCredentials, Near, NEAR } from '../../tools/lib/near.mjs';
 
 export const HERE = dirname(fileURLToPath(import.meta.url));
@@ -162,6 +163,58 @@ export function readOperatorPasskey(path, rpId) {
   const want = toHex(sha256(utf8(rpId)));
   if (rpIdHash !== want) throw new Refused(`operator passkey: rp_id_hash is not sha256("${rpId}"). A passkey made on another site cannot sign for this one`);
   return { pubkey, rp_id_hash: rpIdHash };
+}
+
+// ---------------------------------------------------------------- the operator's fresh signature
+
+export const CHALLENGE_FORMAT = 'undo-operator-challenge-v1';
+// Long enough to reach the phone and back, short enough that an old check cannot stand in for a new deploy.
+export const CHALLENGE_MAX_AGE_MS = 24 * 3_600_000;
+
+export const challengePath = (contract) => join(privateDir(), `operator-challenge-${contract}.json`);
+
+/** The link the operator opens on the phone, on the one site the passkey was made for. No secret in it. */
+export const challengeLink = ({ instance, nonce }) => `${SITE.origin}/p/#opproof=${nonce}&opfor=${instance}`;
+
+/** A fresh nonce for one deploy of `contract` with this operator key, kept where only this user can read it. */
+export function makeChallenge({ contract, operatorPasskey, now = Date.now() }) {
+  const challenge = { format: CHALLENGE_FORMAT, instance: contract, nonce: toHex(randomBytes(32)), pubkey: operatorPasskey.pubkey, made_at: now };
+  writePrivate(challengePath(contract), challenge);
+  return challenge;
+}
+
+/**
+ * Null when the operator passkey signed this deploy's own fresh challenge: the proof names this instance and the
+ * nonce step 10 made for this key, at most a day ago, and its assertion passes the contract's own WebAuthn rules
+ * against that key on this site. Otherwise the reason, in plain words. Nothing here is taken from the proof but the
+ * assertion: the key, the instance and the nonce are this script's own.
+ */
+export async function operatorProofProblem({ proofPath, contract, operatorPasskey, now = Date.now() }) {
+  const at = challengePath(contract);
+  if (!existsSync(at)) return `no operator challenge for ${contract} yet: run this step with --operator-challenge first`;
+  const challenge = readJson(at, 'operator challenge');
+  if (challenge.format !== CHALLENGE_FORMAT || challenge.instance !== contract || !/^[0-9a-f]{64}$/.test(challenge.nonce ?? '')) return 'the operator challenge file is not one this step wrote';
+  if (challenge.pubkey !== operatorPasskey.pubkey) return 'the operator challenge was made for another operator passkey: make a new one';
+  if (!(now - challenge.made_at <= CHALLENGE_MAX_AGE_MS)) return 'the operator challenge is more than a day old: make a new one';
+  const proof = readJson(proofPath, 'operator proof file');
+  if (proof.format !== OPERATOR_PROOF_FORMAT) return 'the proof file is not the phone page\'s signed operator check';
+  if (proof.instance !== contract) return `the proof is for ${proof.instance}, not ${contract}`;
+  if (proof.nonce !== challenge.nonce) return 'the proof signs another nonce than this step\'s latest challenge';
+  let refusalOf;
+  try {
+    ({ refusalOf } = await import(pathToFileURL(join(REPO, 'site', 'lib', 'webauthn.mjs')).href));
+  } catch {
+    throw new Refused('site/lib/webauthn.mjs is not in this tree: merge the web branch first');
+  }
+  const assertion = { authenticator_data: proof.authenticator_data, client_data_json: proof.client_data_json, signature: proof.signature };
+  if (![assertion.authenticator_data, assertion.client_data_json, assertion.signature].every((v) => typeof v === 'string' && /^([0-9a-f]{2})+$/.test(v))) return 'the proof\'s assertion is not hex';
+  let refusal;
+  try {
+    refusal = refusalOf({ assertion, digest: operatorProofDigest({ instance: contract, nonce: challenge.nonce }), pubkey: fromHex(operatorPasskey.pubkey), rpIdHash: fromHex(operatorPasskey.rp_id_hash), origins: [SITE.origin] });
+  } catch {
+    refusal = 'the operator key is not a point on P-256, so nothing can sign for it';
+  }
+  return refusal ? `the operator passkey did not sign this deploy's check: ${refusal}` : null;
 }
 
 // ---------------------------------------------------------------- actions tools/lib/near.mjs has no builder for

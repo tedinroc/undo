@@ -21,6 +21,8 @@ import { base58Encode, concat, toHex, utf8 } from '../../../tools/lib/bytes.mjs'
 import { p256, sha256 } from '../../../tools/lib/crypto.mjs';
 import { publicSecp } from '../../../tools/lib/keys.mjs';
 import { action, failureOf, keyFromSecret, loadKeyFile, NEAR, Near, TGAS } from '../../../tools/lib/near.mjs';
+import { softAssertion } from '../../../tools/lib/intent.mjs';
+import { operatorProofDigest } from '../../../tools/lib/operator-proof.mjs';
 import { insideGitTree, OWNER_ALLOWANCE_NEAR, OWNER_METHODS, Refused, writePrivate } from '../lib.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -64,10 +66,21 @@ function sh(script, args, env = {}) {
 
 const opFile = (name, { rp = RP_HASH } = {}) => {
   const path = join(WORK, `${name}.json`);
-  const pub = toHex(p256.getPublicKey(label(`operator-${name}`), true));
+  const secret = label(`operator-${name}`);
+  const pub = toHex(p256.getPublicKey(secret, true));
   writeFileSync(path, JSON.stringify({ pubkey: pub, rp_id_hash: rp }));
-  return { path, pub };
+  return { path, pub, secret };
 };
+
+/** What the phone page's operator check makes: `secret` signs step 10's latest challenge for `contract`, as a passkey would. */
+function proofFile(name, { contract, secret, nonce = null, instance = contract, origin = 'https://undo-btc.pages.dev' }) {
+  const challenge = JSON.parse(readFileSync(join(WORK, 'private', `operator-challenge-${contract}.json`), 'utf8'));
+  const n = nonce ?? challenge.nonce;
+  const assertion = softAssertion({ secret, digest: operatorProofDigest({ instance, nonce: n }), origin, rpId: 'undo-btc.pages.dev' });
+  const path = join(WORK, `${name}-proof.json`);
+  writeFileSync(path, JSON.stringify({ format: 'undo-operator-proof-v1', instance, nonce: n, credential_id: 'test-cred', ...assertion }));
+  return path;
+}
 
 // ---------------------------------------------------------------- a fake RPC, for the chain guard
 
@@ -214,6 +227,7 @@ test('50 dry run lists every read and every refused POST, and reads nothing', ()
   const r = node('50-readback.mjs', ['--dry-run', '--public-keys', writePublicKeys()]);
   assert.equal(r.code, 0, r.out);
   for (const want of [/GET https:\/\/undo-btc\.pages\.dev\/api\/relay/, /POST \/api\/relay: a browser Origin that is not this site, must answer 403 bad_origin/, /heartbeat without the operator token/, /PUT \/api\/relay/, /headers on \/, \/replay\/, \/p\/, \/t\//]) assert.match(r.out, want);
+  for (const want of [/an owner call for a vault this relay did not make, must answer 422 not_this_relays/, /a cancel naming both the passkey and the cold key, must answer 400 bad_request/, /POST \/api\/funds: funds for a vault this relay did not make, must answer 422 would_refuse/]) assert.match(r.out, want);
   const secretFile = join(WORK, 'has-secret.json');
   writeFileSync(secretFile, JSON.stringify({ contract: 'c', relay_account: 'r', keys: { RELAY_GENERAL_KEY: { secret_key: 'ed25519:x' } } }));
   const refused = node('50-readback.mjs', ['--dry-run', '--public-keys', secretFile]);
@@ -510,8 +524,17 @@ test('sandbox 10: a temporary instance deploys, reads back PASS on every field, 
 
 test('sandbox 10: the real instance takes the operator passkey from its file, and the instance view shows it', { skip: noSandbox, timeout: 180_000 }, async () => {
   const op = opFile('real');
-  const r = deploy(['--live', '--name', 'v1', '--operator-passkey', op.path]);
+  const unproven = deploy(['--live', '--name', 'v1', '--operator-passkey', op.path]);
+  assert.equal(unproven.code, 3, unproven.out);
+  assert.match(unproven.out, /takes only an operator passkey that has just signed a check for it/);
+  assert.equal(await sb.near.account('v1.btc.test.near'), null, 'refused before any write');
+  const asked = deploy(['--dry-run', '--name', 'v1', '--operator-passkey', op.path, '--operator-challenge']);
+  assert.equal(asked.code, 0, asked.out);
+  const proof = proofFile('real', { contract: 'v1.btc.test.near', secret: op.secret });
+  const r = deploy(['--live', '--name', 'v1', '--operator-passkey', op.path, '--operator-proof', proof]);
   assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /PASS \[mock-signer\] operator passkey \w+ signed this deploy's fresh check for v1\.btc\.test\.near/);
+  assert.equal(existsSync(join(WORK, 'private', 'operator-challenge-v1.btc.test.near.json')), false, 'the deploy used its check up');
   assert.match(r.out, new RegExp(`PASS \\[mock-signer\\] operator_passkey reads "${op.pub}"`));
   const instance = await sb.near.view('v1.btc.test.near', 'instance');
   assert.deepEqual(instance.origins, ['https://undo-btc.pages.dev']);
@@ -520,6 +543,10 @@ test('sandbox 10: the real instance takes the operator passkey from its file, an
   const poor = deploy(['--live', '--name', 'v9', '--operator-passkey', op.path, '--fund-near', '3']);
   assert.equal(poor.code, 3, poor.out);
   assert.match(poor.out, /cannot pay for \d+ bytes of code/);
+  const reused = deploy(['--live', '--name', 'v8', '--operator-passkey', op.path, '--operator-proof', proof]);
+  assert.equal(reused.code, 3, reused.out);
+  assert.match(reused.out, /proof is for v1\.btc\.test\.near, not v8\.btc\.test\.near|no operator challenge for v8/);
+  assert.equal(await sb.near.account('v8.btc.test.near'), null);
 });
 
 const keysFile = (contract) => join(WORK, 'private', `relay-${contract}.json`);
@@ -607,6 +634,10 @@ test('sandbox 50: the relay in real workerd with the keys step 20 made, behind t
     assert.doesNotMatch(r.out, /^FAIL/m, r.out);
     assert.doesNotMatch(r.out, /^SKIP/m, r.out);
     assert.match(r.out, /PASS \[mock-signer\] refused a browser Origin that is not this site: 403 bad_origin/);
+    assert.match(r.out, /PASS \[mock-signer\] refused an owner call for a vault this relay did not make: 422 not_this_relays/);
+    assert.match(r.out, /PASS \[mock-signer\] refused a WebAuthn assertion with a field the contract does not have: 400 bad_request/);
+    assert.match(r.out, /PASS \[mock-signer\] refused a cancel naming both the passkey and the cold key: 400 bad_request/);
+    assert.match(r.out, /PASS \[mock-signer\] refused funds for a vault this relay did not make: 422 would_refuse/);
     assert.match(r.out, /PASS \[mock-signer\] RELAY_OWNER_KEY nonce \d+ before the refused POSTs, \d+ after: it signed nothing/);
     assert.match(r.out, /PASS \[mock-signer\] \/ content-security-policy as built/);
     assert.match(r.out, /PASS \[mock-signer\] the landing page is titled Undo for Bitcoin/);
@@ -637,6 +668,63 @@ test('sandbox 90: the temporary instance and its relay keys are deleted and its 
   const real = teardown(['--live', '--name', 'v1']);
   assert.equal(real.code, 3, real.out);
   assert.ok(await sb.near.account('v1.btc.test.near'));
+});
+
+// ---------------------------------------------------------------- step 10: the operator passkey signs a fresh check first
+
+test('AUDIT-5: 10 takes a real operator passkey only after it signs this deploy\'s fresh check, for this instance and this nonce', () => {
+  const wasm = WASM ?? join(GOLIVE, 'lib.mjs');
+  const op = opFile('proved');
+  const contract = 'v1.s.undo-btc.testnet';
+  const step = (args) => node('10-deploy-instance.mjs', ['--dry-run', '--offline', '--name', 'v1', '--operator-passkey', op.path, '--wasm', wasm, ...args]);
+  const none = step(['--operator-proof', join(WORK, 'nothing.json')]);
+  assert.equal(none.code, 3, none.out);
+  assert.match(none.out, /no operator challenge for v1\.s\.undo-btc\.testnet yet/);
+  const wait = step([]);
+  assert.equal(wait.code, 0, wait.out);
+  assert.match(wait.out, /WAIT --live refuses until the operator passkey signs a fresh check/);
+
+  const asked = step(['--operator-challenge']);
+  assert.equal(asked.code, 0, asked.out);
+  const challenge = JSON.parse(readFileSync(join(WORK, 'private', `operator-challenge-${contract}.json`), 'utf8'));
+  assert.equal(spawnSync('stat', ['-f', '%Lp', join(WORK, 'private', `operator-challenge-${contract}.json`)], { encoding: 'utf8' }).stdout.trim(), '600');
+  assert.match(asked.out, new RegExp(`https://undo-btc\\.pages\\.dev/p/#opproof=${challenge.nonce}&opfor=v1\\.s\\.undo-btc\\.testnet`));
+  assert.doesNotMatch(asked.out, /PLAN tx/, 'a challenge sends nothing and plans nothing');
+
+  const good = proofFile('proved', { contract, secret: op.secret });
+  const ok = step(['--operator-proof', good]);
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /PASS \[live-testnet\] operator passkey \w+ signed this deploy's fresh check for v1\.s\.undo-btc\.testnet/);
+  assert.doesNotMatch(ok.out, /WAIT/);
+
+  const refusals = [
+    [proofFile('other-key', { contract, secret: label('someone else') }), /did not sign this deploy's check: webauthn: bad signature/],
+    [proofFile('other-instance', { contract, secret: op.secret, instance: 'v2.s.undo-btc.testnet' }), /the proof is for v2\.s\.undo-btc\.testnet, not v1/],
+    [proofFile('other-nonce', { contract, secret: op.secret, nonce: 'ee'.repeat(32) }), /another nonce than this step's latest challenge/],
+    [proofFile('other-site', { contract, secret: op.secret, origin: 'https://undo-btc.example' }), /webauthn: origin not allowed/],
+  ];
+  for (const [path, why] of refusals) {
+    const r = step(['--operator-proof', path]);
+    assert.equal(r.code, 3, r.out);
+    assert.match(r.out, why);
+  }
+  const stale = proofFile('stale', { contract, secret: op.secret });
+  assert.equal(step(['--operator-challenge']).code, 0, 'a new challenge');
+  const old = step(['--operator-proof', stale]);
+  assert.equal(old.code, 3, old.out);
+  assert.match(old.out, /another nonce than this step's latest challenge/, 'a check signed before the new challenge no longer counts');
+
+  const offCurve = join(WORK, 'off-curve.json');
+  writeFileSync(offCurve, JSON.stringify({ pubkey: `02${'ff'.repeat(32)}`, rp_id_hash: RP_HASH }));
+  const asked2 = node('10-deploy-instance.mjs', ['--dry-run', '--offline', '--name', 'v1', '--operator-passkey', offCurve, '--wasm', wasm, '--operator-challenge']);
+  assert.equal(asked2.code, 0, asked2.out);
+  const offProof = proofFile('off-curve', { contract, secret: op.secret });
+  const off = node('10-deploy-instance.mjs', ['--dry-run', '--offline', '--name', 'v1', '--operator-passkey', offCurve, '--wasm', wasm, '--operator-proof', offProof]);
+  assert.equal(off.code, 3, off.out);
+  assert.match(off.out, /not a point on P-256|bad signature/);
+  const temp = node('10-deploy-instance.mjs', ['--dry-run', '--offline', '--temp', '--wasm', wasm, '--operator-proof', good]);
+  assert.equal(temp.code, 3, temp.out);
+  assert.match(temp.out, /throwaway operator key/);
 });
 
 // ---------------------------------------------------------------- step 60: the real instance ends with no full-access key
