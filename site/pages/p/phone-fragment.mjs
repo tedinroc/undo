@@ -5,7 +5,7 @@
 // Anyone can write a link, so nothing a screen claims lives in the fragment. `r` is only a place to look, and what
 // this page saw and sent stays in sessionStorage, which a link cannot write. That holds for the test mode's report
 // too: the tries, the passkey flags and the operator passkey it made are kept there, never in the link.
-import { parseFragment } from '/site/lib/index.mjs';
+import { buildFragment, parseFragment, spkToAddress } from '/site/lib/index.mjs';
 
 const CREDENTIAL_ID = /^[A-Za-z0-9_-]{1,512}$/;
 
@@ -35,6 +35,18 @@ export function buildPhoneFragment(fields) {
     parts.push(`${name}=${value}`);
   }
   return parts.length ? `#${parts.join('&')}` : '';
+}
+
+/**
+ * The thief tab's link for the vault this tab made: its id, its spend key, and somewhere to send, since the tab keeps
+ * "Send everything" off until `to` is a tb1 address. The destination is a P2WPKH address of 20 random bytes, so
+ * nobody holds it and it is never the vault's own P2WSH: the send is the stolen-key case, a new destination with the
+ * longer wait. tb1 on every network, because the thief tab reads only tb1 and the output script is the same bytes.
+ */
+export function thiefLink(origin, vaultHex, seedHex, random20) {
+  if (!(random20 instanceof Uint8Array) || random20.length !== 20) throw new Error('thiefLink: the destination takes 20 bytes');
+  const to = spkToAddress('mutinynet', Uint8Array.of(0x00, 0x14, ...random20));
+  return `${origin}/t/${buildFragment({ v: vaultHex, k: seedHex, to })}`;
 }
 
 /** Rewrites the address bar without a new history entry, and never a server round trip. */

@@ -16,7 +16,7 @@ import { runOperatorCheck } from './operator-check.mjs';
 import { ClockFace, h, hashBlock, satsText, screen, setState, show, sumInputs } from './kit.mjs';
 import { OWN_PATH_LINE, ownCancelFile, ownCancelFileName, ownCancelWords, relayIsWhy, relayRefusedIt } from './own-cancel.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
-import { parsePhoneFragment, recallCredential, recallSeen, rememberCredential, rememberSeen, writeFragment } from './phone-fragment.mjs';
+import { parsePhoneFragment, recallCredential, recallSeen, rememberCredential, rememberSeen, thiefLink, writeFragment } from './phone-fragment.mjs';
 import { openElsewhere, passkeyProblem, problemWords, screenAwake, sensePasskeys } from './sense.mjs';
 import { chainNowOf, confirmVault, prepareVault, sendVault } from './vault-make.mjs';
 
@@ -1120,7 +1120,7 @@ async function onFund() {
 }
 
 async function copyThiefLink() {
-  const link = `${location.origin}/t/#v=${P.v}&k=${toHex(P.seed)}`;
+  const link = thiefLink(location.origin, P.v, toHex(P.seed), randomBytes(20));
   try {
     await navigator.clipboard.writeText(link);
     P.notice = { say: 'Copied. This link holds this vault\'s spend key.', words: null };
