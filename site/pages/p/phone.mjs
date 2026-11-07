@@ -56,6 +56,8 @@ let ctx;
 // ---------------------------------------------------------------- boot
 
 async function main() {
+  fitWordmark();
+  window.addEventListener('resize', fitWordmark);
   let config;
   try {
     config = await loadConfig();
@@ -65,6 +67,7 @@ async function main() {
     return;
   }
   document.getElementById('chip').textContent = config.labels.chip;
+  fitWordmark();
 
   const reader = new NearReader({ urls: config.rpc, timeoutMs: 6000 });
   const views = contractViews(reader, config.contract);
@@ -133,6 +136,17 @@ async function main() {
     return;
   }
   watchVault(P.fragment.v);
+}
+
+/** "Undo for Bitcoin" where it fits beside the chip, as on the landing page; only "Undo" where the chip leaves no room. */
+function fitWordmark() {
+  const mark = document.querySelector('.top .wordmark');
+  const chip = document.getElementById('chip');
+  if (!mark || !chip) return;
+  mark.classList.remove('short');
+  const row = mark.parentElement.getBoundingClientRect();
+  const box = mark.getBoundingClientRect();
+  if (box.right > row.right + 0.5 || chip.getBoundingClientRect().right + 12 > box.left) mark.classList.add('short');
 }
 
 /** A read started now and awaited later. Marked handled here, so one the page never waits for raises no alarm. */
@@ -1077,7 +1091,7 @@ function drawNoVault(words = null) {
     words ? h('p', { class: 'words', id: 'verbatim' }, words) : null,
     h('div', { class: 'grow' }),
     can ? h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault') : null,
-    h('p', { class: 'foot' }, 'Test coins only. The address starts with tb1. This page holds your spend key, so a changed page could take it. The operator can upgrade this test contract after 1 hour. The signing network can refuse, not take.'),
+    h('p', { class: 'foot' }, `Test coins only. The address starts with ${ctx.instance?.network === 'regtest' ? 'bcrt1' : 'tb1'}. This page holds your spend key, so a changed page could take it. The operator can upgrade this test contract after 1 hour. The signing network can refuse, not take.`),
   );
 }
 

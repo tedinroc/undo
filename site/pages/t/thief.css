@@ -6,6 +6,10 @@
   --digit: calc(400 * var(--u));
 }
 html, body { min-height: 100%; }
+.wordmark { white-space: nowrap; }
+.wordmark .for { font-weight: 500; color: var(--dim); }
+/* A local run's chip leaves no room beside it on a portrait screen, so the tab shows only "Undo" there. */
+.wordmark.short .rest { display: none; }
 #root { position: relative; min-height: 100vh; overflow-x: hidden; }
 
 /* Nothing shows but the chip until the state says so. */
@@ -87,6 +91,8 @@ html, body { min-height: 100%; }
 #root[data-wide="1"] #clock { font-size: calc(var(--digit) * 0.8); }
 #root[data-wide="1"] #clock .sl#d-mt { display: inline-block; }
 .under-clock { display: flex; align-items: baseline; justify-content: space-between; margin-top: calc(-44 * var(--u)); min-height: calc(42 * var(--u)); }
+/* Four digits are set at 0.8 of the size, so there is less room under their baseline, and the 0:00 overlaps less of it. */
+#root[data-wide="1"] .under-clock { margin-top: calc(-31 * var(--u)); }
 .auto { font-size: calc(34 * var(--u)); line-height: calc(42 * var(--u)); color: var(--red); white-space: nowrap; }
 .zero-label { color: var(--white); }
 .fuse { position: relative; height: calc(26 * var(--u)); margin-top: calc(8 * var(--u)); }
@@ -168,6 +174,7 @@ html, body { min-height: 100%; }
   #root[data-state="frozen"] #wait { height: 100vh; overflow: hidden; }
   .node-row { -webkit-line-clamp: 1; }
   .under-clock { margin-top: calc(-30 * var(--u)); }
+  #root[data-wide="1"] .under-clock { margin-top: calc(-21 * var(--u)); }
 }
 
 @media (prefers-reduced-motion: reduce) {

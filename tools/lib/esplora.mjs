@@ -11,6 +11,18 @@ const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 export class RelayError extends Error {}
 export class EndpointRefused extends Error {}
 
+/**
+ * A fetch that got no answer, in words a screen can show. A browser says only TypeError for a dropped or refused
+ * connection, which reads as a bug; the error's own name is for logs, and callers keep it beside these words.
+ */
+export function noAnswerWords(err) {
+  if (err?.name === 'TimeoutError') return 'no answer in time';
+  if (err?.name === 'AbortError') return 'the request was stopped';
+  if (err?.name === 'SyntaxError') return 'an answer that was not JSON';
+  if (err?.name === 'TypeError') return 'the connection failed';
+  return 'no answer';
+}
+
 /** Live: exact names from the allow lists. Rehearsal: this machine only. Throws before any request. */
 export function checkEndpoints({ regtest, esplora, rpc }) {
   const isLocal = (url) => {
@@ -68,7 +80,7 @@ export class Esplora {
     try {
       return await fetch(`${this.base}${path}`, { redirect: 'error', signal: AbortSignal.timeout(this.timeoutMs), ...init });
     } catch (err) {
-      throw new RelayError(`${init.method ?? 'GET'} ${path.split('/')[1]}: ${err.cause?.code ?? err.name}`);
+      throw Object.assign(new RelayError(`${init.method ?? 'GET'} ${path.split('/')[1]}: ${err.cause?.code ?? noAnswerWords(err)}`), { errorKind: err.name });
     }
   }
 

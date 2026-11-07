@@ -435,6 +435,8 @@ test('postTxOnce: only a node\'s answer counts. A gateway error or a dropped lin
   const dropped = await postTxOnce('http://x', 'aa', 'id', { fetchFn: async () => { throw new TypeError('fetch failed'); } });
   assert.equal(dropped.kind, 'no_answer');
   assert.equal(dropped.body, null);
+  assert.equal(dropped.error, 'the connection failed', 'a screen shows words, not the browser\'s error name');
+  assert.equal(dropped.errorKind, 'TypeError', 'which is kept for logs');
   assert.equal((await postTxOnce('http://x', 'aa', 'id', { fetchFn: postFake(200, 'id') })).kind, 'accepted');
 });
 
@@ -517,6 +519,8 @@ test('RelayClient.status: never throws. A dead relay, a web page or a refusal al
   const down = await make(async () => { throw new TypeError('down'); });
   assert.equal(down.reachable, false);
   assert.equal(down.owner.up, false);
+  assert.equal(down.why, 'the connection failed');
+  assert.equal(down.errorKind, 'TypeError');
   assert.equal((await make(async () => ({ status: 502, json: async () => { throw new SyntaxError('html'); } }))).reachable, false);
   assert.equal((await make(jsonFake(503, { ok: false, code: 'relay_not_configured' }))).why, 'relay_not_configured');
   const up = await make(jsonFake(200, { ok: true, relay_account: 'r.testnet', pow_bits: 18, owner: { up: true }, general: { up: false, why: 'daily_ceiling' }, funds: { up: true } }));
@@ -532,7 +536,9 @@ test('RelayClient.call: a refusal keeps the code and the chain\'s own words', as
   const ceiling = new RelayClient({ relay: '/r', funds: '/f', fetchFn: jsonFake(429, { ok: false, code: 'daily_ceiling', bucket: 'general', resets_at: 1730000000000 }) });
   await assert.rejects(ceiling.call('propose_btc', {}), (err) => err.code === 'daily_ceiling' && err.bucket === 'general' && err.resetsAt === 1730000000000);
   const dead = new RelayClient({ relay: '/r', funds: '/f', fetchFn: async () => { throw new TypeError('x'); } });
-  await assert.rejects(dead.call('cancel', {}), (err) => err.code === 'relay_down');
+  await assert.rejects(dead.call('cancel', {}), (err) => err.code === 'relay_down' && err.message === 'no answer from the relay: the connection failed' && err.errorKind === 'TypeError');
+  const slow = new RelayClient({ relay: '/r', funds: '/f', fetchFn: async () => { throw new DOMException('timed out', 'TimeoutError'); } });
+  await assert.rejects(slow.call('cancel', {}), (err) => err.message === 'no answer from the relay: no answer in time' && err.errorKind === 'TimeoutError');
   assert.ok(Object.hasOwn(RELAY_ERRORS, 'tx_refused'));
 });
 

@@ -15,7 +15,10 @@ a { color: inherit; }
 
 .top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex: none; }
 .chip { position: static; padding: 4px 8px 5px; border: 2px solid var(--white); font: 500 14px/1 var(--mono); }
-.wordmark { position: static; font: 800 24px/1 var(--sans); }
+.wordmark { position: static; flex: none; font: 800 20px/1 var(--sans); white-space: nowrap; }
+.wordmark .for { font-weight: 500; color: var(--dim); }
+/* A local run's chip leaves no room beside it on a phone, so the page shows only "Undo" there. */
+.wordmark.short .rest { display: none; }
 
 #screen { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding-top: 14px; }
 /* The tx hash wraps to two lines at this size, in its slot, so nothing under it jumps when it arrives. */

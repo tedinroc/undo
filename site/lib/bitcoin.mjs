@@ -3,7 +3,7 @@
 // answer, so it sends once, and keeps the bytes a node sent, untouched and untrimmed.
 import { derSig, makeTx, p2wpkhSpk, p2wshSpk, SEQUENCE_COSIGNED, segwitAddress, serialize, sighash, txid as txidOf, vsize } from '../../tools/lib/btc.mjs';
 import { equal, fromHex, toHex } from '../../tools/lib/bytes.mjs';
-import { classifyBroadcast, Esplora } from '../../tools/lib/esplora.mjs';
+import { classifyBroadcast, Esplora, noAnswerWords } from '../../tools/lib/esplora.mjs';
 import { signSecp } from '../../tools/lib/intent.mjs';
 import { spendKeys } from '../../tools/lib/keys.mjs';
 
@@ -17,7 +17,8 @@ export const bitcoinReader = (base, { timeoutMs = 6000, backoffMs = 300, attempt
  *
  * `kind` is accepted, rejected, transient (something on the way answered, not a node) or no_answer.
  * `body` is exactly what came back. A screen shows `body`, and only a `rejected` with `refusal: 'script'`
- * may read as Bitcoin refusing the script.
+ * may read as Bitcoin refusing the script. With no answer, `error` says so in words and `errorKind` is the
+ * name of what fetch threw, for logs.
  */
 export async function postTxOnce(base, hex, txid, { fetchFn = (...a) => globalThis.fetch(...a), timeoutMs = 15_000 } = {}) {
   let res;
@@ -26,7 +27,7 @@ export async function postTxOnce(base, hex, txid, { fetchFn = (...a) => globalTh
     res = await fetchFn(`${base}/tx`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: hex, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) });
     body = await res.text();
   } catch (err) {
-    return { kind: 'no_answer', status: res?.status ?? null, body: null, error: err.name };
+    return { kind: 'no_answer', status: res?.status ?? null, body: null, error: noAnswerWords(err), errorKind: err.name };
   }
   const { kind, refusal = null } = classifyBroadcast(res.status, body, txid);
   return { kind, refusal, status: res.status, body };

@@ -280,7 +280,42 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(c.visible, true, `${where}: chip`);
     assert.equal(c.x, 64, `${where}: chip x`);
     assert.equal(c.y, 150, `${where}: chip y`);
+    // A browser's error name is not words: a dropped connection reads as a bug.
+    assert.equal(await js('document.body.innerText.includes("TypeError")'), false, `${where}: a bare TypeError on screen`);
   }
+
+  /** The same screen at 1440x900 and at both phone sizes, a screenshot of each, no sideways scroll and no error name on any. */
+  async function atOtherSizes(name) {
+    const failed = [];
+    try {
+      for (const [width, height, mobile] of [[1440, 900, false], [390, 844, true], [375, 667, true]]) {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 2, mobile });
+        await sleep(300);
+        await shot(`${name}-${width}x${height}`);
+        const f = await fitsFrame();
+        if (!(f.w <= width && f.iw <= width)) failed.push(`${name} at ${width}x${height}: ${f.w} wide`);
+        if (await js('document.body.innerText.includes("TypeError")')) failed.push(`${name} at ${width}x${height}: a bare TypeError on screen`);
+      }
+    } finally {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
+    }
+    assert.deepEqual(failed, []);
+  }
+
+  /**
+   * The ink gap from the bottom of the digits to the top of the "0:00" under them, in the page's own unit (one film pixel
+   * at 1080 wide, the chip's height over 58 as the page reckons it): each line's baseline from a zero-size box set on it,
+   * and the glyphs' own extent from the canvas, in the font each is drawn in.
+   */
+  const inkGap = () => js(`(() => {
+    const baseline = (host) => { const s = document.createElement('span'); s.style.display = 'inline-block'; s.style.width = '0'; s.style.height = '0'; host.append(s); const y = s.getBoundingClientRect().bottom; s.remove(); return y; };
+    const metrics = (el) => { const c = document.createElement('canvas').getContext('2d'); const cs = getComputedStyle(el); c.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; return c.measureText(el.textContent); };
+    const digits = ['d-mt', 'd-m', 'd-s1', 'd-s2', 'd-t'].map((id) => document.getElementById(id)).filter((e) => e.textContent);
+    const below = Math.max(...digits.map((e) => metrics(e).actualBoundingBoxDescent));
+    const label = document.getElementById('zero-label');
+    const u = document.getElementById('chip').getBoundingClientRect().height / 58;
+    return Math.round(((baseline(label) - metrics(label).actualBoundingBoxAscent) - (baseline(document.getElementById('d-t')) + below)) / u);
+  })()`);
 
   async function makeVault({ coin = 2000 } = {}) {
     makes += 1;
@@ -779,8 +814,10 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     // No connection at all: the browser gives the page only an error name, and that is what it shows.
     await cdp.send('Network.setBlockedURLs', { urls: [`${stage.config.esplora}/tx`] });
     await click('plain-retry');
-    await waitFor('no_answer: the browser\'s error', async () => (await stateNow()) === 'no_answer' && (await textOf('plain-verbatim')) === 'TypeError', 20_000);
+    await waitFor('no_answer with no connection', async () => (await stateNow()) === 'no_answer' && ['TypeError', 'the connection failed'].includes(await textOf('plain-verbatim')), 20_000);
     await shot('19b-node-no-connection');
+    await atOtherSizes('19b-node-no-connection');
+    assert.equal(await textOf('plain-verbatim'), 'the connection failed', 'in words, not the browser\'s error name');
     await cdp.send('Network.setBlockedURLs', { urls: [] });
 
     await click('plain-retry');
@@ -849,8 +886,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.match(await textOf('term-1'), /relay is down/);
     assert.match(await textOf('ask-why'), /relay_down/);
     assert.equal(await js('document.getElementById("clock-block").checkVisibility()'), false, 'no clock without a request');
-    await assertFrame('asking, relay down');
     await shot('24-relay-down-asking');
+    await atOtherSizes('24-relay-down-asking');
+    await assertFrame('asking, relay down');
     relay.dead = false;
     await click('ask-retry');
     await waitState('waiting', 60_000);
@@ -870,8 +908,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await waitFor('the firing words', async () => /relay is down/.test(await textOf('note')), 15_000);
     // The read that accepts a fast-forward can be the one that reaches zero, and the digits draw on the next frame.
     await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
-    await assertFrame('firing, relay down');
     await shot('26-relay-down-firing');
+    await atOtherSizes('26-relay-down-firing');
+    await assertFrame('firing, relay down');
     relay.dead = false;
     await waitState('signed', 90_000);
   });
@@ -988,6 +1027,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       await waitFor('the digits to go up with the unlock', async () => secs(await clockText()) > before + 280, 2_000);
       await assertFrame('hold');
       await shot('29b-hold');
+      const threeDigits = await inkGap();
       await js('window.__holdMs = 600000');
       await waitFor('two minute digits', async () => (await js('document.getElementById("root").dataset.wide')) === '1', 6_000);
       await sleep(300);
@@ -995,6 +1035,19 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       assert.ok(box.slot > 100 && box.left >= 0 && box.right <= 1080, JSON.stringify(box));
       await assertFrame('ten minutes');
       await shot('29c-ten-minutes');
+      // Four digits are smaller, and the 0:00 under them must still clear them, on every screen the film or a judge uses.
+      const gaps = {};
+      try {
+        for (const [width, height, scale, mobile] of [[1080, 1350, 2, false], [1440, 900, 2, false], [390, 844, 2, true], [375, 667, 2, true]]) {
+          await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile });
+          await sleep(300);
+          gaps[`${width}x${height}`] = await inkGap();
+          await shot(`29c-ten-minutes-${width}x${height}`);
+        }
+      } finally {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
+      }
+      for (const [size, gap] of Object.entries(gaps)) assert.ok(gap >= 8, `the 0:00 clears the four digits by 8 film pixels at ${size}: ${JSON.stringify(gaps)}, three digits ${threeDigits}`);
     } finally {
       await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
     }
@@ -1229,6 +1282,35 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     } finally {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
     }
+  });
+
+  test('the wordmark: Undo for Bitcoin beside the chip where it fits, as on the landing page, and Undo where it does not; never over the chip', { timeout: 60_000 }, async () => {
+    const v = await makeVault();
+    await toArmed(v, {});
+    const header = () => js(`(() => { const c = document.getElementById('chip').getBoundingClientRect(); const m = document.querySelector('#root > .wordmark'); const r = m.getBoundingClientRect();
+      return { text: m.innerText, chipRight: Math.round(c.right), markLeft: Math.round(r.left), markRight: Math.round(r.right), w: innerWidth, sw: document.scrollingElement.scrollWidth }; })()`);
+    const seen = {};
+    try {
+      for (const [width, height, scale, mobile] of [[375, 667, 2, true], [390, 844, 2, true], [1080, 1350, 2, false], [1440, 900, 2, false]]) {
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile });
+        await sleep(300);
+        for (const chip of ['local test coins, mock signer', 'signet test coins']) {
+          await js(`(() => { document.getElementById('chip').textContent = ${JSON.stringify(chip)}; dispatchEvent(new Event('resize')); })()`);
+          await sleep(100);
+          const h = await header();
+          seen[`${width}x${height} ${chip}`] = h.text;
+          assert.ok(h.chipRight < h.markLeft && h.markRight <= h.w && h.sw <= width, `${width}x${height}, ${chip}: ${JSON.stringify(h)}`);
+          if (chip === 'local test coins, mock signer') await shot(`36-wordmark-${width}x${height}`);
+        }
+      }
+    } finally {
+      await js(`document.getElementById('chip').textContent = 'local test coins, mock signer'`);
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
+    }
+    // The deployed chip leaves room at every size down to 375 px; this run's longer chip only on a landscape screen.
+    for (const size of ['375x667', '390x844', '1080x1350', '1440x900']) assert.equal(seen[`${size} signet test coins`], 'Undo for Bitcoin', size);
+    assert.equal(seen['1440x900 local test coins, mock signer'], 'Undo for Bitcoin');
+    for (const size of ['375x667', '390x844', '1080x1350']) assert.equal(seen[`${size} local test coins, mock signer`], 'Undo', size);
   });
 
   test('a phone-width screen does not scroll sideways', { timeout: 60_000 }, async () => {

@@ -1,17 +1,22 @@
 // The page's side of /api/relay and /api/funds, whose methods and codes are in relay-table.mjs. A refusal keeps
 // the relay's code and, when it carries one, the chain's own words, so a screen never paraphrases a node.
+import { noAnswerWords } from '../../tools/lib/esplora.mjs';
 
-/** The relay said no. `code` is one of RELAY_ERRORS. `verbatim` is the chain's or node's text, if any. */
+/**
+ * The relay said no. `code` is one of RELAY_ERRORS. `verbatim` is the chain's or node's text, if any. `errorKind` is
+ * the name of the error a fetch threw when no answer came, for logs: the message says it in words.
+ */
 export class RelayRefused extends Error {
-  constructor({ code, message, verbatim = null, retryAfterS = null, httpStatus = null, bucket = null, resetsAt = null }) {
+  constructor({ code, message, verbatim = null, retryAfterS = null, httpStatus = null, bucket = null, resetsAt = null, errorKind = null }) {
     super(message ?? code);
-    Object.assign(this, { code, verbatim, retryAfterS, httpStatus, bucket, resetsAt });
+    Object.assign(this, { code, verbatim, retryAfterS, httpStatus, bucket, resetsAt, errorKind });
   }
 }
 
-const DOWN = (why) => ({
+const DOWN = (why, errorKind = null) => ({
   reachable: false,
   why,
+  errorKind,
   relayAccount: null,
   powBits: null,
   owner: { up: false, why: 'relay_down' },
@@ -32,7 +37,7 @@ export class RelayClient {
       res = await this.fetchFn(this.relay, { method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(Math.min(this.timeoutMs, 8000)) });
       data = await res.json();
     } catch (err) {
-      return DOWN(err.name);
+      return DOWN(noAnswerWords(err), err.name);
     }
     if (!data || data.ok !== true) return DOWN(data?.code ?? `HTTP ${res.status}`);
     return {
@@ -58,7 +63,7 @@ export class RelayClient {
       });
       data = await res.json();
     } catch (err) {
-      throw new RelayRefused({ code: 'relay_down', message: `no answer from the relay: ${err.name}`, httpStatus: res?.status ?? null });
+      throw new RelayRefused({ code: 'relay_down', message: `no answer from the relay: ${noAnswerWords(err)}`, httpStatus: res?.status ?? null, errorKind: err.name });
     }
     if (data?.ok !== true) {
       throw new RelayRefused({

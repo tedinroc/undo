@@ -43,6 +43,8 @@ class Node {
 
   querySelector() { return null; }
 
+  querySelectorAll() { return []; }
+
   getBoundingClientRect() { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 }; }
 
   get textContent() { return this.kids.map((k) => (k instanceof Node ? k.textContent : k.text)).join('\n'); }

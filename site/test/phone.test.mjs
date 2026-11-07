@@ -687,6 +687,28 @@ test('a vault this relay did not make: the code once and its sentence once, the 
   });
 });
 
+test('the header: Undo for Bitcoin beside the chip where it fits, as on the landing page, and Undo where a local run\'s chip leaves no room', { skip, timeout: 60_000 }, async () => {
+  await go('/p/', {});
+  await waitFor('a page', async () => (await stateOf()) !== 'boot');
+  const header = () => cdp.page(`const c = document.getElementById('chip').getBoundingClientRect(); const m = document.querySelector('.top .wordmark'); const r = m.getBoundingClientRect();
+    return { text: m.innerText, chipRight: Math.round(c.right), markLeft: Math.round(r.left), markRight: Math.round(r.right) };`);
+  const seen = {};
+  await atPhoneSizes('20-header', async (at) => {
+    for (const chip of ['signet test coins', 'local test coins, mock signer']) {
+      await cdp.page(`document.getElementById('chip').textContent = ${JSON.stringify(chip)}; dispatchEvent(new Event('resize'));`);
+      const h = await header();
+      seen[`${at.size} ${chip}`] = h.text;
+      if (chip === 'signet test coins') await shot(`20-header-signet-${at.size}`);
+      assert.ok(h.chipRight + 8 <= h.markLeft && h.markRight <= at.width - 16, `${at.size}, ${chip}: ${JSON.stringify(h)}`);
+      assert.ok(await fitsAcross(at.width), `${at.size}, ${chip}`);
+    }
+  });
+  for (const size of ['390x844', '375x667']) {
+    assert.equal(seen[`${size} signet test coins`], 'Undo for Bitcoin', `the deployed chip leaves room at ${size}`);
+    assert.equal(seen[`${size} local test coins, mock signer`], 'Undo', `a local run's chip does not at ${size}`);
+  }
+});
+
 // ---------------------------------------------------------------- a wrong link
 
 test('wrong vault: an id nobody made, a malformed id, and a phone whose passkey is another vault\'s', { skip, timeout: 120_000 }, async () => {

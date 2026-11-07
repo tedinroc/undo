@@ -139,7 +139,17 @@ const unit = () => {
 };
 window.addEventListener('resize', () => {
   unitPx = null;
+  fitWordmark();
 });
+
+/** "Undo for Bitcoin" where it fits beside the chip, as on the landing page; only "Undo" where the chip leaves no room. */
+function fitWordmark() {
+  const mark = document.querySelector('#root > .wordmark');
+  if (!mark) return;
+  mark.classList.remove('short');
+  const gap = Number.parseFloat(getComputedStyle(mark).fontSize) / 2;
+  if ($('chip').getBoundingClientRect().right + gap > mark.getBoundingClientRect().left) mark.classList.add('short');
+}
 
 /** One frame. Digits come only from the contract's unlock and the block time, and stop when reads stop. */
 function draw() {
@@ -348,6 +358,7 @@ async function pressSend() {
   if (answer.kind === 'rejected') {
     return plain('other_refusal', 'A node said no, but not about the signature:', { verbatim: `${S.config.labels.bitcoin} node: ${answer.body}`, retry: retryFromTop });
   }
+  if (answer.errorKind) console.warn(`undo: no answer from the node (${answer.errorKind})`);
   return plain('no_answer', 'The node did not answer:', { verbatim: answer.body ?? answer.error ?? 'no words', retry: retryFromTop });
 }
 
@@ -357,7 +368,7 @@ async function sendKeyAlone() {
   try {
     coins = coinsOf(await S.btc.utxos(S.vault.address));
   } catch (err) {
-    return { kind: 'no_answer', body: null, error: err.message };
+    return { kind: 'no_answer', body: null, error: err.message, errorKind: err.errorKind ?? null };
   }
   const to = destinationSpk($('to').value);
   const spend = sendEverything({ coins, to, script: S.script, feeRate: S.feeRate ?? 2 });
@@ -721,7 +732,8 @@ async function fire() {
         waitMs = null;
       }
     } catch (err) {
-      $('note').textContent = [relaySentence(err.code === 'relay_down' ? { reachable: false } : err.code === 'daily_ceiling' ? { reachable: true, general: { up: false, why: 'daily_ceiling' } } : null), err.code, err.verbatim ?? err.message].filter(Boolean).join(' ');
+      if (err.errorKind) console.warn(`undo: no answer from the relay (${err.errorKind})`);
+      $('note').textContent = [relaySentence(err.code === 'relay_down' ? { reachable: false } : err.code === 'daily_ceiling' ? { reachable: true, general: { up: false, why: 'daily_ceiling' } } : null), [err.code, err.verbatim ?? err.message].filter(Boolean).join(': ')].filter(Boolean).join(' ');
       waitMs = err.retryAfterS ? err.retryAfterS * 1000 : EXECUTE_RETRY_MS;
       S.relayStatus = await S.relay.status();
     }
@@ -867,6 +879,7 @@ async function boot() {
     return plain('no_config', 'This page has no config, so it reads nothing.', { verbatim: err.message });
   }
   $('chip').textContent = S.config.labels.chip;
+  fitWordmark();
 
   S.reader = new NearReader({ urls: [...S.config.rpc] });
   S.views = contractViews(S.reader, S.config.contract);
@@ -930,4 +943,5 @@ document.addEventListener('mousemove', (event) => {
   $('cursor').style.transform = `translate(${event.clientX}px, ${event.clientY}px)`;
 });
 
+fitWordmark();
 boot().catch((err) => plain('no_config', 'This tab could not start.', { verbatim: errorWords(err) }));
