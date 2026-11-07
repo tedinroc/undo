@@ -35,8 +35,9 @@ export const RELAY_METHODS = Object.freeze({
 
 /**
  * Calls the relay could not check may take at most this share of the owner ceiling, so they never stop a checked cancel.
- * A vault's first such call of the day may go up to twice this, so junk on other vaults cannot use up the one cancel of
- * an owner whose new passkey the relay has not seen. Twice this is the most they ever take.
+ * A vault's first such call of the day may go up to twice this, so a little junk on other vaults does not stop the first
+ * cancel of an owner whose new passkey the relay has not seen. Junk first calls on about 50 or more other vaults can
+ * still fill that larger share. Twice this is the most they ever take.
  */
 export const OWNER_UNCHECKED_SHARE = 0.1;
 
