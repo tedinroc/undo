@@ -52,6 +52,8 @@ Not run this time: the shell mutants and `--measure`, because `contracts/` did n
 
 After that run the relay changed, and no contract file did: it now counts a vault as its own only once the chain shows its own `create_vault` made it. On that tree, 2026-11-07 UTC, Chrome still off: `site/test/*.test.mjs` 200 passed, 0 failed, 74 skipped (53 need Chrome, 21 are the workerd file); `site/test/relay.workerd.test.mjs` 21 of 21; `tools/test/pages-output-check.sh` 17 OK, 0 FAIL; `scripts/go-live/test/golive.test.mjs` 23 of 23; `tools/test/run-all.sh --no-mutants` passed (no file the tool mutants change was touched), with the watcher on a local node 15 of 15 and the agent CLI 49 of 49 on each protocol. The wasm is the same `358c63bf…`.
 
+After that, and again with no contract file changed, the phone's "Copy the thief link" gained a destination (`thiefLink` in `site/pages/p/phone-fragment.mjs`, held by `site/test/thief-link.test.mjs`, which fails 3 of 3 on the earlier page), the landing page a link to `/p/`, and README and CLAIMS the NEAR testnet run of `./demo.sh`. On that tree, 2026-11-07 UTC, Chrome still off: `site/test/*.test.mjs` 203 passed, 0 failed, 74 skipped (53 need Chrome, 21 are the workerd file); `tools/test/pages-output-check.sh` 17 OK, 0 FAIL, 80 files; `tools/test/judge-floor.test.mjs` 16 of 16.
+
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |
