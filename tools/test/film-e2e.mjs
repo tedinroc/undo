@@ -25,6 +25,7 @@ import { base58Encode, fromHex, toHex, utf8 } from '../lib/bytes.mjs';
 import { sha256 } from '../lib/crypto.mjs';
 import { action, failureOf, keyFromSecret, NEAR } from '../lib/near.mjs';
 import { sendEverything } from '../../site/lib/bitcoin.mjs';
+import { destinationProblem } from '../../site/pages/t/logic.mjs';
 import { buildPropose } from '../../site/lib/intents.mjs';
 import { NearReader } from '../../site/lib/near-read.mjs';
 import { RELAY_METHODS } from '../../site/lib/relay-table.mjs';
@@ -430,12 +431,25 @@ async function makeVaultFromPhone({ reopen }) {
   await thief.go(link);
   await thief.waitState('armed', 15_000);
   check('the key leaves the address bar at once', !(await thief.js('location.hash')).includes('k='));
-  await thief.js('document.getElementById("to").focus()');
-  await thief.cdp.send('Input.insertText', { text: THIEF_TO });
+  const arrived = await thief.js('document.getElementById("to").value');
+  check('the link fills in send to with its own tb1 address', destinationProblem(arrived) === null && arrived === new URLSearchParams(new URL(link).hash.slice(1)).get('to'), arrived);
+  await typeThiefDestination();
   await thief.waitFor('Send enabled', async () => !(await thief.js('document.getElementById("send").disabled')), 15_000);
   check('the amount reads the coins before fee', (await thief.text('#amount-text')) === 'everything  2,000 sats', await thief.text('#amount-text'));
   await thief.shot('armed');
   return { vaultHex, vault, coin, seedHex, cred };
+}
+
+/**
+ * The thief's own address in "send to", typed over whatever the link filled in, as a person selects the field and
+ * types: the same address in every take, so the phone's "to" and the later proposal with the stolen key name it too.
+ * Before Send the field must hold exactly that one address, and the tab's own rule must take it.
+ */
+async function typeThiefDestination() {
+  await thief.js('(() => { const to = document.getElementById("to"); to.focus(); to.select(); })()');
+  await thief.cdp.send('Input.insertText', { text: THIEF_TO });
+  const held = await thief.js('document.getElementById("to").value');
+  must('send to holds exactly one valid address, the thief\'s, before Send', held === THIEF_TO && destinationProblem(held) === null, held);
 }
 
 /** Send: the key alone at the node, its words on the screen, then the proposal and the digits. */
@@ -577,8 +591,7 @@ async function runCancel() {
   // The stolen key, on a page and without one.
   await thief.go(`${stage.origin}/t/#v=${v.vaultHex}&k=${v.seedHex}`);
   await thief.waitState('armed', 15_000);
-  await thief.js('document.getElementById("to").focus()');
-  await thief.cdp.send('Input.insertText', { text: THIEF_TO });
+  await typeThiefDestination();
   await thief.waitFor('the page to read the key', async () => (await thief.text('#key-why')) !== '', 10_000);
   check('the thief tab, opened again with that key, says so and stays shut', (await thief.text('#key-why')) === 'That key can\'t ask again.' && await thief.js('document.getElementById("send").disabled'), await thief.text('#key-why'));
   await thief.shot('key-refused');
