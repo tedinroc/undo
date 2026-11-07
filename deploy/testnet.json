@@ -1,0 +1,31 @@
+{
+  "schema": "undo-deploy-v1",
+  "network": "testnet",
+  "label": "live-testnet",
+  "placeholder": true,
+  "placeholder_note": "No testnet contract for this build is deployed yet. The deploy fills in contract, wasm_sha256 and wasm_built_by, and sets placeholder to false. Until then ./verify.sh skips the deployed-contract lines and ./demo.sh does not run.",
+  "contract": "not-deployed-yet",
+  "wasm_sha256": null,
+  "wasm_built_by": null,
+  "signer": "v1.signer-prod.testnet",
+  "rpc": [
+    "https://test.rpc.fastnear.com",
+    "https://rpc.testnet.near.org"
+  ],
+  "relay": "https://undo-btc.pages.dev/api/relay",
+  "site_origin": "https://undo-btc.pages.dev",
+  "rp_id": "undo-btc.pages.dev",
+  "bitcoin_network": "mutinynet",
+  "replay": {
+    "near_archival_rpc": [
+      "https://archival-rpc.testnet.fastnear.com",
+      "https://archival-rpc.testnet.near.org"
+    ],
+    "near_rpc": [
+      "https://test.rpc.fastnear.com",
+      "https://rpc.testnet.near.org"
+    ],
+    "mutinynet_esplora": "https://mutinynet.com/api",
+    "signer": "v1.signer-prod.testnet"
+  }
+}

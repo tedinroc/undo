@@ -1,0 +1,79 @@
+{
+  "schema": "undo-s2-refusal-v1",
+  "chip": "signet test coins",
+  "bitcoin_chain": "Mutinynet (a signet)",
+  "near_chain": "NEAR testnet, read only",
+  "attempt": "A straight Bitcoin spend of the whole coin with the spend key alone: K_u's real signature, and nothing where K_m's goes.",
+  "node_answer": {
+    "endpoint": "POST https://mutinynet.com/api/tx",
+    "http_status": 400,
+    "text_verbatim": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), input 0 of 6aa2b419a2f28a475c539fa25445101650ac90f0960aa1ae0ec5bbdae0128eb2 (wtxid b8cf7847664583ca66c10a55a93e61231bd1eeacf1b45a4af20bd13427234f9f), spending 65801b967be8ada9e4299513908960952f18c7f0e5e3f96aaba04a46a5a66e24:0\"}",
+    "at_utc": "2026-11-01T09:00:53.549Z",
+    "origin": "No browser and no page. A Node script sent it, and set no Origin header",
+    "kind": "rejected",
+    "refusal": "script",
+    "false_top_stack": true,
+    "names_op_checksigverify": false,
+    "names_this_tx": true,
+    "names_this_coin": true,
+    "answers_with_no_information_before_it": 0
+  },
+  "funding_coin": {
+    "mutinynet_txid": "65801b967be8ada9e4299513908960952f18c7f0e5e3f96aaba04a46a5a66e24",
+    "vout": 0,
+    "value_sats": 10000,
+    "height": 3553028,
+    "block": "000002e2a2097818432208c11b698df5a7c6350be48ecfa53f920e5c09853a0c",
+    "fee_paid_sats": 306,
+    "vault_address": "tb1qkaq3lndkl5a88k9w5zsmj4ucjl7ddqezyfhp0m09q34zz4f5t5ms680mmz"
+  },
+  "refused_tx": {
+    "mutinynet_txid_it_would_have_had": "6aa2b419a2f28a475c539fa25445101650ac90f0960aa1ae0ec5bbdae0128eb2",
+    "sha256_of_raw_bytes": "4798ad6eff3bfcb9c2bb630c697540cd454277d6443cc17386bbc68844680c07",
+    "sha256_of_raw_hex_text": "9580e0a9039933aa44bddd719eb49cda930243f1d6bd2dc66c76984655f84380",
+    "raw_hex": "02000000000101246ea6a5464aa0ab6af9e3e5f0c7182f95608990139529e4a9ade87b961b80650000000000fdffffff01e825000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b0400483045022100c08ea4e3c66dd22705d15f92cd94388a957b00e5b62437f9f5e989061082896e02204cb7aafbdf16f50e93034b747bd9852d8aaacae95467bca7f35c651e764a8d390101016f6321037fcfe868296b96b9ed93ee097c71b8578a63891691bc18036b54123de142b2a2ad210304a2e6811860b0e88d940bf63edf7ffff47c16d3f1fcd7a1fbc0ce1b6773699bac6756b2752103622a4dcb15aaab340510cb69c7d442899b27fc4c3da8905423cbd9ae783e67afac6800000000",
+    "pays_to": "tb1q4f47gs3txkl0q2elcaccn8kfkx8jjxym4vqx9z",
+    "amount_sats": 9704,
+    "fee_it_offered_sats": 296,
+    "witness": [
+      "empty, where K_m goes",
+      "K_u, verified here before the POST",
+      "01, the co-signed branch",
+      "the vault script"
+    ],
+    "consensus_before_post": "libbitcoinconsensus refused it before the POST",
+    "sats_moved": 0
+  },
+  "vault": {
+    "near_testnet_contract": "g1.s.undo-btc.testnet",
+    "near_testnet_code_hash": "6JAGfdMuvVhxszbTT2VabYD39VadHc8txiWLqBdU6iE1",
+    "id": "d669008a65ebd76e49b7679e80dfef98a66b21f6729c1c7dd8c3f4a031c4bfb4",
+    "csv_blocks": 6,
+    "k_m": "0304a2e6811860b0e88d940bf63edf7ffff47c16d3f1fcd7a1fbc0ce1b6773699b",
+    "k_u": "037fcfe868296b96b9ed93ee097c71b8578a63891691bc18036b54123de142b2a2",
+    "signer": "v1.signer-prod.testnet",
+    "note": "The G2 vault. The contract row and the signer's derived key were read before funding and both matched"
+  },
+  "after": {
+    "read_at_utc": "2026-11-01T09:00:55.151Z",
+    "tip": 3553027,
+    "tip_note": "Added 2026-11-07: this tip is one block below the coin's own height (3553028). Mutinynet's block 3553028 has timestamp 2026-11-01T09:00:50Z, before this read, so the API answering the tip lagged a block. The coin's height comes from its confirmed status, not from this tip.",
+    "outspend_answer": {
+      "spent": false
+    },
+    "in_address_utxo_list": true,
+    "refused_tx_known_to_the_api": false,
+    "coin_still_unspent": true
+  },
+  "coin_return": {
+    "path": "escape, signed by the cold key",
+    "mutinynet_txid": "f0bd80ec3caaa63cedee159fbbca657ce01bdcf2786a0616a4ce7e0c28b175b5",
+    "fee_sats": 260,
+    "amount_sats": 9740,
+    "to": "tb1q4f47gs3txkl0q2elcaccn8kfkx8jjxym4vqx9z",
+    "height": 3553034,
+    "block": "00000032fd74e1fe5941b9259b282ec4d14cd7ecec9aeb2cf617bf74dbdc0f62",
+    "coin_spent_by": "f0bd80ec3caaa63cedee159fbbca657ce01bdcf2786a0616a4ce7e0c28b175b5",
+    "left_at_address_sats": 0
+  }
+}

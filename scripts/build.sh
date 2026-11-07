@@ -47,3 +47,8 @@ for name in "${names[@]}"; do
     "$TARGET/wasm32-unknown-unknown/release/$name.wasm" -o "$out/$name.wasm"
   printf '%s %s bytes sha256 %s\n' "$name.wasm" "$(wc -c < "$out/$name.wasm" | tr -d ' ')" "$(shasum -a 256 "$out/$name.wasm" | cut -d' ' -f1)"
 done
+# Against what deploy/testnet.json says is deployed. A difference is reported, and the build still stands.
+echo "toolchain: $(rustc --version), $(wasm-opt --version)"
+if command -v node >/dev/null; then
+  node "$REPO/scripts/wasm-vs-config.mjs" "$out/undo_vault.wasm" || echo "build.sh: this build is not the deployed wasm (see above)"
+fi

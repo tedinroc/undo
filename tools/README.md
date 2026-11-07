@@ -8,6 +8,7 @@ Node, no install step. The only dependency is `@noble/curves` and `@noble/hashes
 | `freeze.mjs` | Signs one cold-key intent to a file: `freeze`, `unfreeze`, `veto_grant`, `cancel`. With no `--minutes` a freeze lands at the whole CSV period, however wrong this clock or late the relay | None |
 | `sign-intent.mjs` | Signs `propose_btc` or `reclaim` from a seed file and prints the arguments | None |
 | `human-key.mjs` | Makes the dispenser and funding keys, for `scripts/human/02` and `03` | None |
+| `watch.mjs` | Phone alerts: reads one vault's queue and pushes one ntfy alert per new Pending request, however it was proposed. Holds no key. Refuses mainnet. See `docs/watch.md` | NEAR RPC, ntfy |
 | `g1.mjs` | Gate G1 driver. Plan only unless `--live`. Refuses mainnet | NEAR RPC |
 | `g2.mjs` | Gate G2 driver: real coins, the co-signed spend and the escape. Plan only unless `--live`, rehearses with `--regtest`, resumes after any stop. Refuses mainnet and any endpoint off its allow lists | NEAR RPC, Esplora |
 
