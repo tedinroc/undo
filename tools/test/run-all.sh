@@ -4,7 +4,8 @@
 #   tools/test/run-all.sh [--no-sandbox] [--no-mutants]
 #
 # Needs NEAR_SANDBOX_BIN_PATH, UNDO_NEAR_BIN and bitcoind (UNDO_BITCOIN_BIN). A sandbox binary that
-# links an outside liblzma also needs UNDO_LIBLZMA_DIR. Keeps cargo at 3 jobs.
+# links an outside liblzma also needs UNDO_LIBLZMA_DIR. Keeps cargo at 3 jobs. The relay mutants' stage tier
+# also needs UNDO_WRANGLER_MODULES; with --no-sandbox they run on the site tests alone.
 set -uo pipefail
 TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 REPO="$(cd "$TOOLS/.." && pwd -P)"
@@ -35,8 +36,13 @@ step "human scripts, under shims" env UNDO_NEAR_RECORD="$record" node --test "$T
 step "near-cli commands against --help, network denied" node "$TOOLS/test/near-cli-check.mjs" "$record"
 step "escape.mjs on a regtest node" node "$TOOLS/test/regtest-escape.mjs"
 step "the spend key alone on a regtest node" node "$TOOLS/test/regtest-key-alone.mjs"
-step "mutation harnesses read a run correctly" sh -c "node '$TOOLS/test/mutants.mjs' --self-test && python3 -I '$REPO/scripts/shell-mutants.py' --self-test"
+step "mutation harnesses read a run correctly" sh -c "node '$TOOLS/test/mutants.mjs' --self-test && python3 -I '$REPO/scripts/shell-mutants.py' --self-test && node '$TOOLS/test/relay-mutants.mjs' --self-test && node '$TOOLS/test/relay-mutants.mjs' --check"
 [ "$mutants" -eq 0 ] || step "mutants" node "$TOOLS/test/mutants.mjs"
+if [ "$mutants" -eq 1 ] && [ "$sandbox" -eq 1 ]; then
+  step "relay and page mutants: nearest site tests, the rest of site/test, then the stage and workerd" node "$TOOLS/test/relay-mutants.mjs"
+elif [ "$mutants" -eq 1 ]; then
+  step "relay and page mutants on the site tests alone, so the stage's part reads not judged" node "$TOOLS/test/relay-mutants.mjs" --no-stage
+fi
 [ "$sandbox" -eq 0 ] || step "G1 driver and intents on sandbox, protocols 86 and 88" "$TOOLS/test/run-sandbox.sh" 86 88
 [ "$sandbox" -eq 0 ] || step "G2 driver rehearsal: regtest, local NEAR node, mock signer" node "$TOOLS/test/g2-rehearsal.mjs"
 [ "$sandbox" -eq 0 ] || step "watcher on a local NEAR node: near-cli, relay and direct proposals" env -u NODE_USE_SYSTEM_CA UNDO_NEAR_BIN="${UNDO_NEAR_BIN:-}" node "$TOOLS/test/watch-sandbox.mjs"
