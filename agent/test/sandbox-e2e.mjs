@@ -227,6 +227,18 @@ async function main() {
       && /^--to is not a mutinynet address: its checksum does not match, so a character is wrong$/m.test(junk.out) && !/^\s+at /m.test(junk.out + junk.err)
       && (await near.view(contract, 'vault', { vault: vault.hex })).spend_nonce === nonceBefore, junk.out + junk.err);
 
+    // Another network's address, a bitcoin: link and base58 junk: each refused in one plain sentence, and nothing is sent.
+    for (const [to, words] of [
+      [segwitAddress('regtest', 0, new Uint8Array(20).fill(7)), 'it is a regtest address'],
+      [`bitcoin:${dest1}`, 'it is a bitcoin: link, and only the address in it goes here'],
+      ['0OIl0OIl0OIl0OIl', 'it is not a bitcoin address'],
+    ]) {
+      const other = await undo(['propose', '--to', to, '--amount', '50000'], file);
+      check(`undo propose refuses ${to.slice(0, 12)}… in a sentence: ${words}`, other.code === 1
+        && other.out.split('\n').includes(`--to is not a mutinynet address: ${words}`) && !/^\s+at |base58/m.test(other.out + other.err)
+        && (await near.view(contract, 'vault', { vault: vault.hex })).spend_nonce === nonceBefore, other.out + other.err);
+    }
+
     const prop = await undo(['propose', '--to', dest1, '--amount', '50000', '--memo', 'invoice 42'], file);
     const filmStdout = prop.out;
     const r1 = requestIdFrom(prop.out);

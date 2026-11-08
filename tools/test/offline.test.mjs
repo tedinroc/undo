@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { AddressError, addressToSpk, bech32Decode, decodeSegwit, derSig, makeTx, p2wshAddress, parseDer, parseTx, parseWitnessScript, segwitAddress, SEQUENCE_COSIGNED, serialize, sighash, witnessScript } from '../lib/btc.mjs';
+import { AddressError, addressPrefix, addressToSpk, bech32Decode, decodeSegwit, derSig, makeTx, p2wshAddress, parseDer, parseTx, parseWitnessScript, segwitAddress, SEQUENCE_COSIGNED, serialize, sighash, witnessScript } from '../lib/btc.mjs';
 import { base58Decode, base58Encode, fromHex, toHex, utf8 } from '../lib/bytes.mjs';
 import { randomBytes, secp256k1, sha256 } from '../lib/crypto.mjs';
 import { signColdIntent } from '../lib/cold-intent.mjs';
@@ -187,6 +187,56 @@ test('an address with anything in front of it is refused: the whole string is th
   refusedWith(() => addressToSpk('mutinynet', forged), 'hrp');
   refusedWith(() => addressToSpk('mutinynet', `${tail} `), 'range');
   assert.throws(() => addressToSpk('mutinynet', undefined), AddressError);
+});
+
+test('every refusal is an AddressError in plain words: another network\'s address names that network, a bitcoin: link says so, and base58 that fails says what failed', () => {
+  const program = new Uint8Array(20).fill(7);
+  const plain = (network, address, code, words) => assert.throws(() => addressToSpk(network, address), (err) => err instanceof AddressError && err.code === code && err.message === words && !/[{}]|^\s*at /m.test(err.message), `${address} on ${network}: ${code}, "${words}"`);
+  plain('mutinynet', segwitAddress('regtest', 0, program), 'other_network', 'it is a regtest address');
+  plain('regtest', segwitAddress('mutinynet', 0, program), 'other_network', 'it is a signet or testnet address');
+  plain('mutinynet', segwitAddress('mainnet', 0, program), 'other_network', 'it is a mainnet address');
+  plain('mainnet', segwitAddress('regtest', 1, new Uint8Array(32).fill(7)), 'other_network', 'it is a regtest address');
+  plain('mutinynet', segwitAddress('regtest', 0, program).toUpperCase(), 'other_network', 'it is a regtest address');
+  assert.throws(() => addressToSpk('mutinynet', segwitAddress('regtest', 0, program)), (err) => err.hrp === 'bcrt', 'and which prefix it has');
+  // A broken string of another network is called broken, not named.
+  const broken = segwitAddress('regtest', 0, program);
+  plain('mutinynet', `${broken.slice(0, -1)}${broken.endsWith('q') ? 'p' : 'q'}`, 'checksum', 'its checksum does not match, so a character is wrong');
+  plain('mutinynet', `bitcoin:${segwitAddress('mutinynet', 0, program)}`, 'uri', 'it is a bitcoin: link, and only the address in it goes here');
+  plain('regtest', `BITCOIN:${segwitAddress('regtest', 0, program)}?amount=1`, 'uri', 'it is a bitcoin: link, and only the address in it goes here');
+  plain('mutinynet', 'hello world', 'not_address', 'it is not a bitcoin address');
+  plain('mutinynet', '0OIl', 'not_address', 'it is not a bitcoin address');
+  plain('mutinynet', base58Encode(new Uint8Array(30).fill(1)), 'not_address', 'it is not a bitcoin address');
+  plain('mutinynet', '', 'empty', 'it is empty');
+  plain('mainnet', '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN3', 'base58_checksum', 'its checksum does not match, so a character is wrong');
+  plain('mutinynet', '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2', 'other_network', 'it is a mainnet address');
+  plain('mutinynet', '3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy', 'other_network', 'it is a mainnet address');
+  plain('mainnet', 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn', 'other_network', 'it is a test-network address');
+  // A base58 address with a version byte no network here uses.
+  const odd = new Uint8Array(21).fill(9);
+  odd[0] = 0x30;
+  const oddText = base58Encode(Uint8Array.from([...odd, ...sha256(sha256(odd)).slice(0, 4)]));
+  plain('mutinynet', oddText, 'not_address', 'it is not a bitcoin address');
+  // The test networks' own base58 still decodes.
+  assert.match(toHex(addressToSpk('regtest', 'mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn')), /^76a914[0-9a-f]{40}88ac$/);
+  assert.deepEqual(['mainnet', 'mutinynet', 'signet', 'testnet4', 'regtest', 'nowhere'].map(addressPrefix), ['bc1', 'tb1', 'tb1', 'tb1', 'bcrt1', null]);
+});
+
+test('escape.mjs and its refusals in plain words: another network\'s address, a bitcoin: link, base58 junk', () => {
+  const rec = file('net.json', makeRecovery('regtest', 'net', 6));
+  const utxos = file('net-u.json', JSON.stringify(coinsOf(1, 'net')));
+  const program = new Uint8Array(20).fill(7);
+  for (const [to, words] of [
+    [segwitAddress('mutinynet', 0, program), 'destination refused on regtest: it is a signet or testnet address'],
+    [`bitcoin:${segwitAddress('regtest', 0, program)}`, 'destination refused on regtest: it is a bitcoin: link, and only the address in it goes here'],
+    ['hello', 'destination refused on regtest: it is not a bitcoin address'],
+  ]) {
+    const r = tool('escape.mjs', ['--recovery', rec, '--utxos', utxos, '--to', to, '--fee', '1000']);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, new RegExp(`: ${words.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'), r.stderr);
+    assert.doesNotMatch(r.stderr, /^\s+at |base58/m, 'no stack trace, no library word');
+  }
+  const ok = tool('escape.mjs', ['--recovery', rec, '--utxos', utxos, '--to', segwitAddress('regtest', 0, program), '--fee', '1000']);
+  assert.equal(ok.status, 0, `control: ${ok.stderr}`);
 });
 
 test('escape.mjs refuses an address with junk in front in plain words, and prints no stack', () => {

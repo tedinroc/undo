@@ -133,11 +133,18 @@ export const p2wpkhAddress = (network, pub) => segwitAddress(network, 0, hash160
 
 /** An address refused, with a short code a test can hold and words a person can read. */
 export class AddressError extends Error {
-  constructor(code, message) {
+  constructor(code, message, extra = {}) {
     super(message);
     this.code = code;
+    Object.assign(this, extra);
   }
 }
+
+/** What a person calls the networks behind each prefix, for a refusal that names the other one. */
+const HRP_NAMES = { bc: 'mainnet', tb: 'signet or testnet', bcrt: 'regtest' };
+
+/** `tb1` or `bcrt1`: how this network's own segwit addresses start. Null for a network this file does not know. */
+export const addressPrefix = (network) => (Object.hasOwn(NETWORKS, network) ? `${NETWORKS[network].hrp}1` : null);
 
 /**
  * BIP-173 and BIP-350 for the whole string: printable ASCII, one case, at most 90 characters, an hrp before the last
@@ -175,20 +182,42 @@ export function decodeSegwit(hrp, address) {
   return concat(Uint8Array.of(version === 0 ? 0 : 0x50 + version, program.length), program);
 }
 
-/** The output script an address pays, for this network and no other. */
+/**
+ * The output script an address pays, for this network and no other. Every refusal is an AddressError whose message
+ * reads after "not a <network> address: ": another network's valid address says which network it is, a `bitcoin:`
+ * link says so, and anything else says what is wrong with it.
+ */
 export function addressToSpk(network, address) {
   const net = NETWORKS[network];
   if (!net) throw new Error('unknown network');
   if (typeof address !== 'string') throw new AddressError('not_text', 'not text');
-  if (address.toLowerCase().startsWith(`${net.hrp}1`)) return decodeSegwit(net.hrp, address);
-  const raw = base58Decode(address);
-  if (raw.length !== 25) throw new Error('not an address on this network');
+  if (address === '') throw new AddressError('empty', 'it is empty');
+  const lower = address.toLowerCase();
+  if (lower.startsWith(`${net.hrp}1`)) return decodeSegwit(net.hrp, address);
+  if (lower.startsWith('bitcoin:')) throw new AddressError('uri', 'it is a bitcoin: link, and only the address in it goes here');
+  const other = Object.keys(HRP_NAMES).find((hrp) => lower.startsWith(`${hrp}1`));
+  if (other) {
+    // Read by that network's rules first, so a broken string is called broken and only a good one is named.
+    decodeSegwit(other, address);
+    throw new AddressError('other_network', `it is a ${HRP_NAMES[other]} address`, { hrp: other, networkName: HRP_NAMES[other] });
+  }
+  let raw;
+  try {
+    raw = base58Decode(address);
+  } catch {
+    raw = null;
+  }
+  if (raw?.length !== 25) throw new AddressError('not_address', 'it is not a bitcoin address');
   const check = sha256d(raw.slice(0, 21)).slice(0, 4);
-  if (!equal(check, raw.slice(21))) throw new Error('bad checksum');
+  if (!equal(check, raw.slice(21))) throw new AddressError('base58_checksum', 'its checksum does not match, so a character is wrong');
   const hash = raw.slice(1, 21);
   if (raw[0] === net.p2pkh) return concat(Uint8Array.of(0x76, 0xa9, 0x14), hash, Uint8Array.of(0x88, 0xac));
   if (raw[0] === net.p2sh) return concat(Uint8Array.of(0xa9, 0x14), hash, Uint8Array.of(0x87));
-  throw new Error('not an address on this network');
+  // Every test network shares one pair of base58 version bytes, so such an address names no test network in particular.
+  const owner = Object.values(NETWORKS).find((n) => raw[0] === n.p2pkh || raw[0] === n.p2sh);
+  const ownerName = owner?.hrp === 'bc' ? 'mainnet' : 'test-network';
+  if (owner) throw new AddressError('other_network', `it is a ${ownerName} address`, { hrp: owner.hrp, networkName: ownerName });
+  throw new AddressError('not_address', 'it is not a bitcoin address');
 }
 
 // ---------------------------------------------------------------- transactions
