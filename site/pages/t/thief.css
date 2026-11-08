@@ -106,7 +106,7 @@ html, body { min-height: 100%; }
 .rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(26 * var(--u)); line-height: calc(36 * var(--u)); color: #CFCFCF; }
 .row { margin: 0 0 calc(10 * var(--u)); }
 .row:empty { display: none; }
-/* The node's words stay on after the refused screen, cut to fit. The whole answer is on its title. */
+/* One line after the refused screen: what the node did, in a sentence. Its own bytes stay on the red bar's frame. */
 .node-row { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; color: var(--dim); }
 /* A sentence about what is wrong now takes its place, so the frame still fits. */
 .rows:has(#note:not(:empty)) .node-row { display: none; }
