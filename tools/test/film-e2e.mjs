@@ -51,8 +51,10 @@ const VIEWPORT_PHONE = { width: 390, height: 844 };
 const label = (text) => sha256(utf8(`undo-test-only:film-e2e:${text}`));
 const textOfKey = (secret) => `ed25519:${base58Encode(secret)}`;
 const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
-const THIEF_TO = segwitAddress('mutinynet', 0, label('thief-destination').slice(0, 20));
-const THIEF_SPK = toHex(addressToSpk('mutinynet', THIEF_TO));
+// The thief's address, in the form the contract's network gives it (bcrt1 on this local regtest, tb1 on Mutinynet): the
+// phone's "to" and the thief tab's "send to" must show this one string. Set once the contract has said its network.
+let THIEF_TO = null;
+let THIEF_SPK = null;
 
 // ---------------------------------------------------------------- results
 
@@ -158,7 +160,26 @@ class Tab {
     return this.js(`Boolean(document.querySelector(${JSON.stringify(selector)})?.checkVisibility({ visibilityProperty: true }))`);
   }
 
+  /**
+   * Every frame the film keeps is checked for words a viewer should never read: an error's own name, a node's JSON, a
+   * code with underscores, or one sentence said twice. The red bar's box is left out, because the node's own bytes
+   * are what that frame shows.
+   */
+  async plainScreen(where) {
+    const text = await this.js(`(() => {
+      const box = document.getElementById('node');
+      const hidden = box && box.checkVisibility() ? box.innerText : '';
+      return document.body.innerText.replace(hidden, '');
+    })()`);
+    const raw = /HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|TypeError|\{"|<html|\b[a-z]+_[a-z_]+\b/.exec(text);
+    check(`${this.name} ${where}: no error name, JSON or code on the screen`, raw === null, raw ? `"${raw[0]}" in: ${text.replace(/\s+/g, ' ').slice(0, 300)}` : '');
+    const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter((t) => t.length > 12);
+    const twice = sentences.find((t, i) => sentences.indexOf(t) !== i);
+    check(`${this.name} ${where}: no sentence said twice`, twice === undefined, twice ?? '');
+  }
+
   async shot(name) {
+    await this.plainScreen(name);
     if (!SHOTS) return;
     mkdirSync(SHOTS, { recursive: true });
     const { data } = await this.cdp.send('Page.captureScreenshot', { format: 'png' });
@@ -225,6 +246,9 @@ async function startEverything() {
   views = contractViews(reader, stage.contract);
   instance = await views.instance();
   check('the test instance reads T_new = 5:00', instance.policy.t_new_ms === FIVE_MINUTES, instance.policy.t_new_ms);
+  THIEF_TO = segwitAddress(instance.network, 0, label('thief-destination').slice(0, 20));
+  THIEF_SPK = toHex(addressToSpk(instance.network, THIEF_TO));
+  check('the thief\'s address is in the contract\'s network form', instance.network === 'regtest' && THIEF_TO.startsWith('bcrt1q'), `${instance.network} ${THIEF_TO}`);
 
   // As live: a full-access general key, because create_vault attaches a deposit, and a function-call owner key.
   ownerKey = keyFromSecret(label('owner-key'));
@@ -432,7 +456,7 @@ async function makeVaultFromPhone({ reopen }) {
   await thief.waitState('armed', 15_000);
   check('the key leaves the address bar at once', !(await thief.js('location.hash')).includes('k='));
   const arrived = await thief.js('document.getElementById("to").value');
-  check('the link fills in send to with its own tb1 address', destinationProblem(arrived) === null && arrived === new URLSearchParams(new URL(link).hash.slice(1)).get('to'), arrived);
+  check('the link fills in send to with its own address, in the network\'s form', destinationProblem(arrived, instance.network) === null && arrived.startsWith('bcrt1q') && arrived === new URLSearchParams(new URL(link).hash.slice(1)).get('to'), arrived);
   await typeThiefDestination();
   await thief.waitFor('Send enabled', async () => !(await thief.js('document.getElementById("send").disabled')), 15_000);
   check('the amount reads the coins before fee', (await thief.text('#amount-text')) === 'everything  2,000 sats', await thief.text('#amount-text'));
@@ -448,8 +472,11 @@ async function makeVaultFromPhone({ reopen }) {
 async function typeThiefDestination() {
   await thief.js('(() => { const to = document.getElementById("to"); to.focus(); to.select(); })()');
   await thief.cdp.send('Input.insertText', { text: THIEF_TO });
+  // Done typing: the field lets go, so no caret blinks after the address in the shot.
+  await thief.js('document.getElementById("to").blur()');
   const held = await thief.js('document.getElementById("to").value');
-  must('send to holds exactly one valid address, the thief\'s, before Send', held === THIEF_TO && destinationProblem(held) === null, held);
+  must('send to holds exactly one valid address, the thief\'s, before Send', held === THIEF_TO && destinationProblem(held, instance.network) === null, held);
+  check('nothing in the thief tab has focus after typing, so no caret is in the shot', (await thief.js('document.activeElement === document.body || document.activeElement === null')), await thief.js('document.activeElement?.id ?? document.activeElement?.tagName'));
 }
 
 /** Send: the key alone at the node, its words on the screen, then the proposal and the digits. */
@@ -484,7 +511,9 @@ async function pressSend(v) {
   await phone.waitState('request', 20_000);
   check('the phone reads the amount from the contract', (await phone.text('#amount')) === '2,000 sats', await phone.text('#amount'));
   const shownTo = await phone.text('#to');
-  check('the phone reads the destination from the contract', toHex(addressToSpk('regtest', shownTo)) === THIEF_SPK, shownTo);
+  check('the phone reads the destination from the contract', toHex(addressToSpk(instance.network, shownTo)) === THIEF_SPK, shownTo);
+  check('one address for one destination: the phone\'s to line is the thief\'s send to, character for character', shownTo === THIEF_TO, `phone ${shownTo}, thief ${THIEF_TO}`);
+  check('and the thief tab\'s row says the same string', (await thief.text('#dest-row')) === `to ${THIEF_TO}  2,000 sats`, await thief.text('#dest-row'));
   check('the Cancel button is on the 844 px screen', await phone.js('(() => { const r = document.getElementById("cancel").getBoundingClientRect(); return r.bottom <= 844 && r.top >= 0; })()'));
   await phone.shot('request');
   return { requestId, request };
@@ -494,7 +523,7 @@ async function pressSend(v) {
 async function proposeWithStolenKey(v) {
   const vault = await views.vault(v.vaultHex);
   const script = fromHex(await views.script(v.vaultHex));
-  const to = addressToSpk('mutinynet', THIEF_TO);
+  const to = addressToSpk(instance.network, THIEF_TO);
   const spend = sendEverything({ coins: [{ txid: v.coin.txid, vout: v.coin.vout, value: v.coin.value }], to, script, feeRate: 2 });
   const chainNow = (await reader.blockTime()).blockMs;
   const args = buildPropose({ contract: stage.contract, vault, script, seed: fromHex(v.seedHex), inputs: spend.inputs, to, amount: spend.amount, nonce: vault.spend_nonce, expiresAt: chainNow + 30 * 60_000 });
@@ -598,6 +627,11 @@ async function runCancel() {
   await typeThiefDestination();
   await thief.waitFor('the page to read the key', async () => (await thief.text('#key-why')) !== '', 10_000);
   check('the thief tab, opened again with that key, says so and stays shut', (await thief.text('#key-why')) === 'That key can\'t ask again.' && await thief.js('document.getElementById("send").disabled'), await thief.text('#key-why'));
+  // The contract's view refuses the same key: the tab has already said so under the key, and says nothing more.
+  await thief.waitFor('the contract\'s view of that key', async () => (await thief.js('document.getElementById("root").dataset.viewRefused ?? ""')) !== '', 15_000).catch(() => null);
+  check('the contract\'s refusal is not said a second time, in its own words or any', (await thief.text('#armed-note')) === '', await thief.text('#armed-note'));
+  const gap = await thief.js('Math.round(document.querySelector(\'label[for="to"]\').getBoundingClientRect().top - document.getElementById("key-why").getBoundingClientRect().bottom)');
+  check('the red line under the key has room before the send to label', gap >= 10, `${gap} px`);
   await thief.shot('key-refused');
   const pendingBefore = (await views.vault(v.vaultHex)).pending;
   const stolen = await proposeWithStolenKey(v);

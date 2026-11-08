@@ -46,6 +46,7 @@ const TL = 'site/pages/t/logic.mjs';
 const PF = 'site/pages/p/phone-fragment.mjs';
 const OC = 'site/pages/p/own-cancel.mjs';
 const HR = 'site/pages/p/h7-report.mjs';
+const PW = 'site/lib/plain-words.mjs';
 
 // [name, file, old text, new text, a Chrome test that checks it]
 const MUTANTS = [
@@ -206,8 +207,22 @@ const MUTANTS = [
   ['own cancel: not_this_relays reads as the cancel\'s fault', OC, "'not_this_relays', 'daily_ceiling', 'rate_limited', 'relay_down',", "'daily_ceiling', 'rate_limited', 'relay_down',"],
 
   // ---------------------------------------------------------------- what the thief tab sends, and when it stops
-  ['thief: a bc1 address is taken', TL, "if (!address.startsWith('tb1')) return 'not_test_address';", ''],
-  ['thief: a malformed address is taken', TL, "    return 'bad_address';", '    return null;'],
+  ['thief: a bc1 address reads as another test network\'s', TL, "return refused.hrp === 'bc' ? 'not_test_address' : 'other_network';", "return 'other_network';"],
+  ['thief: a malformed address is taken', TL, "  if (refused) return 'bad_address';\n", ''],
+  ['thief: base58 or upper case taken', TL, "  if (!address.startsWith(prefix)) return 'not_test_address';\n", ''],
+  ['thief: one network for every vault', TL, 'const refused = refusalOf(address, network);', "const refused = refusalOf(address, 'mutinynet');"],
+  ['thief: a bitcoin: link reads as junk', TL, "if (refused?.code === 'uri') return 'uri';", ''],
+  ['thief: a destination before the network is known', TL, "if (prefix === null || prefix === 'bc1') return 'no_network';", ''],
+  ['thief: the other network goes unnamed', TL, "return `That is a ${refusalOf(text, network).networkName} address; this vault is on ${place}.`;", "return 'That address does not check out.';"],
+  ['thief: a relay reason shown as its code', TL, "return `${relayWords({ code: status.general?.why }).replace(/\\.$/, '')}, so this tab", "return `${status.general?.why}, so this tab"],
+  ['phone link: the destination on one network for all', PF, 'const to = spkToAddress(network, Uint8Array.of(0x00, 0x14, ...random20));', "const to = spkToAddress('mutinynet', Uint8Array.of(0x00, 0x14, ...random20));"],
+  ['words: a contract refusal shown in its own words', PW, "return (name && Object.hasOwn(CONTRACT_WORDS, name) ? CONTRACT_WORDS[name] : null) ?? 'The NEAR contract refused it.';", 'return String(raw);'],
+  ['words: a view\'s panic not read', PW, 'if (view) return view[1].trim();', ''],
+  ['words: a relay code shown as itself', PW, "return (err?.code && Object.hasOwn(RELAY_WORDS, err.code) ? RELAY_WORDS[err.code] : null) ?? 'The relay said no.';", 'return err?.code ?? \'The relay said no.\';'],
+  ['words: a relay refusal with the contract\'s words read as the relay\'s', PW, "if ((err?.code === 'tx_refused' || err?.code === 'would_refuse') && err.verbatim) return contractWords(err.verbatim);", ''],
+  ['words: a node\'s script refusal unnamed', PW, "if (kind === 'script') return 'It needs a second signature.';", ''],
+  ['words: a proxy\'s page read as a busy node', PW, "if (status === 400 && !/<html/i.test(answer.body ?? '')) return", 'if (status >= 400) return'],
+  ['words: raw words logged twice in a row', PW, '  if (line === lastLogged) return;\n', ''],
   ['thief: a seed with junk around it is taken', TL, '/^[0-9a-f]{64}$/.test(hex)', '/[0-9a-f]{64}/.test(hex)'],
   ['thief: resends on any refusal that starts with Not', TL, "failure.includes('NotUnlocked')", "failure.includes('Not')"],
   ['thief: a signing request is not live', TL, " || state?.kind === 'signing'", ''],
@@ -254,7 +269,8 @@ const NEAREST = [
   [BT, ['step.test.mjs', 'lib.test.mjs']],
   [IN, ['step.test.mjs']],
   [WA, ['webauthn.test.mjs']],
-  [TL, ['thief.test.mjs', 'thief-link.test.mjs']],
+  [TL, ['thief.test.mjs', 'thief-link.test.mjs', 'plain-words.test.mjs']],
+  [PW, ['plain-words.test.mjs']],
   [PF, ['h7-link.test.mjs', 'thief-link.test.mjs']],
   [OC, ['phone-unit.test.mjs']],
   [HR, ['h7-link.test.mjs']],

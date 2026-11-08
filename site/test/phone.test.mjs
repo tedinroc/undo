@@ -36,6 +36,8 @@ let counter = 0;
 const pausedHandlers = new Set();
 let bootScripts = [];
 let authenticatorId;
+// What the page wrote to the console: the raw words it keeps off the screen go there.
+const consoleLines = [];
 
 // Chrome's virtual authenticator holds three resident keys and then refuses, so each scenario starts it empty.
 const emptyAuthenticator = () => cdp.send('WebAuthn.clearCredentials', { authenticatorId });
@@ -55,7 +57,9 @@ before(async () => {
   cdp.ws.addEventListener('message', (event) => {
     const data = JSON.parse(event.data);
     if (data.method === 'Fetch.requestPaused') for (const handler of pausedHandlers) handler(data.params);
+    if (data.method === 'Runtime.consoleAPICalled') consoleLines.push(data.params.args.map((a) => a.value ?? a.description ?? '').join(' '));
   });
+  await cdp.send('Runtime.enable');
 }, { timeout: 180_000 });
 
 after(async () => {
@@ -251,6 +255,21 @@ const clockMs = (text) => {
 };
 
 const noHorizontalScroll = () => cdp.page('return document.documentElement.scrollWidth <= window.innerWidth;');
+
+/**
+ * What a person reads that they should not: an error's own name, the chain's or a node's JSON, a code with underscores,
+ * or one sentence said twice. Empty when the screen is plain words.
+ */
+const rawOnScreen = async () => {
+  const text = await cdp.page('return document.body.innerText;');
+  const problems = [];
+  const raw = /TypeError|NotAllowedError|HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|webauthn:|\{"|<html|\b[a-z]+_[a-z_]+\b/.exec(text);
+  if (raw) problems.push(`"${raw[0]}" on screen in: ${text.replace(/\s+/g, ' ').slice(0, 240)}`);
+  const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter((t) => t.length > 12);
+  const twice = sentences.find((t, i) => sentences.indexOf(t) !== i);
+  if (twice) problems.push(`said twice: ${twice}`);
+  return problems;
+};
 const noScrollAtAll = () => cdp.page('return document.documentElement.scrollHeight <= window.innerHeight;');
 
 // ---------------------------------------------------------------- the two phone sizes the README and the film need
@@ -276,6 +295,7 @@ async function atPhoneSizes(name, check) {
       await setPhoneSize(width, height);
       await shot(`${name}-${width}x${height}`);
       try {
+        assert.deepEqual(await rawOnScreen(), [], `plain words at ${width}x${height}`);
         await check({ size: `${width}x${height}`, width, height });
       } catch (err) {
         failed.push(err);
@@ -439,6 +459,48 @@ test('pending: destination, amount, the contract\'s clock, a big red Cancel. Tap
   assert.equal(await cdp.page('return document.body.innerText.includes("tx ");'), false);
 });
 
+/** Anything on the phone's screen that reaches past its sides: the header, and every box of the screen below it. */
+const pastTheSides = () => cdp.page(`return [...document.querySelectorAll('.top, .top *, #screen, #screen *')].filter((e) => e.checkVisibility())
+  .map((e) => ({ e, r: e.getBoundingClientRect() })).filter(({ r }) => r.width > 0 && (r.right > innerWidth + 0.5 || r.left < -0.5))
+  .map(({ e, r }) => (e.id || e.className || e.tagName) + ' ' + Math.round(r.left) + '..' + Math.round(r.right)).slice(0, 6);`);
+
+test('the stamp never widens the page: not as it slams, not while its frame holds, and a turn during the hold settles at the new size [virtual authenticator]', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('stamp-width');
+  await thiefProposes(v);
+  await go('/p/', { v: v.vaultHex, c: v.cred });
+  await waitState('request');
+  const problems = [];
+  await clickOn('#cancel');
+  await waitState('cancelled');
+  // The held frame is the one the film keeps: the page's width every 100 ms through it, with no resize.
+  const samples = [];
+  for (let i = 0; i < 6; i += 1) {
+    samples.push(await cdp.page('return { inner: innerWidth, sw: document.documentElement.scrollWidth, digits: document.documentElement.dataset.digits ?? null };'));
+    if (i === 3) await shot('02b-stamp-hold');
+    await sleep(100);
+  }
+  if (!samples.some((m) => m.digits === 'held')) problems.push(`never sampled the held frame: ${JSON.stringify(samples)}`);
+  const wide = samples.filter((m) => m.inner !== 390 || m.sw > 390);
+  if (wide.length) problems.push(`wider than 390 during the hold: ${JSON.stringify(wide)}`);
+  // A turn, or the browser's bar, while the frame still holds: the digits settle at once, and nothing is cut.
+  await setPhoneSize(375, 667);
+  await waitFor('the digits to settle after the turn', async () => (await digitsMode()) === 'still', 3000).catch(() => problems.push(`the digits still read ${'held'} after the turn`));
+  await shot('02c-stamp-turned-375x667');
+  if (!(await fitsAcross(375))) problems.push(`wider than 375 after the turn: ${await cdp.page('return document.documentElement.scrollWidth;')}`);
+  for (const past of await pastTheSides()) problems.push(`past the side at 375x667: ${past}`);
+  await setPhoneSize(390, 844);
+  await sleep(600);
+  await shot('02d-stamp-turned-back-390x844');
+  if (!(await fitsAcross(390))) problems.push(`wider than 390 back at 390x844: ${await cdp.page('return document.documentElement.scrollWidth;')}`);
+  for (const past of await pastTheSides()) problems.push(`past the side back at 390x844: ${past}`);
+  assert.deepEqual(problems, []);
+  // And the stamp is still the film's: a white bar from edge to edge, the word whole on it.
+  const bar = await cdp.page(`const r = document.getElementById('stamp').getBoundingClientRect(); const t = document.createRange(); t.selectNodeContents(document.getElementById('stamp')); const w = t.getBoundingClientRect();
+    return { left: Math.round(r.left), right: Math.round(r.right), bg: getComputedStyle(document.getElementById('stamp')).backgroundColor, wordLeft: Math.round(w.left), wordRight: Math.round(w.right) };`);
+  assert.deepEqual({ left: bar.left, right: bar.right, bg: bar.bg }, { left: 0, right: 390, bg: 'rgb(255, 255, 255)' });
+  assert.ok(bar.wordLeft >= 0 && bar.wordRight <= 390, `CANCELLED whole on the bar: ${JSON.stringify(bar)}`);
+});
+
 test('a request with an old epoch reads cancelled even when another device did the rotating, and the clock stops', { skip, timeout: 120_000 }, async () => {
   const v = await makeVault('other-device');
   const { id } = await thiefProposes(v);
@@ -473,6 +535,7 @@ test('at zero Cancel still works; once the contract has signed there is no stamp
   await go('/p/', { v: v.vaultHex, c: v.cred });
   await waitState('request');
   await waitFor('zero on the clock', async () => (await cdp.page('return document.getElementById("digits").dataset.clock;')) === '0:00.0');
+  const asked = await cdp.page('const e = document.getElementById("to"); const cs = getComputedStyle(e); return { text: e.innerText, font: `${cs.fontFamily} ${cs.fontWeight}`, className: e.className };');
   assert.ok(await exists('#at-zero'));
   assert.ok(await exists('#cancel'), 'the contract still takes a cancel at zero');
   await shot('04-at-zero');
@@ -487,6 +550,9 @@ test('at zero Cancel still works; once the contract has signed there is no stamp
   await waitFor('the page to say so', () => exists('#too-late-unsent'), 30_000);
   assert.equal(await textOf('#too-late-unsent'), 'No local regtest node has that transaction yet. Anyone can send it.');
   assert.equal((await cdp.page('return document.body.innerText;')).includes('local regtest txid'), false);
+  // One address, set one way: the too-late screen prints it as the request screen did, under its own "to".
+  const late = await cdp.page('const e = document.getElementById("too-late-to"); const cs = getComputedStyle(e); const l = e.previousElementSibling; return { text: e.innerText, font: `${cs.fontFamily} ${cs.fontWeight}`, className: e.className, label: l?.innerText ?? null };');
+  assert.deepEqual(late, { ...asked, label: 'to' }, 'the request screen\'s mono .addr, with the label on its own line');
   await shot('05-too-late');
   await atPhoneSizes('05-too-late', async (at) => {
     assert.ok(await fitsAcross(at.width), `the address wraps at ${at.size}, and nothing runs off the side`);
@@ -627,7 +693,7 @@ test('a plain cancel from elsewhere: the row is gone, and after three reads the 
   assert.equal((await views.vault(v.vaultHex)).k_s_suspended, false);
 });
 
-test('the relay refuses, or the contract refuses: its own words, verbatim, and the button comes back', { skip, timeout: 120_000 }, async () => {
+test('the relay refuses, or the contract refuses: one plain sentence on the screen, the raw words in the console, and the button comes back', { skip, timeout: 120_000 }, async () => {
   const v = await makeVault('refuse');
   await thiefProposes(v);
   const live = await (await fetch(`${stage.origin}/api/relay`)).json();
@@ -635,14 +701,16 @@ test('the relay refuses, or the contract refuses: its own words, verbatim, and t
   await go('/p/', { v: v.vaultHex, c: v.cred });
   await waitState('request');
   await intercept('*/api/relay*', async (req) => (req.method !== 'POST' ? { status: 200, body: live } : { status: 422, body: { ok: false, code: 'tx_refused', message: 'refused', verbatim: words } }), async () => {
+    const logged = consoleLines.length;
     await clickOn('#cancel');
-    await waitFor('the refusal', () => exists('#verbatim'));
-    assert.equal(await textOf('#verbatim'), words);
-    assert.equal(await textOf('#notice'), 'Not cancelled.');
+    await waitFor('the refusal', () => exists('#notice'));
+    assert.equal(await textOf('#notice'), 'Not cancelled. The NEAR contract refused it.', 'one sentence, once');
+    assert.equal(await exists('#verbatim'), false, 'and not the chain\'s JSON under it');
+    assert.ok(consoleLines.slice(logged).some((line) => line.includes(words)), `the raw words are in the console: ${consoleLines.slice(logged).join(' | ')}`);
     await waitState('request');
-    await shot('09-refused-verbatim');
+    await shot('09-refused-plain');
     await waitFor('the signed cancel to save', () => exists('#save-cancel'));
-    await atPhoneSizes('09-refused-verbatim', async (at) => {
+    await atPhoneSizes('09-refused-plain', async (at) => {
       await assertWhole('#cancel', at);
       assert.ok(await fitsAcross(at.width), at.size);
       const gap = await cdp.page('return document.getElementById("cancel").getBoundingClientRect().top - document.getElementById("save-cancel").getBoundingClientRect().bottom;');
@@ -657,7 +725,7 @@ test('the relay refuses, or the contract refuses: its own words, verbatim, and t
   await waitState('cancelled');
 });
 
-test('a vault this relay did not make: the code once and its sentence once, the signed cancel to save, whole on a phone screen', { skip, timeout: 120_000 }, async () => {
+test('a vault this relay did not make: Not cancelled by its sentence, no code, the signed cancel to save, whole on a phone screen', { skip, timeout: 120_000 }, async () => {
   const v = await makeVault('not-ours');
   // A made-up coin, so the unknown-coin flag shows too: the longest this screen gets.
   await thiefProposes(v);
@@ -676,10 +744,14 @@ test('a vault this relay did not make: the code once and its sentence once, the 
     const count = (phrase) => text.toLowerCase().split(phrase.toLowerCase()).length - 1;
     assert.equal(count('sends cancels only for vaults it made'), 1, `the sentence once: ${text}`);
     assert.equal(count('This relay is a convenience'), 0, 'and the relay\'s other sentences are not set over the page\'s own');
-    assert.equal(await textOf('#verbatim'), 'not_this_relays', 'the code, once');
+    assert.equal(await textOf('#notice'), 'Not cancelled.', 'the notice says only that, and the headline says why');
+    assert.equal(await exists('#verbatim'), false, 'and no code under it');
     await atPhoneSizes('06-not-this-relays', async (at) => {
       await assertWhole('#save-cancel', at);
       assert.ok(await fitsAcross(at.width), at.size);
+      // The notice leads into the headline: right above it, not across a screen of nothing.
+      const gap = await cdp.page('return Math.round(document.getElementById("why").getBoundingClientRect().top - document.getElementById("notice").getBoundingClientRect().bottom);');
+      assert.ok(gap >= 0 && gap <= 40, `the notice sits by the headline at ${at.size}: ${gap} px apart`);
       for (const piece of ['node tools/cancel.mjs', `--file undo-cancel-${v.vaultHex.slice(0, 8)}.json`, '--account YOUR-ACCOUNT']) {
         assert.equal(await linesOf('#own-path', piece), 1, `${piece} on one line at ${at.size}`);
       }
@@ -693,9 +765,19 @@ test('the header: Undo for Bitcoin beside the chip where it fits, as on the land
   const header = () => cdp.page(`const c = document.getElementById('chip').getBoundingClientRect(); const m = document.querySelector('.top .wordmark'); const r = m.getBoundingClientRect();
     return { text: m.innerText, chipRight: Math.round(c.right), markLeft: Math.round(r.left), markRight: Math.round(r.right) };`);
   const seen = {};
+  // The footnote names the address prefix of the contract's network. This page's is regtest; the deployed chip's is
+  // Mutinynet. So a shot with the deployed chip gets the deployed footnote too, and each is asserted.
+  const PREFIX = { regtest: 'bcrt1', mutinynet: 'tb1', signet: 'tb1' };
+  const NETWORK = { 'signet test coins': 'mutinynet', 'local test coins, mock signer': instance.network };
+  const foot = () => cdp.page('const f = document.getElementById("foot"); return f ? { network: f.dataset.network, prefix: /starts with (\\S+?)\\./.exec(f.textContent)?.[1] ?? null } : null;');
+  assert.deepEqual(await foot(), { network: instance.network, prefix: PREFIX[instance.network] }, 'the page draws the footnote for its own contract\'s network');
   await atPhoneSizes('20-header', async (at) => {
     for (const chip of ['signet test coins', 'local test coins, mock signer']) {
-      await cdp.page(`document.getElementById('chip').textContent = ${JSON.stringify(chip)}; dispatchEvent(new Event('resize'));`);
+      const network = NETWORK[chip];
+      await cdp.page(`document.getElementById('chip').textContent = ${JSON.stringify(chip)};
+        const f = document.getElementById('foot'); f.textContent = f.textContent.replace(/starts with \\S+?\\./, 'starts with ${PREFIX[network]}.'); f.dataset.network = '${network}';
+        dispatchEvent(new Event('resize'));`);
+      assert.deepEqual(await foot(), { network, prefix: PREFIX[network] }, `${at.size}: the footnote under the ${chip} chip names that chip's network`);
       const h = await header();
       seen[`${at.size} ${chip}`] = h.text;
       if (chip === 'signet test coins') await shot(`20-header-signet-${at.size}`);
@@ -728,8 +810,9 @@ test('wrong vault: an id nobody made, a malformed id, and a phone whose passkey 
   await go('/p/', { v: a.vaultHex, c: b.cred });
   await waitState('request');
   await clickOn('#cancel');
-  await waitFor('the refusal', () => exists('#verbatim'));
-  assert.equal(await textOf('#verbatim'), 'webauthn: bad signature');
+  await waitFor('the refusal', () => exists('#notice'));
+  assert.equal(await textOf('#notice'), 'Not cancelled. That passkey\'s signature does not check out for this vault.');
+  assert.equal(await exists('#verbatim'), false, 'no library words');
   assert.equal(await stateOf(), 'request');
   assert.equal((await views.vault(a.vaultHex)).k_s_suspended, false);
 });
@@ -907,7 +990,7 @@ test('localStorage that throws, and none at all: the page still works from the f
   await go('/p/', { v: v.vaultHex });
   await waitState('request');
   await clickOn('#cancel');
-  await waitFor('a stamp or a refusal', async () => ['cancelled'].includes(await stateOf()) || exists('#verbatim'));
+  await waitFor('a stamp or a refusal', async () => ['cancelled'].includes(await stateOf()) || exists('#notice'));
 });
 
 test('the credential id goes to localStorage and nothing else does', { skip, timeout: 120_000 }, async () => {
@@ -1253,7 +1336,7 @@ test('attack 4: one block read with a clock far ahead moves nothing on the phone
   }
 });
 
-test('attack 5: a contract refusal says so at once, in the contract\'s words, not 30 s later in the relay\'s', { skip, timeout: 120_000 }, async () => {
+test('attack 5: a contract refusal says so at once, as a sentence for the contract\'s reason, not 30 s later in the relay\'s', { skip, timeout: 120_000 }, async () => {
   const v = await makeVault('refusal');
   await thiefProposes(v);
   await go('/p/', { v: v.vaultHex, c: v.cred });
@@ -1264,8 +1347,9 @@ test('attack 5: a contract refusal says so at once, in the contract\'s words, no
     await clickOn('#cancel');
     await waitFor('a notice', () => exists('#notice'), 20_000);
     const ms = Date.now() - tapped;
-    assert.equal(await textOf('#notice'), 'Not cancelled. The contract refused it.');
-    assert.match(await textOf('#verbatim'), /BadNonce/);
+    assert.equal(await textOf('#notice'), 'Not cancelled. The vault changed after this was signed.', 'the contract\'s reason, in a sentence');
+    assert.equal(await exists('#verbatim'), false);
+    assert.ok(consoleLines.some((line) => /BadNonce/.test(line)), 'and its own word in the console');
     assert.ok(ms < 10_000, `${ms} ms`);
     assert.equal(await exists('#stamp'), false);
   });

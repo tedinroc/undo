@@ -39,13 +39,13 @@ export function buildPhoneFragment(fields) {
 
 /**
  * The thief tab's link for the vault this tab made: its id, its spend key, and somewhere to send, since the tab keeps
- * "Send everything" off until `to` is a tb1 address. The destination is a P2WPKH address of 20 random bytes, so
- * nobody holds it and it is never the vault's own P2WSH: the send is the stolen-key case, a new destination with the
- * longer wait. tb1 on every network, because the thief tab reads only tb1 and the output script is the same bytes.
+ * "Send everything" off until `to` is an address of the vault's network. The destination is a P2WPKH address of 20
+ * random bytes, so nobody holds it and it is never the vault's own P2WSH: the send is the stolen-key case, a new
+ * destination with the longer wait. In the contract's `network`'s own form, tb1 or bcrt1, as both pages print it.
  */
-export function thiefLink(origin, vaultHex, seedHex, random20) {
+export function thiefLink(origin, vaultHex, seedHex, random20, network) {
   if (!(random20 instanceof Uint8Array) || random20.length !== 20) throw new Error('thiefLink: the destination takes 20 bytes');
-  const to = spkToAddress('mutinynet', Uint8Array.of(0x00, 0x14, ...random20));
+  const to = spkToAddress(network, Uint8Array.of(0x00, 0x14, ...random20));
   return `${origin}/t/${buildFragment({ v: vaultHex, k: seedHex, to })}`;
 }
 

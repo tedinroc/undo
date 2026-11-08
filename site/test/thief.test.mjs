@@ -22,6 +22,7 @@ import { NearReader } from '../lib/near-read.mjs';
 import { executeTgas, RELAY_METHODS } from '../lib/relay-table.mjs';
 import { softCredentials } from '../lib/soft-authenticator.mjs';
 import { contractViews, derivedKey } from '../lib/views.mjs';
+import { spkToAddress } from '../lib/bitcoin.mjs';
 import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
 import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
@@ -37,22 +38,38 @@ const THIEF_TO = segwitAddress('mutinynet', 0, label('thief-destination').slice(
 // ---------------------------------------------------------------- no browser needed
 
 describe('rules with no page around them', () => {
-  test('only a tb1 address gets through, and the error says why', () => {
-    assert.equal(destinationProblem(THIEF_TO), null);
-    assert.equal(destinationProblem(''), 'empty');
+  test('only the vault\'s own network\'s address gets through, in the form both pages print, and the error says why in one sentence', () => {
+    const REGTEST_TO = segwitAddress('regtest', 0, label('thief-destination').slice(0, 20));
+    assert.equal(destinationProblem(THIEF_TO, 'mutinynet'), null);
+    assert.equal(destinationProblem(THIEF_TO, 'signet'), null);
+    assert.equal(destinationProblem(REGTEST_TO, 'regtest'), null, 'a local run takes its own bcrt1 address');
+    assert.equal(destinationProblem('', 'mutinynet'), 'empty');
+    assert.equal(destinationProblem(THIEF_TO, undefined), 'no_network', 'nothing goes before the contract names its network');
+    assert.equal(destinationProblem(THIEF_TO, 'mainnet'), 'no_network');
     const mainnet = segwitAddress('mainnet', 0, label('x').slice(0, 20));
     assert.ok(mainnet.startsWith('bc1'));
-    assert.equal(destinationProblem(mainnet), 'not_test_address');
-    assert.equal(destinationProblem(segwitAddress('regtest', 0, label('x').slice(0, 20))), 'not_test_address');
-    assert.equal(destinationProblem('1BoatSLRHtKNngkdXEeobR76b53LETtpyT'), 'not_test_address');
-    assert.equal(destinationProblem(THIEF_TO.toUpperCase()), 'not_test_address');
-    assert.equal(destinationProblem(`${THIEF_TO.slice(0, -1)}${THIEF_TO.endsWith('q') ? 'p' : 'q'}`), 'bad_address');
+    for (const network of ['mutinynet', 'regtest']) {
+      assert.equal(destinationProblem(mainnet, network), 'not_test_address');
+      assert.equal(destinationProblem('1BoatSLRHtKNngkdXEeobR76b53LETtpyT', network), 'not_test_address');
+    }
+    // One destination, one string: each network takes its own form and names the other.
+    assert.equal(destinationProblem(REGTEST_TO, 'mutinynet'), 'other_network');
+    assert.equal(destinationProblem(THIEF_TO, 'regtest'), 'other_network');
+    assert.equal(destinationProblem(THIEF_TO.toUpperCase(), 'mutinynet'), 'not_test_address');
+    assert.equal(destinationProblem('mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn', 'mutinynet'), 'not_test_address', 'base58 is this network\'s, and not the form the pages print');
+    assert.equal(destinationProblem(`bitcoin:${THIEF_TO}`, 'mutinynet'), 'uri');
+    assert.equal(destinationProblem(`${THIEF_TO.slice(0, -1)}${THIEF_TO.endsWith('q') ? 'p' : 'q'}`, 'mutinynet'), 'bad_address');
+    assert.equal(destinationProblem('hello', 'mutinynet'), 'bad_address');
     assert.equal(toHex(addressToSpk('mutinynet', THIEF_TO)).slice(0, 4), '0014');
+    assert.equal(toHex(destinationSpk(REGTEST_TO, 'regtest')), toHex(destinationSpk(THIEF_TO, 'mutinynet')), 'the same script either way');
+    assert.throws(() => destinationSpk(THIEF_TO, 'regtest'));
     // The whole field is the address: a valid one with anything in front of it is not one.
-    const other = segwitAddress('mutinynet', 0, label('y').slice(0, 20));
-    for (const junk of [`${other}${THIEF_TO}`, `tb1qqqqqqqqq${THIEF_TO}`, `tb1${THIEF_TO}`]) {
-      assert.equal(destinationProblem(junk), 'bad_address', junk);
-      assert.throws(() => destinationSpk(junk));
+    for (const [network, to] of [['mutinynet', THIEF_TO], ['regtest', REGTEST_TO]]) {
+      const other = segwitAddress(network, 0, label('y').slice(0, 20));
+      for (const junk of [`${other}${to}`, `${to.slice(0, to.indexOf('1') + 1)}qqqqqqqqq${to}`, `${to.slice(0, to.indexOf('1') + 1)}${to}`]) {
+        assert.equal(destinationProblem(junk, network), 'bad_address', junk);
+        assert.throws(() => destinationSpk(junk, network));
+      }
     }
   });
 
@@ -95,7 +112,8 @@ describe('rules with no page around them', () => {
     assert.match(relaySentence({ reachable: false, general: { up: false, why: 'relay_down' } }), /relay is down/);
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } }), /today's limit/);
     assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling', calls_fit: true } }), null, 'a vault no longer fits, but this tab can still send');
-    assert.match(relaySentence({ reachable: true, general: { up: false, why: 'state_store_down' } }), /state_store_down/);
+    assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'state_store_down' } }), 'The relay can\'t reach its records right now, so this tab can\'t ask the NEAR contract or call execute.', 'the reason in words, not its code');
+    assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'something_new' } }), 'The relay said no, so this tab can\'t ask the NEAR contract or call execute.');
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'relay_reserve' } }), /keeping what it has left for cancels/);
   });
 
@@ -226,6 +244,8 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   let reader;
   let views;
   let instance;
+  // The thief's address in the local contract's own network form, bcrt1, as the phone prints the same request.
+  let LOCAL_TO;
   let chrome;
   let cdp;
   const netLog = [];
@@ -273,6 +293,26 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   const fitsFrame = () => js(`(() => { const e = document.scrollingElement; return { w: e.scrollWidth, h: e.scrollHeight, iw: innerWidth, ih: innerHeight }; })()`);
   const chipBox = () => js(`(() => { const r = document.getElementById('chip').getBoundingClientRect(); return { x: r.x, y: r.y, text: document.getElementById('chip').textContent, visible: document.getElementById('chip').checkVisibility() }; })()`);
 
+  /**
+   * What a viewer reads that they should not: an error's own name, a node's or the chain's JSON, a code with underscores,
+   * or one sentence said twice. The red bar's box is left out, because the node's own bytes are what that frame shows.
+   */
+  const rawOnScreen = async () => {
+    const text = await js(`(() => {
+      const box = document.getElementById('node');
+      return document.body.innerText.replace(box && box.checkVisibility() ? box.innerText : '', '');
+    })()`);
+    const problems = [];
+    const raw = /TypeError|HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|\{"|<html|\b[a-z]+_[a-z_]+\b/.exec(text);
+    if (raw) problems.push(`"${raw[0]}" on screen in: ${text.replace(/\s+/g, ' ').slice(0, 240)}`);
+    const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter((t) => t.length > 12);
+    const twice = sentences.find((t, i) => sentences.indexOf(t) !== i);
+    if (twice) problems.push(`said twice: ${twice}`);
+    // The same news in other words: the relay being down, said in two places at once.
+    if ((text.match(/relay is down|relay down/gi) ?? []).length > 1) problems.push(`the relay is down, said ${(text.match(/relay is down|relay down/gi) ?? []).length} times`);
+    return problems;
+  };
+
   async function assertFrame(where) {
     const f = await fitsFrame();
     assert.ok(f.w <= f.iw && f.h <= f.ih, `${where}: ${f.w}x${f.h} in ${f.iw}x${f.ih}`);
@@ -280,27 +320,52 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(c.visible, true, `${where}: chip`);
     assert.equal(c.x, 64, `${where}: chip x`);
     assert.equal(c.y, 150, `${where}: chip y`);
-    // A browser's error name is not words: a dropped connection reads as a bug.
-    assert.equal(await js('document.body.innerText.includes("TypeError")'), false, `${where}: a bare TypeError on screen`);
+    // A browser's error name is not words: a dropped connection reads as a bug. Nor is a contract's panic or a node's JSON.
+    assert.deepEqual(await rawOnScreen(), [], `${where}: plain words only`);
   }
 
-  /** The same screen at 1440x900 and at both phone sizes, a screenshot of each, no sideways scroll and no error name on any. */
-  async function atOtherSizes(name) {
+  /** Nothing drawn over any part of an element's own box: each probe point, on its own text, finds that element on top. */
+  const uncovered = (id) => js(`(() => {
+    const e = document.getElementById(${JSON.stringify(id)});
+    if (!e || !e.checkVisibility()) return { id: ${JSON.stringify(id)}, visible: false };
+    const r = e.getBoundingClientRect();
+    const covered = [];
+    for (const fx of [0.02, 0.25, 0.5, 0.75, 0.98]) for (const fy of [0.25, 0.75]) {
+      const x = r.left + r.width * fx, y = r.top + r.height * fy;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) { covered.push('off screen'); continue; }
+      const top = document.elementFromPoint(x, y);
+      if (top !== e && !e.contains(top)) covered.push((top?.id || top?.className || top?.tagName) + '@' + Math.round(x) + ',' + Math.round(y));
+    }
+    return { id: ${JSON.stringify(id)}, visible: true, box: [r.left, r.top, r.right, r.bottom].map(Math.round), covered };
+  })()`);
+
+  /**
+   * The same screen at 1440x900 and 1512x982, the two laptops a judge may use, and at both phone sizes: a screenshot
+   * of each, no sideways scroll and plain words on all, and whatever `check` asks of the screen at that size.
+   */
+  async function atOtherSizes(name, check = null) {
     const failed = [];
     try {
-      for (const [width, height, mobile] of [[1440, 900, false], [390, 844, true], [375, 667, true]]) {
+      for (const [width, height, mobile] of [[1440, 900, false], [1512, 982, false], [390, 844, true], [375, 667, true]]) {
         await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 2, mobile });
         await sleep(300);
         await shot(`${name}-${width}x${height}`);
         const f = await fitsFrame();
         if (!(f.w <= width && f.iw <= width)) failed.push(`${name} at ${width}x${height}: ${f.w} wide`);
-        if (await js('document.body.innerText.includes("TypeError")')) failed.push(`${name} at ${width}x${height}: a bare TypeError on screen`);
+        for (const problem of await rawOnScreen()) failed.push(`${name} at ${width}x${height}: ${problem}`);
+        for (const problem of (await check?.({ width, height, landscape: width > height })) ?? []) failed.push(`${name} at ${width}x${height}: ${problem}`);
       }
     } finally {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
     }
     assert.deepEqual(failed, []);
   }
+
+  /** "unlocks in" whole on the screen and clear of the chip: nothing drawn over it. */
+  const labelClear = async () => {
+    const seen = await uncovered('wait-label');
+    return seen.visible && seen.covered.length === 0 ? [] : [`"unlocks in" is under something: ${JSON.stringify(seen)}`];
+  };
 
   /**
    * The ink gap from the bottom of the digits to the top of the "0:00" under them, in the page's own unit (one film pixel
@@ -443,6 +508,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     reader = new NearReader({ urls: stage.config.rpc, timeoutMs: 15_000 });
     views = contractViews(reader, stage.contract);
     instance = await views.instance();
+    LOCAL_TO = segwitAddress(instance.network, 0, label('thief-destination').slice(0, 20));
     relay = standInRelay(stage);
     relay.views = views;
     relay.instance = instance;
@@ -480,7 +546,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   });
 
   const toArmed = async (v, extra = {}) => {
-    await openThief(v, { to: THIEF_TO, k: v.seedHex, ...extra });
+    await openThief(v, { to: LOCAL_TO, k: v.seedHex, ...extra });
     await waitState('armed');
     await waitFor('Send enabled', async () => !(await js('document.getElementById("send").disabled')));
   };
@@ -496,7 +562,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   test('armed: the key leaves the address bar at once, and a wrong key or a real address stops the button', { timeout: 60_000 }, async () => {
     const v = await makeVault();
     const other = await makeVault({ coin: 0 });
-    await open('/t/', { v: v.vaultHex, k: v.seedHex, to: THIEF_TO, }, '&cursor=1');
+    await open('/t/', { v: v.vaultHex, k: v.seedHex, to: LOCAL_TO, }, '&cursor=1');
     await waitState('armed');
     assert.ok(!(await js('location.hash')).includes(v.seedHex), 'the key is out of the address bar');
     assert.ok(!(await js('location.hash')).includes('k='));
@@ -528,17 +594,34 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     // A real address, and an address from another network.
     await js('(() => { const e = document.getElementById("to"); e.value = ""; e.focus(); })()');
     await paste('to', segwitAddress('mainnet', 0, label('real').slice(0, 20)));
-    await waitFor('tb1 words', async () => /start with tb1/.test(await textOf('to-why')));
+    await waitFor('bcrt1 words', async () => (await textOf('to-why')) === 'This demo only sends to test addresses that start with bcrt1.');
     assert.equal(await js('document.getElementById("send").disabled'), true);
     await shot('03-real-address-refused');
+    // The same thief's address in Mutinynet's form is another network's here, and the tab says which, in one sentence.
+    const refusals = [
+      [segwitAddress('mutinynet', 0, label('thief-destination').slice(0, 20)), 'That is a signet or testnet address; this vault is on local regtest.', '03b-other-network-refused'],
+      [`bitcoin:${LOCAL_TO}`, 'That is a bitcoin: link. Paste only the address in it.', '03c-uri-refused'],
+      ['1BoatSLRHtKNngkdXEeobR76b53LETtpyT', 'This demo only sends to test addresses that start with bcrt1.', null],
+      ['not an address at all', 'That address does not check out.', null],
+    ];
+    for (const [text, words, name] of refusals) {
+      await js('(() => { const e = document.getElementById("to"); e.value = ""; e.focus(); })()');
+      await paste('to', text);
+      await waitFor(`the words for ${text}`, async () => (await textOf('to-why')) === words, 5000).catch(async (err) => {
+        throw new Error(`${err.message}: the tab says "${await textOf('to-why')}"`);
+      });
+      assert.equal(await js('document.getElementById("send").disabled'), true, text);
+      assert.doesNotMatch(await js('document.body.innerText'), /base58|not_|[a-z]+_[a-z]+/, `no library word or code on screen for ${text}`);
+      if (name) await shot(name);
+    }
     await js('(() => { const e = document.getElementById("to"); e.value = ""; e.focus(); })()');
-    await paste('to', THIEF_TO);
+    await paste('to', LOCAL_TO);
     await waitFor('Send enabled again', async () => !(await js('document.getElementById("send").disabled')));
   });
 
   test('no coin: says so, names the address, no button; then the coin lands and the button is there', { timeout: 60_000 }, async () => {
     const v = await makeVault({ coin: 0 });
-    await openThief(v, { to: THIEF_TO, k: v.seedHex });
+    await openThief(v, { to: LOCAL_TO, k: v.seedHex });
     await waitState('short');
     assert.equal(await textOf('plain-text'), 'No coin in this vault yet');
     assert.match(await textOf('plain-address'), /address bcrt1/, 'a local run labels itself by its own chain');
@@ -609,7 +692,8 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     const r = await js('Number(new URLSearchParams(location.hash.slice(1)).get("r"))');
     const req = await views.request(v.vaultHex, r);
     assert.equal(req.unlock - req.proposed_at, 300_000);
-    assert.equal(await textOf('dest-row'), `to ${THIEF_TO}  2,000 sats`);
+    assert.equal(await textOf('dest-row'), `to ${LOCAL_TO}  2,000 sats`);
+    assert.equal(spkToAddress(instance.network, req.to), LOCAL_TO, 'the string the phone prints for this request');
     assert.match(await textOf('near-row'), /^local NEAR sandbox tx \S+$/);
     assert.equal(await js('document.getElementById("root").dataset.auto'), 'armed');
     assert.equal(await textOf('auto'), 'auto-execute armed');
@@ -698,6 +782,19 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await js('document.getElementById("root").dataset.noReading'), '1');
     assert.equal(await js('getComputedStyle(document.getElementById("clock")).visibility'), 'hidden', 'no reading was on this screen, so none is drawn');
     await shot('14-frozen-after-reload');
+
+    // The stolen key again, as the film reopens it: said once under the key, in the tab's own words, with room under it.
+    await openThief(v, { to: LOCAL_TO, k: v.seedHex });
+    await waitState('armed');
+    await waitFor('the key\'s words', async () => (await textOf('key-why')) === 'That key can\'t ask again.', 10_000);
+    await waitFor('the contract\'s view of the key', async () => (await js('document.getElementById("root").dataset.viewRefused ?? ""')) === 'SpendKeySuspended', 15_000);
+    await js('document.activeElement?.blur()');
+    assert.equal(await textOf('armed-note'), '', 'the contract says what the key line says, so it is not said again');
+    assert.equal(await js('document.getElementById("send").disabled'), true);
+    const gap = await js('Math.round(document.querySelector(\'label[for="to"]\').getBoundingClientRect().top - document.getElementById("key-why").getBoundingClientRect().bottom)');
+    assert.ok(gap >= 10, `room between the red line and send to: ${gap} px`);
+    await assertFrame('key refused');
+    await shot('15-key-refused');
   });
 
   test('the other ending: at zero it calls execute by itself, the contract signs, and a real node takes it', { timeout: 180_000 }, async () => {
@@ -789,8 +886,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     stage.rig.setRule(async (x) => (x.method === 'POST' ? { status: 502, body: words } : null));
     await click('send');
     await waitState('no_answer', 15_000);
-    assert.equal(await textOf('plain-text'), 'The node did not answer:');
-    assert.equal(await textOf('plain-verbatim'), words);
+    assert.equal(await textOf('plain-text'), 'The node did not answer.');
+    // What answered, in a sentence: a proxy's page is not shown, and its words are in the console.
+    assert.equal(await textOf('plain-verbatim'), 'Something on the way answered HTTP 502 Bad Gateway, not a node.');
     assert.equal(await js('document.getElementById("bar").checkVisibility()'), false, 'a 502 is not a refusal');
     assert.equal(await js('document.body.textContent.includes("REFUSED") && document.getElementById("refused").checkVisibility()'), false);
     await assertFrame('no_answer');
@@ -801,7 +899,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     stage.rig.setFault('relay-flaky');
     // relay-flaky answers 503, 429, a drop, then 502 on successive sends of the same bytes. Chrome retries a dropped
     // connection by itself, so the page never sees that drop, and sees the 502.
-    for (const expectWords of ['Service Unavailable', 'Too Many Requests', 'Bad Gateway']) {
+    for (const expectWords of ['HTTP 503 Service Unavailable', 'HTTP 429 Too Many Requests', 'HTTP 502 Bad Gateway']) {
       await click('plain-retry');
       await waitFor(`no_answer: ${expectWords}`, async () => (await stateNow()) === 'no_answer' && (await textOf('plain-verbatim')).includes(expectWords), 20_000).catch(async (err) => {
         throw new Error(`${err.message}; screen says ${await textOf('plain-verbatim')}`);
@@ -814,10 +912,10 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     // No connection at all: the browser gives the page only an error name, and that is what it shows.
     await cdp.send('Network.setBlockedURLs', { urls: [`${stage.config.esplora}/tx`] });
     await click('plain-retry');
-    await waitFor('no_answer with no connection', async () => (await stateNow()) === 'no_answer' && ['TypeError', 'the connection failed'].includes(await textOf('plain-verbatim')), 20_000);
+    await waitFor('no_answer with no connection', async () => (await stateNow()) === 'no_answer' && ['TypeError', 'the connection failed', 'The connection failed.'].includes(await textOf('plain-verbatim')), 20_000);
     await shot('19b-node-no-connection');
     await atOtherSizes('19b-node-no-connection');
-    assert.equal(await textOf('plain-verbatim'), 'the connection failed', 'in words, not the browser\'s error name');
+    assert.equal(await textOf('plain-verbatim'), 'The connection failed.', 'in words, not the browser\'s error name');
     await cdp.send('Network.setBlockedURLs', { urls: [] });
 
     await click('plain-retry');
@@ -834,7 +932,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     stage.rig.setRule(async (x) => (x.method === 'POST' ? { status: 400, body: words } : null));
     await click('send');
     await waitState('other_refusal', 15_000);
-    assert.equal(await textOf('plain-verbatim'), `local regtest node: ${words}`);
+    assert.equal(await textOf('plain-text'), 'A node said no, but not about the signature.');
+    assert.equal(await textOf('plain-verbatim'), 'Its fee is too low for the node to pass it on.', 'what the refusal means, not its JSON');
+    await assertFrame('other refusal');
     assert.equal(await js('document.getElementById("refused").checkVisibility()'), false);
     await shot('20-other-refusal');
     stage.rig.setRule(null);
@@ -843,7 +943,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   test('a dead Mutinynet before the press: says so, no button, and recovers by itself', { timeout: 90_000 }, async () => {
     const v = await makeVault();
     stage.rig.setRule(async (x) => (x.method === 'GET' && x.path.includes('/utxo') ? { status: 503, body: 'Service Unavailable' } : null));
-    await openThief(v, { to: THIEF_TO, k: v.seedHex });
+    await openThief(v, { to: LOCAL_TO, k: v.seedHex });
     await waitFor('the words', async () => /Can't read local regtest right now/.test(await textOf('armed-note')), 30_000);
     assert.equal(await stateNow(), 'armed');
     assert.equal(await js('document.getElementById("send").disabled'), true);
@@ -863,7 +963,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await fastForwardToLeft(req.unlock, 5_000);
     await waitState('signed', 90_000);
     await waitFor('the words', async () => (await js('document.getElementById("root").dataset.broadcast')) === 'no_answer', 15_000);
-    assert.match(await textOf('note'), /Signed, not sent yet\. The node did not answer: Service Unavailable/);
+    assert.equal(await textOf('note'), 'Signed, not sent yet. Something on the way answered HTTP 503 Service Unavailable, not a node.');
     assert.equal(await textOf('txid-row'), '', 'no txid before a node has it');
     await shot('22-signed-not-sent');
     stage.rig.setRule(null);
@@ -874,7 +974,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   test('a dead relay: says so before and after the press, shows no armed claim, and retries when it is back', { timeout: 180_000 }, async () => {
     const v = await makeVault();
     relay.dead = true;
-    await openThief(v, { to: THIEF_TO, k: v.seedHex });
+    await openThief(v, { to: LOCAL_TO, k: v.seedHex });
     await waitState('armed');
     await waitFor('the sentence', async () => /relay is down/.test(await textOf('armed-note')));
     await assertFrame('armed, relay down');
@@ -883,11 +983,17 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await waitState('refused', 15_000);
     await waitState('asking', 5_000);
     await waitFor('the asking words', async () => (await js('document.getElementById("root").dataset.why')) === 'relay_down', 30_000);
-    assert.match(await textOf('term-1'), /relay is down/);
-    assert.match(await textOf('ask-why'), /relay_down/);
+    assert.equal(await textOf('term-1'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.');
+    assert.equal(await textOf('ask-why'), '', 'the row says it, so nothing says it again, and no code');
+    assert.equal(await js('document.getElementById("ask-retry").checkVisibility()'), true);
     assert.equal(await js('document.getElementById("clock-block").checkVisibility()'), false, 'no clock without a request');
     await shot('24-relay-down-asking');
-    await atOtherSizes('24-relay-down-asking');
+    // Try again sits above the row at every size, and covers none of its sentence.
+    await atOtherSizes('24-relay-down-asking', async () => {
+      const row = await uncovered('term-1');
+      const retry = await js(`(() => { const a = document.getElementById('ask-retry').getBoundingClientRect(), b = document.getElementById('term').getBoundingClientRect(); return { retry: [a.left, a.top, a.right, a.bottom].map(Math.round), term: [b.left, b.top, b.right, b.bottom].map(Math.round), apart: a.bottom <= b.top || a.top >= b.bottom || a.right <= b.left || a.left >= b.right }; })()`);
+      return [...(row.covered.length ? [`the relay sentence is covered: ${JSON.stringify(row)}`] : []), ...(retry.apart ? [] : [`Try again is on the row: ${JSON.stringify(retry)}`])];
+    });
     await assertFrame('asking, relay down');
     relay.dead = false;
     await click('ask-retry');
@@ -900,16 +1006,18 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await js('location.reload()');
     await waitState('waiting', 10_000);
     await waitFor('the waiting words', async () => (await js('document.getElementById("root").dataset.auto')) === 'off', 10_000);
-    assert.match(await textOf('auto'), /relay down/);
-    assert.match(await textOf('note'), /relay is down/);
+    assert.equal(await textOf('auto'), 'auto-execute off', 'what is off, under the digits');
+    assert.equal(await textOf('note'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.', 'and why, once');
+    await assertFrame('waiting, relay down');
     await shot('25-relay-down-waiting');
     await fastForwardToLeft(req.unlock, 4_000);
     await waitState('firing', 30_000);
     await waitFor('the firing words', async () => /relay is down/.test(await textOf('note')), 15_000);
+    assert.equal(await textOf('note'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.', 'one sentence, and no code');
     // The read that accepts a fast-forward can be the one that reaches zero, and the digits draw on the next frame.
     await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
     await shot('26-relay-down-firing');
-    await atOtherSizes('26-relay-down-firing');
+    await atOtherSizes('26-relay-down-firing', async ({ landscape }) => (landscape ? labelClear() : []));
     await assertFrame('firing, relay down');
     relay.dead = false;
     await waitState('signed', 90_000);
@@ -918,7 +1026,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
   test('the relay at its ceiling: says that, not down', { timeout: 60_000 }, async () => {
     const v = await makeVault();
     relay.general = { up: false, why: 'daily_ceiling', resets_at: 1 };
-    await openThief(v, { to: THIEF_TO, k: v.seedHex });
+    await openThief(v, { to: LOCAL_TO, k: v.seedHex });
     await waitFor('the sentence', async () => /today's limit/.test(await textOf('armed-note')));
     await click('send');
     await waitState('asking', 15_000);
@@ -943,7 +1051,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     const secs = (t) => Number(t.split(':')[0]) * 60 + Number(t.split(':')[1]);
     assert.ok(secs(afterReload) <= secs(before) && secs(before) - secs(afterReload) < 6, `${before} then ${afterReload}`);
     assert.equal(await js('document.getElementById("key").value'), '');
-    assert.equal(await textOf('dest-row'), `to ${THIEF_TO}  2,000 sats`);
+    assert.equal(await textOf('dest-row'), `to ${LOCAL_TO}  2,000 sats`);
     assert.match(await textOf('near-row'), /^local NEAR sandbox tx /, 'the hash came through the reload');
     await assertFrame('reloaded');
     await shot('27-after-reload');
@@ -951,7 +1059,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await waitState('signed', 90_000);
 
     // And a link that names no request finds nothing to resume once the request has gone out.
-    await openThief(v, { to: THIEF_TO });
+    await openThief(v, { to: LOCAL_TO });
     await waitState('short', 15_000);
   });
 
@@ -1028,6 +1136,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       await assertFrame('hold');
       await shot('29b-hold');
       const threeDigits = await inkGap();
+      await atOtherSizes('29b-hold', async ({ landscape }) => (landscape ? labelClear() : []));
       await js('window.__holdMs = 600000');
       await waitFor('two minute digits', async () => (await js('document.getElementById("root").dataset.wide')) === '1', 6_000);
       await sleep(300);
@@ -1037,17 +1146,20 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       await shot('29c-ten-minutes');
       // Four digits are smaller, and the 0:00 under them must still clear them, on every screen the film or a judge uses.
       const gaps = {};
+      const labelProblems = [];
       try {
-        for (const [width, height, scale, mobile] of [[1080, 1350, 2, false], [1440, 900, 2, false], [390, 844, 2, true], [375, 667, 2, true]]) {
+        for (const [width, height, scale, mobile] of [[1080, 1350, 2, false], [1440, 900, 2, false], [1512, 982, 2, false], [390, 844, 2, true], [375, 667, 2, true]]) {
           await cdp.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: scale, mobile });
           await sleep(300);
           gaps[`${width}x${height}`] = await inkGap();
           await shot(`29c-ten-minutes-${width}x${height}`);
+          for (const problem of await labelClear()) labelProblems.push(`four digits at ${width}x${height}: ${problem}`);
         }
       } finally {
         await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1080, height: 1350, deviceScaleFactor: 2, mobile: false });
       }
       for (const [size, gap] of Object.entries(gaps)) assert.ok(gap >= 8, `the 0:00 clears the four digits by 8 film pixels at ${size}: ${JSON.stringify(gaps)}, three digits ${threeDigits}`);
+      assert.deepEqual(labelProblems, [], 'and "unlocks in" stays clear of the chip');
     } finally {
       await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
     }
@@ -1166,10 +1278,10 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
 
   test('attack 14: when the contract answers, the page does not say it was not asked', { timeout: 120_000 }, async () => {
     const words = 'Smart contract panicked: OutpointBusy';
-    for (const [refusal, sentence] of [
-      [{ code: 'would_refuse', message: 'the contract refused that read', verbatim: words }, 'The NEAR contract refused this.'],
-      [{ code: 'would_refuse', message: 'that proposal is not signed by this vault\'s spend key', verbatim: null }, 'The NEAR contract was not asked.'],
-      [{ code: 'rate_limited', message: 'too many calls', verbatim: null }, 'The NEAR contract was not asked.'],
+    for (const [refusal, sentence, why] of [
+      [{ code: 'would_refuse', message: 'the contract refused that read', verbatim: words }, 'The NEAR contract refused this.', 'That coin is already in another request.'],
+      [{ code: 'would_refuse', message: 'that proposal is not signed by this vault\'s spend key', verbatim: null }, 'The NEAR contract was not asked.', 'The relay checked it first and did not send it.'],
+      [{ code: 'rate_limited', message: 'too many calls', verbatim: null }, 'The NEAR contract was not asked.', 'Too many tries through the relay. Wait a few seconds and try again.'],
     ]) {
       const v = await makeVault();
       await toArmed(v, {});
@@ -1177,24 +1289,27 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       try {
         await click('send');
         await waitFor('the sentence', async () => (await textOf('term-1')) === sentence, 20_000);
-        assert.match(await textOf('ask-why'), new RegExp(refusal.code));
-        if (refusal.verbatim) assert.ok((await textOf('ask-why')).includes(words));
+        // The second line says why in a sentence, the contract's reason when it gave one, and never a code or its raw words.
+        assert.equal(await textOf('ask-why'), why);
+        assert.deepEqual(await rawOnScreen(), [], 'plain words only');
       } finally {
         relay.refuseAll = null;
       }
     }
   });
 
-  test('attack 17: the node\'s words stay on the wait screen, exactly as sent, and are off the stamp', { timeout: 120_000 }, async () => {
+  test('attack 17: the node\'s refusal stays on the wait screen in one line, its bytes on the red bar\'s frame only, and it is off the stamp', { timeout: 120_000 }, async () => {
     const v = await makeVault();
     await toArmed(v, {});
     await click('send');
     await waitState('refused', 15_000);
     const said = await textOf('node-text');
+    assert.match(said, /script-verify/, 'the refused frame keeps the node\'s own bytes');
     await waitState('waiting', 60_000);
     await waitFor('the fling', async () => (await js('document.getElementById("root").dataset.fling')) === 'done', 5000);
-    assert.equal(await textOf('node-row'), `local regtest node: ${said}`);
-    assert.equal(await js('document.getElementById("node-row").title'), `local regtest node: ${said}`, 'and all of it, however it is cut');
+    assert.equal(await textOf('node-row'), 'local regtest refused the key alone.');
+    const cut = await js('(() => { const e = document.getElementById("node-row"); return e.scrollHeight > e.clientHeight + 1; })()');
+    assert.equal(cut, false, 'a sentence that fits, never cut mid-word');
     assert.equal(await js('document.getElementById("node-row").checkVisibility()'), true);
     await assertFrame('waiting, with the node row');
     await rotate(v);
@@ -1219,7 +1334,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
 
   test('/thief is the same page', { timeout: 30_000 }, async () => {
     const v = await makeVault();
-    await open('/thief/', { v: v.vaultHex, to: THIEF_TO, k: v.seedHex });
+    await open('/thief/', { v: v.vaultHex, to: LOCAL_TO, k: v.seedHex });
     await waitState('armed');
     assert.equal(await js('location.hash').then((h) => h.includes('k=')), false);
   });
@@ -1271,9 +1386,11 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       assert.ok(frac >= 1 / 3, `digits take ${frac} of the width`);
       const r = await js('Number(new URLSearchParams(location.hash.slice(1)).get("r"))');
       const req = await views.request(v.vaultHex, r);
+      assert.deepEqual(await labelClear(), [], 'three digits at 1512x982');
       await fastForwardToLeft(req.unlock, 20_000);
       await waitFor('under a minute', async () => (await clockText()).startsWith('0:'), 15_000);
       await shot('32-landscape-waiting');
+      assert.deepEqual(await labelClear(), [], 'under a minute at 1512x982');
       await rotate(v);
       await waitState('frozen', 10_000);
       await sleep(400);

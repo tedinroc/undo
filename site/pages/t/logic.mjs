@@ -1,23 +1,49 @@
 // The thief tab's rules with no page around them, so a test can hold each one down without a browser.
-import { addressToSpk } from '../../../tools/lib/btc.mjs';
+import { addressPrefix, addressToSpk } from '../../../tools/lib/btc.mjs';
 import { fromHex } from '../../../tools/lib/bytes.mjs';
+import { relayWords } from '../../../site/lib/plain-words.mjs';
 import { retryClosesAt } from '../../../site/lib/request-state.mjs';
 
-/** Refused before anything is signed: this is a demo for test coins, and a bc1 address is real money. */
-export function destinationProblem(text) {
+/** The decoder's refusal of `text` on `network`, or null when it decodes. */
+function refusalOf(text, network) {
+  try {
+    addressToSpk(network, String(text ?? '').trim());
+    return null;
+  } catch (err) {
+    return err;
+  }
+}
+
+/**
+ * Refused before anything is signed: this is a demo for test coins, so only the vault's own network's segwit address
+ * goes, `tb1` on Mutinynet and `bcrt1` on a local regtest, the same form the phone shows. `network` is the contract's.
+ */
+export function destinationProblem(text, network) {
   const address = String(text ?? '').trim();
   if (address === '') return 'empty';
-  if (!address.startsWith('tb1')) return 'not_test_address';
-  try {
-    addressToSpk('mutinynet', address);
-  } catch {
-    return 'bad_address';
-  }
+  const prefix = addressPrefix(network);
+  if (prefix === null || prefix === 'bc1') return 'no_network';
+  const refused = refusalOf(address, network);
+  if (refused?.code === 'other_network') return refused.hrp === 'bc' ? 'not_test_address' : 'other_network';
+  if (refused?.code === 'uri') return 'uri';
+  if (refused) return 'bad_address';
+  // This network's own, and not in the one form both pages print: base58, or upper case.
+  if (!address.startsWith(prefix)) return 'not_test_address';
   return null;
 }
 
-/** Decodes as a tb1 address on every network: an output script is the same bytes on regtest and signet. */
-export const destinationSpk = (text) => addressToSpk('mutinynet', String(text).trim());
+/** What the tab says under "send to": one plain sentence, or '' when nothing is wrong. `place` is the network's name on screen. */
+export function destinationWords(text, network, place = network) {
+  const problem = destinationProblem(text, network);
+  if (problem === 'not_test_address') return `This demo only sends to test addresses that start with ${addressPrefix(network)}.`;
+  if (problem === 'other_network') return `That is a ${refusalOf(text, network).networkName} address; this vault is on ${place}.`;
+  if (problem === 'uri') return 'That is a bitcoin: link. Paste only the address in it.';
+  if (problem === 'bad_address') return 'That address does not check out.';
+  return '';
+}
+
+/** The output script, for the vault's own network: the same bytes the phone turns back into that one address. */
+export const destinationSpk = (text, network) => addressToSpk(network, String(text).trim());
 
 /** 32 bytes from what was pasted, or null. */
 export function parseSeed(text) {
@@ -57,7 +83,8 @@ export function relaySentence(status) {
   if (status.general?.up || status.general?.calls_fit) return null;
   if (status.general?.why === 'daily_ceiling') return 'The relay hit today\'s limit, so this tab can\'t ask the NEAR contract or call execute.';
   if (status.general?.why === 'relay_reserve') return 'The relay is keeping what it has left for cancels, so this tab can\'t ask the NEAR contract or call execute.';
-  return `The relay can't send for this tab right now: ${status.general?.why ?? 'no reason given'}`;
+  // Any other reason, as the relay's own sentence and without its code.
+  return `${relayWords({ code: status.general?.why }).replace(/\.$/, '')}, so this tab can't ask the NEAR contract or call execute.`;
 }
 
 /**

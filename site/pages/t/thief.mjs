@@ -1,13 +1,13 @@
 // The thief tab. Everything it says about the coin it read from the contract or a Bitcoin node, and the only link to the
 // phone is the contract: this page never hears from it. The stolen key stays in this tab and leaves only as signatures.
 import {
-  advanceState, bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, buildFragment, buildPropose, clock, contractViews, digits, keyAloneSpend,
-  loadConfig, NearReader, nearTxLabel, nearTxLink, parseFragment, postTxOnce, RelayClient, RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything,
-  SkewTracker, spkToAddress, StaleRead, ViewRefused,
+  advanceState, bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, buildFragment, buildPropose, clock, configWords, contractViews, contractWords, digits,
+  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, panicOf, parseFragment, postTxOnce, RelayClient, relayWords,
+  RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything, SkewTracker, spkToAddress, StaleRead, ViewRefused,
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
-import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from './logic.mjs';
+import { destinationProblem, destinationSpk, destinationWords, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from './logic.mjs';
 
 const $ = (id) => document.getElementById(id);
 const root = $('root');
@@ -75,7 +75,8 @@ function plain(state, sentence, { verbatim = '', address = null, retry = null } 
   button.onclick = retry;
 }
 
-const errorWords = (err) => err?.verbatim ?? err?.message ?? String(err);
+/** The raw words of an error, for the console only. A screen says a sentence instead. */
+const rawWords = (err) => [err?.code, err?.verbatim ?? err?.message ?? String(err)].filter(Boolean).join(': ');
 
 // ---------------------------------------------------------------- the clock
 
@@ -176,18 +177,22 @@ function drawAuto() {
   if (S.state === 'waiting') {
     const sentence = relaySentence(S.relayStatus);
     root.dataset.auto = sentence ? 'off' : 'armed';
-    const atLimit = S.relayStatus?.reachable && S.relayStatus.general?.why === 'daily_ceiling';
-    $('auto').textContent = sentence ? (atLimit ? 'relay at limit: execute can\'t fire' : 'relay down: execute can\'t fire') : 'auto-execute armed';
+    // The line under the digits says only that it is off; the sentence below them says why, once.
+    $('auto').textContent = sentence ? 'auto-execute off' : 'auto-execute armed';
     if (!S.badReadsShown) $('note').textContent = sentence ?? '';
   }
 }
 
 // ---------------------------------------------------------------- armed
 
+/** The vault's Bitcoin network, as the contract names it: the phone writes its addresses in this form too. */
+const network = () => S.instance?.network ?? null;
+
 function fragmentFields() {
   const fields = { v: S.vaultHex };
   const to = $('to').value.trim();
-  if (to && !destinationProblem(to)) fields.to = to;
+  // Before the contract has named its network, the link's own destination stays as it came.
+  if (to && (network() === null || !destinationProblem(to, network()))) fields.to = to;
   if (S.requestId !== null) fields.r = S.requestId;
   return fields;
 }
@@ -220,13 +225,9 @@ function checkKey() {
 
 function checkTo() {
   const value = $('to').value.trim();
-  const problem = destinationProblem(value);
-  S.toOk = problem === null;
+  S.toOk = destinationProblem(value, network()) === null;
   $('to').classList.toggle('long', value.length > 44);
-  $('to-why').textContent = {
-    not_test_address: 'This demo only sends to test addresses that start with tb1.',
-    bad_address: 'That address does not check out.',
-  }[problem] ?? '';
+  $('to-why').textContent = network() ? destinationWords(value, network(), S.config.labels.bitcoin) : '';
 }
 
 function drawSend() {
@@ -236,7 +237,7 @@ function drawSend() {
 function buildSpend() {
   S.spend = null;
   if (!S.script || !S.coins.length) return;
-  const to = S.toOk ? destinationSpk($('to').value) : new Uint8Array(22);
+  const to = S.toOk ? destinationSpk($('to').value, network()) : new Uint8Array(22);
   S.spend = sendEverything({ coins: S.coins.slice(0, MAX_INPUTS), to, script: S.script, feeRate: S.feeRate ?? 2 });
 }
 
@@ -245,12 +246,16 @@ async function checkPropose() {
   S.viewProblem = null;
   if (!S.toOk || !S.spend || S.spend.short) return;
   try {
-    const check = await S.views.checkPropose(S.vaultHex, { inputs: S.spend.inputs, to: toHex(destinationSpk($('to').value)), amount: S.spend.amount });
+    const check = await S.views.checkPropose(S.vaultHex, { inputs: S.spend.inputs, to: toHex(destinationSpk($('to').value, network())), amount: S.spend.amount });
     root.dataset.tier = check.tier;
   } catch (err) {
-    if (err instanceof ViewRefused) S.viewProblem = err.verbatim;
-    else throw err;
+    if (!(err instanceof ViewRefused)) throw err;
+    if (root.dataset.viewRefused !== (panicOf(err.verbatim) ?? 'refused')) logRaw('check_propose refused', err.verbatim);
+    root.dataset.viewRefused = panicOf(err.verbatim) ?? 'refused';
+    S.viewProblem = contractWords(err.verbatim);
+    return;
   }
+  delete root.dataset.viewRefused;
 }
 
 function drawArmed() {
@@ -260,12 +265,14 @@ function drawArmed() {
   const notes = [];
   if (S.nearDown) notes.push(S.nearDown);
   if (S.btcDown) notes.push(S.btcDown);
-  if (S.viewProblem) notes.push(`NEAR contract: ${S.viewProblem}`);
+  if (S.viewProblem) notes.push(S.viewProblem);
   const relay = relaySentence(S.relayStatus);
   if (relay) notes.push(relay);
   // Nobody beats on a stranger's say-so, so a vault left alone reads the longer wait, and this page says which.
   if (S.vault && !S.vault.guard_online && root.dataset.delayMs) notes.push(`This vault's guard has gone quiet, so the contract's wait reads ${digits(Number(root.dataset.delayMs)).short}.`);
-  $('armed-note').textContent = notes.join(' ');
+  // Each thing once: a sentence the fields above already say is not said again under the button.
+  const said = new Set([$('key-why').textContent, $('to-why').textContent]);
+  $('armed-note').textContent = [...new Set(notes)].filter((note) => !said.has(note)).join(' ');
   drawSend();
 }
 
@@ -304,7 +311,8 @@ async function refreshArmed() {
       S.feeRate = Math.max(2, Math.ceil(estimates?.['6'] ?? 2));
       S.btcDown = null;
     } catch (err) {
-      S.btcDown = `Can't read ${S.config.labels.bitcoin} right now: ${err.message}`;
+      if (!S.btcDown) logRaw(`can't read ${S.config.labels.bitcoin}`, rawWords(err));
+      S.btcDown = `Can't read ${S.config.labels.bitcoin} right now.`;
     }
   }
   checkKey();
@@ -356,10 +364,12 @@ async function pressSend() {
   }
   if (answer.kind === 'rejected' && answer.refusal === 'script') return showRefused(answer.body);
   if (answer.kind === 'rejected') {
-    return plain('other_refusal', 'A node said no, but not about the signature:', { verbatim: `${S.config.labels.bitcoin} node: ${answer.body}`, retry: retryFromTop });
+    logRaw(`${S.config.labels.bitcoin} node`, answer.body);
+    return plain('other_refusal', 'A node said no, but not about the signature.', { verbatim: nodeRefusalWords(answer.body), retry: retryFromTop });
   }
   if (answer.errorKind) console.warn(`undo: no answer from the node (${answer.errorKind})`);
-  return plain('no_answer', 'The node did not answer:', { verbatim: answer.body ?? answer.error ?? 'no words', retry: retryFromTop });
+  logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body ?? answer.error);
+  return plain('no_answer', 'The node did not answer.', { verbatim: noNodeWords(answer), retry: retryFromTop });
 }
 
 /** One real POST with the key alone, of the coins a node reports now. Never sent twice for one press. */
@@ -370,7 +380,7 @@ async function sendKeyAlone() {
   } catch (err) {
     return { kind: 'no_answer', body: null, error: err.message, errorKind: err.errorKind ?? null };
   }
-  const to = destinationSpk($('to').value);
+  const to = destinationSpk($('to').value, network());
   const spend = sendEverything({ coins, to, script: S.script, feeRate: S.feeRate ?? 2 });
   if (coins.length === 0 || spend.short) return { none: true };
   S.spend = spend;
@@ -420,16 +430,30 @@ function fitNodeText() {
 
 // ---------------------------------------------------------------- asking the NEAR contract
 
+/** The relay's own sentence, for the two reasons the relay's status line also gives. Null for any other. */
+function relayDownSentence(err) {
+  if (err?.code === 'relay_down') return relaySentence({ reachable: false });
+  if (err?.code === 'daily_ceiling') return relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } });
+  return null;
+}
+
+/** The second line under the row: what the first does not already say, or nothing. */
+function askWhy(err) {
+  if (relayDownSentence(err) || err?.code === 'no_request') return '';
+  if (err?.code === 'contract_refused') return contractWords(err.verbatim);
+  if (err instanceof ViewRefused) return contractWords(err.verbatim);
+  if (err instanceof RpcDown || err instanceof StaleRead) return 'Can\'t read the NEAR contract right now.';
+  if (err?.code) return relayWords(err);
+  return 'This tab hit an error it did not expect.';
+}
+
 function showAskFailure(err) {
-  const words = [err.code, err.verbatim ?? err.message].filter(Boolean).join(': ');
-  $('ask-why').textContent = words;
-  const sentence = err.code === 'relay_down' ? relaySentence({ reachable: false })
-    : err.code === 'daily_ceiling' ? relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } })
-      : null;
+  logRaw('asking the NEAR contract', rawWords(err));
+  $('ask-why').textContent = askWhy(err);
   // Only a call no transaction or view reached may say the contract was not asked.
   const answered = err.code === 'contract_refused' || (err.code === 'would_refuse' && err.verbatim);
   const fallback = answered ? 'The NEAR contract refused this.' : err.code === 'no_request' ? 'Sent to the NEAR contract, and no request appeared.' : 'The NEAR contract was not asked.';
-  $('term-1').textContent = sentence ?? fallback;
+  $('term-1').textContent = relayDownSentence(err) ?? fallback;
   root.dataset.why = err.code ?? 'error';
   $('ask-retry').classList.add('on');
   $('ask-retry').onclick = () => {
@@ -450,7 +474,7 @@ async function ask() {
   const seenBefore = new Set(S.vault.pending);
   const block = await S.reader.blockTime();
   S.tracker.add(block);
-  const to = destinationSpk($('to').value);
+  const to = destinationSpk($('to').value, network());
   const args = buildPropose({
     contract: S.config.contract, vault: S.vault, script: S.script, seed: S.seed, inputs: S.spend.inputs, to, amount: S.spend.amount,
     nonce: S.vault.spend_nonce, expiresAt: block.blockMs + 30 * 60_000,
@@ -545,11 +569,8 @@ async function poll() {
     onRead(vault, request);
   } catch (err) {
     if (err instanceof RpcDown || err instanceof StaleRead) return readFailed();
-    if (err instanceof ViewRefused) {
-      $('note').textContent = `NEAR contract: ${err.verbatim}`;
-      return undefined;
-    }
-    $('note').textContent = errorWords(err);
+    logRaw('reading the request', rawWords(err));
+    $('note').textContent = err instanceof ViewRefused ? contractWords(err.verbatim) : 'Can\'t read the NEAR contract right now.';
   }
   return undefined;
 }
@@ -614,15 +635,12 @@ function onRead(vault, request) {
 function drawRows() {
   const r = S.request;
   if (r) {
-    const address = spkToAddress('mutinynet', r.to);
+    const address = network() ? spkToAddress(network(), r.to) : null;
     $('dest-row').textContent = `to ${address ?? r.to}  ${satsText(sumOfInputs(r.inputs))}`;
   }
   if (S.nearTx) setHash($('near-row'), nearTxLabel(S.config, S.nearTx), nearTxLink(S.config, S.nearTx));
-  if (S.nodeWords && S.config) {
-    const line = `${S.config.labels.bitcoin} node: ${S.nodeWords}`;
-    $('node-row').textContent = line;
-    $('node-row').title = line;
-  }
+  // What the red bar showed, in one line: the node's own bytes stay on that frame and in the console.
+  if (S.nodeWords && S.config) $('node-row').textContent = `${S.config.labels.bitcoin} refused the key alone.`;
 }
 
 function drawHold() {
@@ -728,12 +746,15 @@ async function fire() {
       if (isNotYetUnlocked(outcome?.failure)) {
         waitMs = 0;
       } else if (outcome?.failure) {
-        $('note').textContent = `NEAR contract: ${outcome.failure}`;
+        logRaw('execute refused', outcome.failure);
+        $('note').textContent = contractWords(outcome.failure);
         waitMs = null;
       }
     } catch (err) {
       if (err.errorKind) console.warn(`undo: no answer from the relay (${err.errorKind})`);
-      $('note').textContent = [relaySentence(err.code === 'relay_down' ? { reachable: false } : err.code === 'daily_ceiling' ? { reachable: true, general: { up: false, why: 'daily_ceiling' } } : null), [err.code, err.verbatim ?? err.message].filter(Boolean).join(': ')].filter(Boolean).join(' ');
+      logRaw('execute not sent', rawWords(err));
+      // One sentence: the relay's own, which already says execute can't go, or the reason in words.
+      $('note').textContent = relayDownSentence(err) ?? relayWords(err);
       waitMs = err.retryAfterS ? err.retryAfterS * 1000 : EXECUTE_RETRY_MS;
       S.relayStatus = await S.relay.status();
     }
@@ -824,10 +845,12 @@ async function broadcastFinal() {
     $('note').textContent = '';
     root.dataset.broadcast = 'done';
   } else if (answer.kind === 'rejected') {
-    $('note').textContent = `${S.config.labels.bitcoin} node: ${answer.body}`;
+    logRaw(`${S.config.labels.bitcoin} node`, answer.body);
+    $('note').textContent = `Signed, and a node refused it. ${nodeRefusalWords(answer.body)}`;
     root.dataset.broadcast = 'refused';
   } else {
-    $('note').textContent = `Signed, not sent yet. The node did not answer: ${answer.body ?? answer.error ?? 'no words'}`;
+    logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body ?? answer.error);
+    $('note').textContent = `Signed, not sent yet. ${noNodeWords(answer)}`;
     root.dataset.broadcast = 'no_answer';
   }
 }
@@ -876,7 +899,8 @@ async function boot() {
   try {
     S.config = await loadConfig();
   } catch (err) {
-    return plain('no_config', 'This page has no config, so it reads nothing.', { verbatim: err.message });
+    logRaw('the settings', rawWords(err));
+    return plain('no_config', 'This page has no config, so it reads nothing.', { verbatim: configWords(err) });
   }
   $('chip').textContent = S.config.labels.chip;
   fitWordmark();
@@ -916,7 +940,8 @@ async function loadVault() {
       if (S.requestId !== null) rewriteFragment();
     }
   } catch (err) {
-    plain('no_config', 'Can\'t read the NEAR contract right now', { verbatim: errorWords(err) });
+    logRaw('reading the vault', rawWords(err));
+    plain('no_config', 'Can\'t read the NEAR contract right now.');
     setTimeout(() => {
       setState('boot', 'none');
       loadVault();
@@ -935,7 +960,10 @@ async function loadVault() {
 $('key').addEventListener('input', onFieldInput);
 $('to').addEventListener('input', onFieldInput);
 $('send').addEventListener('click', () => {
-  pressSend().catch((err) => plain('no_answer', 'This tab hit an error and sent nothing further:', { verbatim: errorWords(err), retry: retryFromTop }));
+  pressSend().catch((err) => {
+    logRaw('Send', rawWords(err));
+    plain('no_answer', 'This tab hit an error and sent nothing further.', { retry: retryFromTop });
+  });
 });
 document.addEventListener('mousemove', (event) => {
   if (!S.cursor) return;
@@ -944,4 +972,7 @@ document.addEventListener('mousemove', (event) => {
 });
 
 fitWordmark();
-boot().catch((err) => plain('no_config', 'This tab could not start.', { verbatim: errorWords(err) }));
+boot().catch((err) => {
+  logRaw('start', rawWords(err));
+  plain('no_config', 'This tab could not start.');
+});

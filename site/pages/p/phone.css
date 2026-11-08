@@ -79,8 +79,10 @@ a { color: inherit; }
 .hash { font: 700 22px/1.2 var(--mono); overflow-wrap: anywhere; display: block; text-decoration: none; }
 a.hash { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 
-/* ---- the stamp: a white bar, edge to edge, as in the film */
-.stamp { margin: 12px calc(var(--gutter) * -1) 0; background: var(--white); color: var(--ground); font: 900 15vw/1 var(--sans); letter-spacing: -0.03em;
+/* ---- the stamp: a white bar, edge to edge, as in the film. Its box is the screen's width and clips the slam at the
+   sides, so the scale it lands from never widens the page; above and below, nothing is clipped */
+.stampclip { margin: 12px calc(var(--gutter) * -1) 0; overflow-x: clip; overflow-y: visible; }
+.stamp { margin: 0; background: var(--white); color: var(--ground); font: 900 15vw/1 var(--sans); letter-spacing: -0.03em;
   padding: 10px var(--gutter) 12px; white-space: nowrap; text-align: center; }
 .stamp.slam { animation: slam 0.16s cubic-bezier(0.2, 0.9, 0.3, 1) both; }
 @keyframes slam { from { transform: scale(1.18); opacity: 0; } to { transform: none; opacity: 1; } }

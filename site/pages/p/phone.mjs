@@ -3,11 +3,12 @@
 //
 // data-state on <html> and data-clock on the digits are what tests and the recorder wait on.
 import {
-  bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, credentialToFragment, advanceState,
-  credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, NearReader, nearTxLabel, nearTxLink, refusalOf, RelayClient, RelayRefused, requestState, rotateArgs,
-  rotateDigest, RpcDown, rpIdHashOf, SkewTracker, solvePow, spendKeys, spkToAddress, StaleRead,
+  bitcoinReader, configWords, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, contractWords,
+  credentialToFragment, advanceState, credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, passkeyErrorWords,
+  passkeyWords, refusalOf, RelayClient, RelayRefused, relayWords, requestState, rotateArgs, rotateDigest, RpcDown, rpIdHashOf, SkewTracker, solvePow, spendKeys,
+  spkToAddress, StaleRead, ViewRefused,
 } from '/site/lib/index.mjs';
-import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
+import { addressPrefix, parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
 import { randomBytes } from '/tools/lib/crypto.mjs';
 import { buildRecovery } from '/tools/lib/recovery.mjs';
@@ -42,7 +43,7 @@ const NULL_READS_TO_BELIEVE = 3;
 
 const P = {
   screen: null, v: null, r: null, fragment: {}, vault: null, vaultRead: false, lastKnown: null, rs: null, items: new Map(), hintR: null,
-  moreWaiting: 0, alreadySigned: 0, relay: null, readFails: 0, readWords: null, notice: null, tap: null, prep: null,
+  moreWaiting: 0, alreadySigned: 0, relay: null, readFails: 0, notice: null, tap: null, prep: null,
   credential: null, credentialTrusted: false, blocked: false, rpBad: false, frozenText: null, stampLive: false, coinStill: false, coinCheckedAt: 0,
   coinFacts: new Map(), coinFactsAt: 0, coinsDown: false, tooLateTxid: null, tooLateUnsent: false, finalAt: 0, face: null, skewAt: 0, statusAt: 0, timer: null, touch: null, seed: null, cold: null,
   balance: null, fundedTxid: null, stopped: false, sheetNote: null, hang: false, tx: null, txSent: null, ksSeen: null, frozenBy: {}, pin: null,
@@ -55,6 +56,18 @@ let ctx;
 
 // ---------------------------------------------------------------- boot
 
+/** One sentence for anything that went wrong, never its raw words: those go to the console, with `logRaw`. */
+function failureWords(err) {
+  if (err instanceof RelayRefused) return relayWords(err);
+  if (err instanceof ViewRefused) return contractWords(err.verbatim);
+  if (err instanceof RpcDown || err instanceof StaleRead) return 'Can\'t read the NEAR contract right now.';
+  if (err instanceof PasskeyFailed) return passkeyErrorWords(err.kind);
+  return 'This page hit an error it did not expect.';
+}
+
+/** The raw words of an error, for the console only. */
+const rawWords = (err) => [err?.code, err?.verbatim ?? (err?.name && err?.message ? `${err.name}: ${err.message}` : err?.message) ?? String(err)].filter(Boolean).join(': ');
+
 async function main() {
   fitWordmark();
   window.addEventListener('resize', fitWordmark);
@@ -63,7 +76,8 @@ async function main() {
     config = await loadConfig();
   } catch (err) {
     setState('no_config');
-    show(h('p', { class: 'say' }, 'This page could not load its settings, so it shows nothing.'), h('p', { class: 'words' }, err.message));
+    logRaw('the settings', rawWords(err));
+    show(h('p', { class: 'say' }, 'This page could not load its settings, so it shows nothing.'), h('p', { class: 'words' }, configWords(err)));
     return;
   }
   document.getElementById('chip').textContent = config.labels.chip;
@@ -106,7 +120,8 @@ async function main() {
       break;
     } catch (err) {
       setState('read_down');
-      show(h('p', { class: 'say' }, 'Can\'t read the NEAR contract right now.'), h('p', { class: 'words' }, err.verbatim ?? err.message));
+      logRaw('reading the NEAR contract', rawWords(err));
+      show(h('p', { class: 'say' }, 'Can\'t read the NEAR contract right now.'));
       await new Promise((r) => { setTimeout(r, 3000); });
       reads = contractReads(views, reader);
       P.early = null;
@@ -119,7 +134,13 @@ async function main() {
   let refit = 0;
   window.addEventListener('resize', () => {
     cancelAnimationFrame(refit);
-    refit = requestAnimationFrame(() => { if (P.screen && P.screen !== 'cancelled') keepControlOnScreen(); });
+    refit = requestAnimationFrame(() => {
+      if (!P.screen) return;
+      if (P.screen !== 'cancelled') keepControlOnScreen();
+      // The stamp's held frame is for a screen that stays put: a turn or a browser bar settles the digits at once,
+      // where a reload at the new size draws them.
+      else if (P.pin && !P.pin.settled) settleDigits(P.pin);
+    });
   });
   // Test mode is for one phone check, and a final build sets this off, so `#h7=1` is then only an ignored field.
   if (P.fragment.h7 && config.h7) {
@@ -281,13 +302,10 @@ async function tick() {
     await skewing;
     P.vaultRead = true;
     P.readFails = 0;
-    P.readWords = null;
   } catch (err) {
-    if (err instanceof StaleRead || err instanceof RpcDown) P.readFails += 1;
-    else {
-      P.readFails += 1;
-      P.readWords = err.verbatim ?? err.message;
-    }
+    P.readFails += 1;
+    // The screen says it can't read; what the node or the contract said is for the console.
+    if (!(err instanceof StaleRead || err instanceof RpcDown)) logRaw('reading the vault', rawWords(err));
   }
   const statusEvery = !P.relay.reachable || !P.relay.owner.up || P.rs?.cancellable ? STATUS_DOWN_MS : STATUS_MS;
   if (Date.now() - P.statusAt >= statusEvery) {
@@ -575,7 +593,8 @@ async function finishTap(asking, prep) {
   });
   if (refusal) {
     P.tap = null;
-    P.notice = { warn: true, say: 'Not cancelled.', words: refusal };
+    logRaw('the passkey\'s answer', refusal);
+    P.notice = { warn: true, say: `Not cancelled. ${passkeyWords(refusal)}`, words: null };
     judge();
     return;
   }
@@ -636,15 +655,19 @@ function onTapFailed(err) {
     else if (err.kind === 'blocked') P.blocked = true;
     else if (err.kind === 'wrong_site') P.rpBad = true;
     else if (err.kind === 'dismissed') P.notice = { say: 'Not cancelled. The sheet closed.', words: null, line: P.credential ? null : 'If it offered no passkey, this phone doesn\'t hold this vault\'s.' };
-    else P.notice = { warn: true, say: 'Not cancelled.', words: err.message };
+    else {
+      logRaw('the passkey', rawWords(err));
+      P.notice = { warn: true, say: `Not cancelled. ${passkeyErrorWords(err.kind)}`, words: null };
+    }
   } else {
-    P.notice = { warn: true, say: 'Not cancelled.', words: err.message };
+    logRaw('the tap', rawWords(err));
+    P.notice = { warn: true, say: `Not cancelled. ${failureWords(err)}`, words: null };
   }
   P.prep = null;
   judge();
 }
 
-/** Refusals the no-button screen puts in its own headline. */
+/** Refusals the no-button screen puts in its own headline, so the notice above it says only that nothing was cancelled. */
 const SAID_BY_THE_SCREEN = new Set(['not_this_relays']);
 
 /** `signed` is the call the relay was given. When the relay, not the cancel, was the problem, the page keeps it. */
@@ -652,6 +675,7 @@ function onRelayRefused(err, signed = null) {
   P.tap = null;
   P.prep = null;
   P.txSent = null;
+  logRaw('the relay', rawWords(err));
   if (err instanceof RelayRefused) {
     if (signed && relayRefusedIt(err.code)) P.signed = signed;
     if (err.code === 'not_this_relays') P.notOurs = true;
@@ -659,11 +683,11 @@ function onRelayRefused(err, signed = null) {
     else if (err.code === 'daily_ceiling') P.relay = { ...P.relay, owner: { up: false, why: 'daily_ceiling', resets_at: err.resetsAt } };
     else if (err.code === 'rate_limited') P.notice = { warn: true, say: `Not cancelled. Too many tries on this vault. Wait ${err.retryAfterS ?? 10} s and tap again.`, words: null };
     // The screen that follows says this one in its own headline, so the relay's sentence would say it twice.
-    else if (SAID_BY_THE_SCREEN.has(err.code)) P.notice = { warn: true, say: 'Not cancelled.', words: err.code };
-    else P.notice = { warn: true, say: 'Not cancelled.', words: err.verbatim ?? `${err.code}: ${err.message}` };
+    else if (SAID_BY_THE_SCREEN.has(err.code)) P.notice = { warn: true, say: 'Not cancelled.', words: null };
+    else P.notice = { warn: true, say: `Not cancelled. ${relayWords(err)}`, words: null };
     P.statusAt = 0;
   } else {
-    P.notice = { warn: true, say: 'Not cancelled.', words: err.message };
+    P.notice = { warn: true, say: `Not cancelled. ${failureWords(err)}`, words: null };
   }
   judge();
 }
@@ -687,7 +711,8 @@ async function watchOutcome(hash) {
       if (P.tap?.hash === hash) {
         P.tap = null;
         P.prep = null;
-        P.notice = { warn: true, say: 'Not cancelled. The contract refused it.', words: outcome.failure };
+        logRaw('the cancel', outcome.failure);
+        P.notice = { warn: true, say: `Not cancelled. ${contractWords(outcome.failure)}`, words: null };
       }
       judge();
       return;
@@ -777,7 +802,8 @@ function noButtonWords() {
   const { why } = P.button;
   const problem = passkeyState().problem;
   if (why === 'no_passkey_here' && problem) return problemWords(problem) ?? NO_BUTTON_WORDS.no_passkey_here;
-  return NO_BUTTON_WORDS[why] ?? `This page can't send a cancel right now: ${why}.`;
+  // Any other reason the relay gives, as its sentence and never its code.
+  return NO_BUTTON_WORDS[why] ?? `${relayWords({ code: why }).replace(/\.$/, '')}, so this page can't send a cancel.`;
 }
 
 function resetLine() {
@@ -844,7 +870,6 @@ function noticeNodes() {
   if (needsThatPhone()) out.push(h('p', { class: 'small', id: 'that-phone' }, 'Only the phone holding this vault\'s passkey can cancel.'));
   if (P.readFails >= READ_FAILS_TO_SAY) {
     out.push(h('p', { class: 'notice warn', id: 'read-down' }, 'Can\'t read the NEAR contract right now.'));
-    if (P.readWords) out.push(h('p', { class: 'words' }, P.readWords));
   }
   if (P.notice) {
     out.push(h('p', { class: `notice${P.notice.warn ? ' warn' : ''}`, id: 'notice' }, P.notice.say));
@@ -888,6 +913,8 @@ function afterAttach() {
     screen().classList.remove('snug');
     P.face?.fit();
     pinDigits();
+    // What landed under the stamp while its frame held, say the coin line, needs the room: the digits settle now.
+    if (P.pin && !P.pin.settled && overflowY() > 0) settleDigits(P.pin);
     root.dataset.digits = P.pin && !P.pin.settled ? 'held' : 'still';
     return;
   }
@@ -927,9 +954,6 @@ function keepControlOnScreen() {
   shrinkTo(Math.floor(full * 0.4));
 }
 
-/** Room for what can still land under the stamp: the hash, and the coin line with its address. */
-const ROOM_FOR_LATER = 130;
-
 function pinDigits() {
   if (!P.pin || !P.face?.wrap.isConnected) return;
   const { wrap } = P.face;
@@ -938,8 +962,11 @@ function pinDigits() {
     return;
   }
   if (P.pin.margin === undefined) {
+    // All the room the screen has: the hash's slot is already on it, and a coin line that lands during the hold
+    // settles the digits early (afterAttach), so nothing is kept back here. The screen's real height: the stamp no
+    // longer widens the page, so the browser no longer zooms out to make more of it.
     const last = screen().lastElementChild?.getBoundingClientRect().bottom ?? 0;
-    const room = window.innerHeight - last - (P.coinStill ? 0 : ROOM_FOR_LATER);
+    const room = window.innerHeight - last;
     const base = Number.parseFloat(getComputedStyle(wrap).marginTop) || 0;
     P.pin.margin = base + Math.max(0, Math.min(P.pin.top - wrap.getBoundingClientRect().top, room));
   }
@@ -985,7 +1012,8 @@ const drawers = {
     // The relay is the only thing in the way, and this phone holds the passkey: sign it here, send it from any account.
     const signHere = !heldSigned() && relayIsWhy(P.button.why) && passkeyState().canAssert && passkeyState().rpMatches && ctx.instance.origins.includes(location.origin);
     return [
-      askedBlock(P.lastKnown), clockBlock(P.rs), noticeNodes(), h('div', { class: 'grow' }),
+      // The notice leads into the headline, so it sits right above it and not under the clock.
+      askedBlock(P.lastKnown), clockBlock(P.rs), h('div', { class: 'grow' }), noticeNodes(),
       h('p', { class: 'say', id: 'why', 'data-why': P.button.why }, words),
       resetLine() ? h('p', { class: 'line' }, resetLine()) : null,
       ownCancelNodes(),
@@ -1007,7 +1035,8 @@ const drawers = {
       face.dim(false);
       out.push(face.wrap);
     }
-    out.push(h('div', { class: `stamp${P.stampLive ? ' slam' : ''}`, id: 'stamp' }, 'CANCELLED'));
+    // The slam starts larger than the screen, and its box clips it there, so the page never scrolls sideways under it.
+    out.push(h('div', { class: 'stampclip' }, h('div', { class: `stamp${P.stampLive ? ' slam' : ''}`, id: 'stamp' }, 'CANCELLED')));
     P.stampLive = false;
     // Its slot is kept from the moment this page has sent one, so the line under it does not jump when it arrives.
     if (P.tx) out.push(h('div', { class: 'hashslot', id: 'near-tx' }, hashBlock(nearTxLabel(ctx.config, P.tx), P.tx, nearTxLink(ctx.config, P.tx))));
@@ -1027,7 +1056,8 @@ const drawers = {
   too_late() {
     const signing = P.rs.kind === 'signing';
     const out = [h('p', { class: 'say big', id: 'too-late' }, signing ? 'Too late. The contract asked for the signature.' : 'Too late. The contract signed.')];
-    if (P.lastKnown) out.push(h('p', { class: 'line', id: 'too-late-to' }, `to ${destination(P.lastKnown, P.vault)}`));
+    // Set as the request screen sets it: the label, then the address whole in mono, so one address reads one way.
+    if (P.lastKnown) out.push(h('div', { class: 'label' }, 'to'), h('div', { class: 'addr', id: 'too-late-to' }, destination(P.lastKnown, P.vault)));
     if (P.tooLateTxid) out.push(hashBlock(btcTxLabel(ctx.config, P.tooLateTxid), P.tooLateTxid, btcTxLink(ctx.config, P.tooLateTxid)));
     else if (P.tooLateUnsent) out.push(h('p', { class: 'line dim', id: 'too-late-unsent' }, `No ${ctx.config.labels.bitcoin} node has that transaction yet. Anyone can send it.`));
     else if (P.lastKnown) out.push(h('p', { class: 'line dim' }, signing ? 'Waiting for the signature.' : 'Reading the transaction.'));
@@ -1044,13 +1074,13 @@ const drawers = {
     return [h('p', { class: 'say big' }, 'This vault is not active yet.'), h('p', { class: 'line dim' }, 'The contract is still checking its second key.')];
   },
   read_down() {
-    return [h('p', { class: 'say big' }, 'Can\'t read the NEAR contract right now.'), P.readWords ? h('p', { class: 'words' }, P.readWords) : null];
+    return [h('p', { class: 'say big' }, 'Can\'t read the NEAR contract right now.')];
   },
   idle() {
     const { vault } = P;
     const out = [hashBlock(btcAddressLabel(ctx.config, vault.address), vault.address, btcAddressLink(ctx.config, vault.address))];
     if (P.balance !== null) out.push(h('div', { class: 'sats', id: 'balance' }, P.balance > 0 ? satsText(P.balance) : 'No coins yet'));
-    else if (P.balanceWords) out.push(h('p', { class: 'line dim', id: 'balance-down' }, 'Can\'t read Mutinynet right now.'));
+    else if (P.balanceWords) out.push(h('p', { class: 'line dim', id: 'balance-down' }, `Can't read ${ctx.config.labels.bitcoin} right now.`));
     out.push(h('p', { class: 'say big', id: 'nothing' }, 'Nothing is waiting.'));
     out.push(noticeNodes(), h('div', { class: 'grow' }));
     if (P.fundedTxid) out.push(hashBlock(btcTxLabel(ctx.config, P.fundedTxid), P.fundedTxid, btcTxLink(ctx.config, P.fundedTxid)));
@@ -1065,7 +1095,7 @@ const drawers = {
 
 function render(id, force = false) {
   const asked = P.lastKnown && P.vault ? `${P.r}|${coinWords(P.lastKnown)}|${P.moreWaiting}|${P.alreadySigned}|${keyIsStopped()}|${needsThatPhone()}|${nodeLooksStuck()}|${P.txSent}|${P.tooLateUnsent}` : '';
-  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.readWords}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}|${heldSigned()?.expiresAt ?? ''}`;
+  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}|${heldSigned()?.expiresAt ?? ''}`;
   if (!force && key === P.renderKey) return;
   P.renderKey = key;
   P.screen = id;
@@ -1088,10 +1118,10 @@ function drawNoVault(words = null) {
     h('p', { class: 'line' }, 'Open the link from a vault, or make one here.'),
     can ? null : h('p', { class: 'notice warn', id: 'why', 'data-why': problem ?? P.relay.general?.why ?? 'relay_down' }, problem ? problemWords(problem) : generalDownWords()),
     elsewhere ? h('p', { class: 'small', id: 'in-app' }, elsewhere) : null,
-    words ? h('p', { class: 'words', id: 'verbatim' }, words) : null,
+    words ? h('p', { class: 'notice warn', id: 'made-why' }, words) : null,
     h('div', { class: 'grow' }),
     can ? h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault') : null,
-    h('p', { class: 'foot' }, `Test coins only. The address starts with ${ctx.instance?.network === 'regtest' ? 'bcrt1' : 'tb1'}. This page holds your spend key, so a changed page could take it. The operator can upgrade this test contract after 1 hour. The signing network can refuse, not take.`),
+    h('p', { class: 'foot', id: 'foot', 'data-network': ctx.instance?.network ?? '' }, `Test coins only. The address starts with ${addressPrefix(ctx.instance?.network) ?? 'tb1'}. This page holds your spend key, so a changed page could take it. The operator can upgrade this test contract after 1 hour. The signing network can refuse, not take.`),
   );
 }
 
@@ -1137,7 +1167,8 @@ async function continueMake(asking) {
   try {
     prepared = await prepareVault(ctx, passkey);
   } catch (err) {
-    drawNoVault(err.verbatim ?? err.message);
+    logRaw('making a vault', rawWords(err));
+    drawNoVault(`Nothing was made. ${failureWords(err)}`);
     return;
   }
   lines.push('Second key read from the signer.');
@@ -1185,9 +1216,9 @@ function makeFailed(err) {
     P.blocked = true;
     ctx.sense = { ...ctx.sense };
     setState('no_vault');
+    logRaw('the passkey', rawWords(err));
     show(
       h('p', { class: 'say', id: 'why', 'data-why': 'webauthn_blocked' }, problemWords('webauthn_blocked')),
-      h('p', { class: 'words', id: 'verbatim' }, err.message),
       h('div', { class: 'grow' }),
       h('button', { class: 'go quiet', type: 'button', id: 'retry-passkey', onclick: onMakeVault }, 'Try the passkey again'),
     );
@@ -1197,7 +1228,8 @@ function makeFailed(err) {
     drawNoVault('The sheet closed. Nothing was made.');
     return;
   }
-  drawNoVault(err.verbatim ? err.verbatim : `${err.code ?? err.name}: ${err.message}`);
+  logRaw('making a vault', rawWords(err));
+  drawNoVault(`Nothing was made. ${failureWords(err)}`);
 }
 
 async function onFund() {
@@ -1213,7 +1245,8 @@ async function onFund() {
     P.balanceAt = 0;
     render('idle', true);
   } catch (err) {
-    P.notice = { warn: true, say: 'No coins sent.', words: err.verbatim ?? `${err.code}: ${err.message}` };
+    logRaw('test coins', rawWords(err));
+    P.notice = { warn: true, say: `No coins sent. ${failureWords(err)}`, words: null };
     render('idle', true);
   } finally {
     P.funding = false;
@@ -1221,7 +1254,7 @@ async function onFund() {
 }
 
 async function copyThiefLink() {
-  const link = thiefLink(location.origin, P.v, toHex(P.seed), randomBytes(20));
+  const link = thiefLink(location.origin, P.v, toHex(P.seed), randomBytes(20), ctx.instance.network);
   try {
     await navigator.clipboard.writeText(link);
     P.notice = { say: 'Copied. This link holds this vault\'s spend key.', words: null };
@@ -1244,5 +1277,6 @@ async function downloadRecovery() {
 
 main().catch((err) => {
   setState('crashed');
-  show(h('p', { class: 'say' }, 'This page hit an error it did not expect.'), h('p', { class: 'words' }, `${err.name}: ${err.message}`));
+  logRaw('the page', rawWords(err));
+  show(h('p', { class: 'say' }, 'This page hit an error it did not expect.'));
 });

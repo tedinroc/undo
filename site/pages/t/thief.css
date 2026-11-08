@@ -47,6 +47,8 @@ html, body { min-height: 100%; }
 #amount { display: flex; align-items: baseline; justify-content: space-between; height: calc(84 * var(--u)); white-space: nowrap; }
 .fee { font-size: calc(26 * var(--u)); color: var(--dim); }
 .why { min-height: calc(34 * var(--u)); margin: 0 0 calc(2 * var(--u)); font: 600 calc(28 * var(--u))/calc(34 * var(--u)) var(--sans); color: var(--red); }
+/* A line that says something gets room before the next label. An empty one keeps the armed frame as filmed. */
+.why:not(:empty) { margin-bottom: calc(16 * var(--u)); }
 #amount-label { margin-top: 0; }
 .send { display: block; width: 100%; height: calc(150 * var(--u)); margin-top: calc(26 * var(--u)); background: var(--red); color: var(--white); border: 0; border-radius: 0;
   font: 800 calc(72 * var(--u))/1 var(--sans); letter-spacing: -0.015em; cursor: pointer; }
@@ -100,7 +102,8 @@ html, body { min-height: 100%; }
 .fuse-burn { position: absolute; left: 0; right: 0; top: calc(6 * var(--u)); height: calc(14 * var(--u)); background: var(--red); transform-origin: 100% 50%; }
 .fuse-tip { position: absolute; top: 0; height: calc(26 * var(--u)); width: calc(8 * var(--u)); margin-left: calc(-4 * var(--u)); background: var(--white); left: 0; }
 .fuse-mark { position: absolute; right: 0; top: calc(-8 * var(--u)); width: calc(6 * var(--u)); height: calc(42 * var(--u)); background: var(--white); }
-.rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(28 * var(--u)); line-height: calc(36 * var(--u)); color: #CFCFCF; }
+/* 26: "to", a bcrt1 or tb1 key-hash address and "2,000 sats" on one line at 1080 wide, so the frozen frame still fits. */
+.rows { margin: calc(24 * var(--u)) calc(64 * var(--u)) 0; font-size: calc(26 * var(--u)); line-height: calc(36 * var(--u)); color: #CFCFCF; }
 .row { margin: 0 0 calc(10 * var(--u)); }
 .row:empty { display: none; }
 /* The node's words stay on after the refused screen, cut to fit. The whole answer is on its title. */
@@ -158,7 +161,9 @@ html, body { min-height: 100%; }
 
 /* A laptop on a tripod: the digits take the screen. */
 @media (min-aspect-ratio: 1/1) {
-  :root { --u: min(calc(100vw / 1500), calc(100vh / 950)); --top: 130; --clock-top: 96; --digit: min(38vw, 60vh); }
+  /* The digits start low enough that "unlocks in" above them clears the chip, and are a little smaller for it, so
+     everything under them stays where it was. */
+  :root { --u: min(calc(100vw / 1500), calc(100vh / 950)); --top: 130; --clock-top: 136; --digit: min(38vw, 56vh); }
   .chip { top: calc(28 * var(--u)); }
   .wordmark { top: calc(28 * var(--u)); }
   .glow { background: radial-gradient(70vw 70vh at 50% 45%, rgba(255,59,48,1) 0%, rgba(255,59,48,0.62) 30%, rgba(255,59,48,0.22) 62%, rgba(255,59,48,0) 100%); }
@@ -167,6 +172,13 @@ html, body { min-height: 100%; }
   .bar-red .b1, .bar-red .b2 { position: static; display: inline; font-size: inherit; line-height: inherit; }
   .term { top: auto; bottom: calc(40 * var(--u)); }
   #ask-retry { top: auto; bottom: calc(40 * var(--u)); }
+  /* Asking: the reason at the top, Try again above the row, the row at the foot. In one column, so none of them can
+     land on another however many lines each takes. */
+  #root[data-state="asking"] #wait { display: flex; flex-direction: column; justify-content: flex-end; min-height: 100vh;
+    padding: calc(var(--top) * var(--u)) calc(64 * var(--u)) calc(40 * var(--u)); }
+  #root[data-state="asking"] #ask-why { position: static; order: 1; margin-bottom: auto; }
+  #root[data-state="asking"] #ask-retry { position: static; order: 2; align-self: flex-start; }
+  #root[data-state="asking"] .term { position: static; order: 3; margin-top: calc(24 * var(--u)); }
   .rows { position: absolute; left: 0; right: 0; bottom: calc(16 * var(--u)); margin: 0 calc(64 * var(--u)); }
   /* The stamp's line takes that room on a landscape screen, and the digits above it may not move to make any. */
   #root[data-state="frozen"] .rows { display: none; }
