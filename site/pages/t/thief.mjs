@@ -33,7 +33,8 @@ const KEY_PHRASE = 'finished with a false/empty top stack element';
 
 const S = {
   config: null, reader: null, views: null, btc: null, relay: null, instance: null,
-  relayStatus: null,
+  // executeBlocked: the relay's sentence from the last execute call that never reached it, until one does.
+  relayStatus: null, executeBlocked: null,
   vaultHex: null, vault: null, requestId: null, request: null, lastKnown: null, read: null,
   tracker: new SkewTracker(), lastBlockRead: 0, badReads: 0, badReadsShown: false, unseenReads: 0, nullReads: 0, nodeWords: null,
   seed: null, script: null, coins: [], spend: null, seedOk: false, toOk: false, viewProblem: null, nearDown: null, btcDown: null, feeRate: null,
@@ -174,12 +175,18 @@ async function refreshRelay() {
 }
 
 function drawAuto() {
+  const sentence = relaySentence(S.relayStatus);
   if (S.state === 'waiting') {
-    const sentence = relaySentence(S.relayStatus);
     root.dataset.auto = sentence ? 'off' : 'armed';
     // The line under the digits says only that it is off; the sentence below them says why, once.
     $('auto').textContent = sentence ? 'auto-execute off' : 'auto-execute armed';
     if (!S.badReadsShown) $('note').textContent = sentence ?? '';
+  } else if (S.state === 'firing') {
+    // At zero, the same rule: while the relay can't call execute, by its status or by the last call, the line under
+    // the digits does not say the contract signs. fire() says why below them.
+    const off = sentence ?? S.executeBlocked;
+    root.dataset.auto = off ? 'off' : 'firing';
+    $('auto').textContent = off ? 'auto-execute off' : 'The contract signs';
   }
 }
 
@@ -368,7 +375,7 @@ async function pressSend() {
     return plain('other_refusal', 'A node said no, but not about the signature.', { verbatim: nodeRefusalWords(answer.body), retry: retryFromTop });
   }
   if (answer.errorKind) console.warn(`undo: no answer from the node (${answer.errorKind})`);
-  logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body ?? answer.error);
+  logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body || answer.error || 'an empty answer');
   return plain('no_answer', 'The node did not answer.', { verbatim: noNodeWords(answer), retry: retryFromTop });
 }
 
@@ -714,9 +721,8 @@ function enterFiring() {
     root.dataset.fling = 'done';
     S.live = true;
     S.timings.firing = performance.now();
-    $('auto').textContent = 'The contract signs';
     $('note').textContent = '';
-    root.dataset.auto = 'firing';
+    drawAuto();
   }
   if (!firingLoop) {
     firingLoop = true;
@@ -738,6 +744,14 @@ async function fire() {
       S.nearTx = sent.hash;
       S.timings.executed ??= performance.now();
       if (S.state !== 'firing') return;
+      // The relay took execute, so what said it can't is out of date: the sentence goes, and its status is read again.
+      if (root.dataset.auto === 'off') {
+        S.executeBlocked = null;
+        S.relayStatus = await S.relay.status();
+        if (S.state !== 'firing') return;
+        if (!S.badReadsShown) $('note').textContent = '';
+        drawAuto();
+      }
       drawRows();
       await sleep(EXECUTE_RETRY_MS + 500);
       if (S.state !== 'firing') return;
@@ -755,8 +769,10 @@ async function fire() {
       logRaw('execute not sent', rawWords(err));
       // One sentence: the relay's own, which already says execute can't go, or the reason in words.
       $('note').textContent = relayDownSentence(err) ?? relayWords(err);
+      S.executeBlocked = relayDownSentence(err);
       waitMs = err.retryAfterS ? err.retryAfterS * 1000 : EXECUTE_RETRY_MS;
       S.relayStatus = await S.relay.status();
+      drawAuto();
     }
     if (waitMs === null) return;
     await sleep(waitMs);
@@ -849,7 +865,7 @@ async function broadcastFinal() {
     $('note').textContent = `Signed, and a node refused it. ${nodeRefusalWords(answer.body)}`;
     root.dataset.broadcast = 'refused';
   } else {
-    logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body ?? answer.error);
+    logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body || answer.error || 'an empty answer');
     $('note').textContent = `Signed, not sent yet. ${noNodeWords(answer)}`;
     root.dataset.broadcast = 'no_answer';
   }

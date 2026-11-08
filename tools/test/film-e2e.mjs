@@ -171,7 +171,7 @@ class Tab {
       const hidden = box && box.checkVisibility() ? box.innerText : '';
       return document.body.innerText.replace(hidden, '');
     })()`);
-    const raw = /HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|TypeError|\{"|<html|\b[a-z]+_[a-z_]+\b/.exec(text);
+    const raw = /HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|TypeError|\{"|<html|\b[a-z]+_[a-z_]+\b|\bHTTP [1-5]\d\d\b/.exec(text);
     check(`${this.name} ${where}: no error name, JSON or code on the screen`, raw === null, raw ? `"${raw[0]}" in: ${text.replace(/\s+/g, ' ').slice(0, 300)}` : '');
     const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter((t) => t.length > 12);
     const twice = sentences.find((t, i) => sentences.indexOf(t) !== i);
@@ -418,6 +418,10 @@ async function makeVaultFromPhone({ reopen }) {
   check('the relay is the guard, and its heartbeat landed with the creation', vault.guard_online === true && vault.guard === stage.relay.accountId, vault.guard);
   const delay = await views.delayNow(vaultHex);
   check('a new destination on this vault reads 5:00 on the contract', delay === FIVE_MINUTES, delay);
+  // One headline on the idle frame: no coins is a line under the address, with the period the sentence under it has.
+  await phone.waitFor('the balance', () => phone.visible('#balance'), 15_000);
+  const idleType = await phone.js('(() => { const px = (id) => parseFloat(getComputedStyle(document.getElementById(id)).fontSize); return { balance: document.getElementById("balance").textContent, balancePx: px("balance"), headlinePx: px("nothing") }; })()');
+  check('the idle frame has one headline, and no coins yet is a line under the address', idleType.balance === 'No coins yet.' && idleType.balancePx <= idleType.headlinePx / 2, JSON.stringify(idleType));
   await phone.shot('idle');
 
   const funded = Date.now();
@@ -515,6 +519,8 @@ async function pressSend(v) {
   check('one address for one destination: the phone\'s to line is the thief\'s send to, character for character', shownTo === THIEF_TO, `phone ${shownTo}, thief ${THIEF_TO}`);
   check('and the thief tab\'s row says the same string', (await thief.text('#dest-row')) === `to ${THIEF_TO}  2,000 sats`, await thief.text('#dest-row'));
   check('the Cancel button is on the 844 px screen', await phone.js('(() => { const r = document.getElementById("cancel").getBoundingClientRect(); return r.bottom <= 844 && r.top >= 0; })()'));
+  // Run 2 copies the thief link and keeps the page open. What the idle screen said about that is not on the alert.
+  check('the theft alert carries no notice from the idle screen', !(await phone.js('Boolean(document.getElementById("notice") || document.getElementById("verbatim"))')), await phone.text('#notice') ?? '');
   await phone.shot('request');
   return { requestId, request };
 }

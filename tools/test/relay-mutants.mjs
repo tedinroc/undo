@@ -222,6 +222,7 @@ const MUTANTS = [
   ['words: a relay refusal with the contract\'s words read as the relay\'s', PW, "if ((err?.code === 'tx_refused' || err?.code === 'would_refuse') && err.verbatim) return contractWords(err.verbatim);", ''],
   ['words: a node\'s script refusal unnamed', PW, "if (kind === 'script') return 'It needs a second signature.';", ''],
   ['words: a proxy\'s page read as a busy node', PW, "if (status === 400 && !/<html/i.test(answer.body ?? '')) return", 'if (status >= 400) return'],
+  ['words: an answer from no node shows its HTTP status', PW, "return Object.hasOwn(NOT_A_NODE, status) ? NOT_A_NODE[status] : 'Something on the way to the node answered instead of it.';", 'return `Something on the way answered HTTP ${status}, not a node.`;'],
   ['words: raw words logged twice in a row', PW, '  if (line === lastLogged) return;\n', ''],
   ['thief: a seed with junk around it is taken', TL, '/^[0-9a-f]{64}$/.test(hex)', '/[0-9a-f]{64}/.test(hex)'],
   ['thief: resends on any refusal that starts with Not', TL, "failure.includes('NotUnlocked')", "failure.includes('Not')"],

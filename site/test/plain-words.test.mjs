@@ -15,7 +15,7 @@ import { destinationWords } from '../pages/t/logic.mjs';
 const PAGES = join(dirname(fileURLToPath(import.meta.url)), '../pages');
 const label = (text) => sha256(new TextEncoder().encode(`undo-test-only:plain-words:${text}`));
 // Words a viewer should never read: an error's own name, JSON, a node's RPC wording, or a code with underscores.
-const RAW = /HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|TypeError|[{}"]|<html|\b[a-z]+_[a-z_]+\b/;
+const RAW = /HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|TypeError|[{}"]|<html|\b[a-z]+_[a-z_]+\b|\bHTTP\b|\b[1-5]\d\d\b/;
 const plainSentence = (text, what) => {
   assert.equal(typeof text, 'string', what);
   assert.doesNotMatch(text, RAW, `${what}: "${text}"`);
@@ -52,12 +52,17 @@ test('a Bitcoin node\'s refusal reads as what it means, and an answer from no no
   assert.equal(nodeRefusalWords('sendrawtransaction RPC error: {"code":-26,"message":"something new"}'), 'The node refused it for another reason.');
   assert.equal(noNodeWords({ kind: 'no_answer', error: 'the connection failed' }), 'The connection failed.');
   assert.equal(noNodeWords({ kind: 'no_answer', error: 'no answer in time' }), 'No answer in time.');
-  assert.equal(noNodeWords({ kind: 'transient', status: 502, body: '<html><body>Bad Gateway: not a node</body></html>' }), 'Something on the way answered HTTP 502 Bad Gateway, not a node.');
-  assert.equal(noNodeWords({ kind: 'transient', status: 503, body: 'Service Unavailable' }), 'Something on the way answered HTTP 503 Service Unavailable, not a node.');
-  assert.equal(noNodeWords({ kind: 'transient', status: 429, body: 'Too Many Requests' }), 'Something on the way answered HTTP 429 Too Many Requests, not a node.');
+  // What answered in place of a node, in words: its HTTP status goes to the console, never onto the screen.
+  assert.equal(noNodeWords({ kind: 'transient', status: 502, body: '<html><body>Bad Gateway: not a node</body></html>' }), 'Something on the way to the node got no good answer from it.');
+  assert.equal(noNodeWords({ kind: 'transient', status: 503, body: 'Service Unavailable' }), 'Something on the way to the node said it isn\'t available right now.');
+  assert.equal(noNodeWords({ kind: 'transient', status: 429, body: 'Too Many Requests' }), 'Something on the way to the node said too many tries.');
+  assert.equal(noNodeWords({ kind: 'transient', status: 504, body: '' }), 'Something on the way to the node gave up waiting for it.');
+  assert.equal(noNodeWords({ kind: 'transient', status: 500, body: '' }), 'Something on the way to the node hit an error.');
+  assert.equal(noNodeWords({ kind: 'transient', status: 404, body: '<html></html>' }), 'Something on the way to the node answered instead of it.');
   assert.equal(noNodeWords({ kind: 'transient', status: 400, body: 'sendrawtransaction RPC error: {"code":-28,"message":"Loading block index…"}' }), 'The node was too busy to look at it.');
   assert.equal(noNodeWords({ kind: 'transient', status: 200, body: 'ab'.repeat(32) }), 'Something answered, but not with this transaction.');
-  for (const words of [nodeRefusalWords(script), noNodeWords({ kind: 'transient', status: 502, body: '<html></html>' }), noNodeWords({ kind: 'transient', status: 418, body: '' })]) plainSentence(words, 'node words');
+  for (const words of [nodeRefusalWords(script), noNodeWords({ kind: 'transient', status: 418, body: '' })]) plainSentence(words, 'node words');
+  for (const status of [400, 403, 404, 408, 429, 500, 502, 503, 504, 520]) plainSentence(noNodeWords({ kind: 'transient', status, body: '<html></html>' }), `HTTP ${status} from no node`);
 });
 
 test('every relay code has a sentence with no code in it, and a refusal that carries the contract\'s words reads as the contract\'s sentence', () => {

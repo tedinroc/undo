@@ -61,7 +61,14 @@ export function nodeRefusalWords(text) {
   return 'The node refused it for another reason.';
 }
 
-const HTTP_REASONS = { 400: 'Bad Request', 403: 'Forbidden', 404: 'Not Found', 408: 'Request Timeout', 429: 'Too Many Requests', 500: 'Internal Server Error', 502: 'Bad Gateway', 503: 'Service Unavailable', 504: 'Gateway Timeout' };
+// What answered in place of a node, by its HTTP status, in words. The status itself is in the console (logRaw).
+const NOT_A_NODE = {
+  429: 'Something on the way to the node said too many tries.',
+  500: 'Something on the way to the node hit an error.',
+  502: 'Something on the way to the node got no good answer from it.',
+  503: 'Something on the way to the node said it isn\'t available right now.',
+  504: 'Something on the way to the node gave up waiting for it.',
+};
 
 /** A sentence from the words esplora.mjs gives a fetch that got no answer: "the connection failed." */
 const asSentence = (words) => {
@@ -78,8 +85,7 @@ export function noNodeWords(answer) {
   const { status } = answer;
   if (status >= 200 && status < 300) return 'Something answered, but not with this transaction.';
   if (status === 400 && !/<html/i.test(answer.body ?? '')) return 'The node was too busy to look at it.';
-  const reason = HTTP_REASONS[status];
-  return `Something on the way answered HTTP ${status}${reason ? ` ${reason}` : ''}, not a node.`;
+  return Object.hasOwn(NOT_A_NODE, status) ? NOT_A_NODE[status] : 'Something on the way to the node answered instead of it.';
 }
 
 // The relay's codes (site/lib/relay-table.mjs RELAY_ERRORS), each as a sentence.

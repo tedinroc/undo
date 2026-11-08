@@ -1049,9 +1049,34 @@ test('nothing waiting: the vault\'s address and a plain sentence, no clock. A sh
   assert.equal(await exists('#digits'), false, 'a clock moves only for a real request');
   assert.equal(await textOf('#nothing'), 'Nothing is waiting.');
   await waitFor('the balance', () => exists('#balance'));
+  // One headline. No coins is a line under the address, with the period the sentence under it has.
+  assert.equal(await textOf('#balance'), 'No coins yet.');
+  const sizes = await cdp.page('const px = (id) => parseFloat(getComputedStyle(document.getElementById(id)).fontSize); return { balance: px("balance"), nothing: px("nothing") };');
+  assert.ok(sizes.balance <= sizes.nothing / 2, `the balance is a line, not a second headline: ${JSON.stringify(sizes)}`);
   await shot('18-idle');
-  const { id } = await thiefProposes(v);
-  await waitState('request', 10_000);
+  // A test coin asked for on the idle screen, whose answer lands only after a request came up: that answer's words
+  // belong to the idle screen, and stay off the theft alert.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const { id } = await intercept('*/api/funds*', async () => {
+    await held;
+    return { status: 503, body: { ok: false, code: 'dispenser_empty' } };
+  }, async () => {
+    await clickOn('#fund');
+    await waitFor('the ask', async () => (await textOf('#notice')) === 'Asking for a test coin.');
+    const proposed = await thiefProposes(v);
+    await waitState('request', 10_000);
+    const logged = consoleLines.length;
+    release();
+    await waitFor('the answer to land', async () => consoleLines.slice(logged).some((line) => line.startsWith('undo: test coins:')), 15_000);
+    // Past the next read too, which draws the request screen again.
+    for (let i = 0; i < 8; i += 1) {
+      assert.equal(await stateOf(), 'request', 'an answer for the idle screen does not draw it over the theft alert');
+      assert.equal(await exists('#notice'), false, `the idle screen's words on the theft alert: ${await textOf('#notice')}`);
+      await sleep(200);
+    }
+    return proposed;
+  });
   assert.equal(await cdp.page('return location.hash;').then((h) => new URLSearchParams(h.slice(1)).get('r')), String(id));
 
   // Safari's bars on screen: a 390 wide phone, then an iPhone SE. The button is still above the fold.
@@ -1093,6 +1118,19 @@ test('Make a test vault: two taps, each line when its step ends, then the page r
   assert.ok(await exists('#recovery'));
   assert.ok(await exists('#thief-link'));
   await shot('21-idle-own-vault');
+
+  // Copy the thief link, as the film does, and stay on the page: its notice is the idle screen's. When the thief's
+  // request comes up, the theft alert starts with no notice, so "Copied." is not over its clock.
+  await cdp.page('navigator.clipboard.writeText = async (text) => { globalThis.copied = text; }; return true;');
+  await clickOn('#thief-link');
+  await waitFor('the copy notice', async () => (await textOf('#notice')) === 'Copied. This link holds this vault\'s spend key.');
+  const seedHex = /[#&]k=([0-9a-f]{64})/.exec(await cdp.page('return globalThis.copied ?? "";'))?.[1];
+  assert.ok(seedHex, 'the copied link holds the spend key');
+  await thiefProposes({ vaultHex: f.get('v'), keys: { seed: fromHex(seedHex) } });
+  await waitState('request', 15_000);
+  assert.equal(await exists('#notice'), false, `a notice from the idle screen on the theft alert: ${await textOf('#notice')}`);
+  assert.equal(await exists('#verbatim'), false, 'and no link with the spend key on it');
+  await shot('21b-request-after-copy');
 });
 
 // What a test run made and saw is kept in the tab's sessionStorage, never in the link (71079fd).

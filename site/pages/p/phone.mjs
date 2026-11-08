@@ -336,6 +336,9 @@ function startRequest(id) {
   P.coinStill = false;
   P.stampLive = false;
   P.pin = null;
+  // A notice belongs to the request or the screen that set it. A new request starts with none, so nothing said on the
+  // idle screen, or about another request, stands over its clock.
+  P.notice = null;
   P.r = id;
   saveFragment({ r: id });
 }
@@ -546,7 +549,7 @@ async function readBalance() {
     P.balanceWords = err.message;
   } finally {
     P.balanceReading = false;
-    render('idle', true);
+    drawIdleAgain();
   }
 }
 
@@ -871,7 +874,8 @@ function noticeNodes() {
   if (P.readFails >= READ_FAILS_TO_SAY) {
     out.push(h('p', { class: 'notice warn', id: 'read-down' }, 'Can\'t read the NEAR contract right now.'));
   }
-  if (P.notice) {
+  // A notice the idle screen set is said only there: an answer that lands after a request came up stays off its screen.
+  if (P.notice && (!P.notice.screen || P.notice.screen === P.screen)) {
     out.push(h('p', { class: `notice${P.notice.warn ? ' warn' : ''}`, id: 'notice' }, P.notice.say));
     if (P.notice.line) out.push(h('p', { class: 'small' }, P.notice.line));
     if (P.notice.words) out.push(h('p', { class: 'words', id: 'verbatim' }, P.notice.words));
@@ -1079,7 +1083,9 @@ const drawers = {
   idle() {
     const { vault } = P;
     const out = [hashBlock(btcAddressLabel(ctx.config, vault.address), vault.address, btcAddressLink(ctx.config, vault.address))];
-    if (P.balance !== null) out.push(h('div', { class: 'sats', id: 'balance' }, P.balance > 0 ? satsText(P.balance) : 'No coins yet'));
+    // An amount is set big under its address. None is a line, so the screen has one headline: Nothing is waiting.
+    if (P.balance > 0) out.push(h('div', { class: 'sats', id: 'balance' }, satsText(P.balance)));
+    else if (P.balance === 0) out.push(h('p', { class: 'line dim', id: 'balance' }, 'No coins yet.'));
     else if (P.balanceWords) out.push(h('p', { class: 'line dim', id: 'balance-down' }, `Can't read ${ctx.config.labels.bitcoin} right now.`));
     out.push(h('p', { class: 'say big', id: 'nothing' }, 'Nothing is waiting.'));
     out.push(noticeNodes(), h('div', { class: 'grow' }));
@@ -1235,7 +1241,7 @@ function makeFailed(err) {
 async function onFund() {
   if (P.funding) return;
   P.funding = true;
-  P.notice = { say: 'Asking for a test coin.', words: null };
+  P.notice = { say: 'Asking for a test coin.', words: null, screen: 'idle' };
   render('idle', true);
   try {
     const pow = await solvePow(fundsPowTarget(P.v), P.relay.powBits);
@@ -1243,11 +1249,11 @@ async function onFund() {
     P.notice = null;
     P.fundedTxid = paid.txid;
     P.balanceAt = 0;
-    render('idle', true);
+    drawIdleAgain();
   } catch (err) {
     logRaw('test coins', rawWords(err));
-    P.notice = { warn: true, say: `No coins sent. ${failureWords(err)}`, words: null };
-    render('idle', true);
+    P.notice = { warn: true, say: `No coins sent. ${failureWords(err)}`, words: null, screen: 'idle' };
+    drawIdleAgain();
   } finally {
     P.funding = false;
   }
@@ -1257,11 +1263,16 @@ async function copyThiefLink() {
   const link = thiefLink(location.origin, P.v, toHex(P.seed), randomBytes(20), ctx.instance.network);
   try {
     await navigator.clipboard.writeText(link);
-    P.notice = { say: 'Copied. This link holds this vault\'s spend key.', words: null };
+    P.notice = { say: 'Copied. This link holds this vault\'s spend key.', words: null, screen: 'idle' };
   } catch {
-    P.notice = { say: 'Copy this link. It holds this vault\'s spend key.', words: link };
+    P.notice = { say: 'Copy this link. It holds this vault\'s spend key.', words: link, screen: 'idle' };
   }
-  render('idle', true);
+  drawIdleAgain();
+}
+
+/** An answer read for the idle screen redraws it, and only while it is still the screen: a request may have come up. */
+function drawIdleAgain() {
+  if (P.screen === 'idle') render('idle', true);
 }
 
 async function downloadRecovery() {

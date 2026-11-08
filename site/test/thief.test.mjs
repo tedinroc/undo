@@ -303,7 +303,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       return document.body.innerText.replace(box && box.checkVisibility() ? box.innerText : '', '');
     })()`);
     const problems = [];
-    const raw = /TypeError|HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|\{"|<html|\b[a-z]+_[a-z_]+\b/.exec(text);
+    const raw = /TypeError|HostError|GuestPanic|panic_msg|ActionError|FunctionCallError|ExecutionError|RPC error|sendrawtransaction|\{"|<html|\b[a-z]+_[a-z_]+\b|\bHTTP [1-5]\d\d\b/.exec(text);
     if (raw) problems.push(`"${raw[0]}" on screen in: ${text.replace(/\s+/g, ' ').slice(0, 240)}`);
     const sentences = text.split(/(?<=[.!?])\s+|\n+/).map((t) => t.trim()).filter((t) => t.length > 12);
     const twice = sentences.find((t, i) => sentences.indexOf(t) !== i);
@@ -811,6 +811,8 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     const callsBefore = relay.calls.length;
     await waitState('firing', 40_000);
     await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
+    // With the relay up, the label under the zero says what happens now.
+    if ((await stateNow()) === 'firing') assert.equal(await textOf('auto'), 'The contract signs');
     await assertFrame('firing');
     await waitFor('execute', async () => relay.calls.slice(callsBefore).includes('execute'), 10_000);
     await shot('15-firing');
@@ -884,11 +886,14 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await toArmed(v, {});
     const words = '<html><body>Bad Gateway: not a node</body></html>';
     stage.rig.setRule(async (x) => (x.method === 'POST' ? { status: 502, body: words } : null));
+    await js('(() => { globalThis.infoLines = []; const info = console.info.bind(console); console.info = (...a) => { infoLines.push(a.join(" ")); info(...a); }; return true; })()');
     await click('send');
     await waitState('no_answer', 15_000);
     assert.equal(await textOf('plain-text'), 'The node did not answer.');
-    // What answered, in a sentence: a proxy's page is not shown, and its words are in the console.
-    assert.equal(await textOf('plain-verbatim'), 'Something on the way answered HTTP 502 Bad Gateway, not a node.');
+    // What answered, in a sentence with no status code: a proxy's page is not shown, and its status and words are in the console.
+    assert.equal(await textOf('plain-verbatim'), 'Something on the way to the node got no good answer from it.');
+    assert.doesNotMatch(await js('document.body.innerText'), /HTTP|\b502\b|Bad Gateway/, 'no status code on the screen');
+    assert.ok((await js('globalThis.infoLines')).some((line) => line.includes('(HTTP 502)') && line.includes('Bad Gateway: not a node')), 'the status and the proxy\'s words are in the console');
     assert.equal(await js('document.getElementById("bar").checkVisibility()'), false, 'a 502 is not a refusal');
     assert.equal(await js('document.body.textContent.includes("REFUSED") && document.getElementById("refused").checkVisibility()'), false);
     await assertFrame('no_answer');
@@ -899,9 +904,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     stage.rig.setFault('relay-flaky');
     // relay-flaky answers 503, 429, a drop, then 502 on successive sends of the same bytes. Chrome retries a dropped
     // connection by itself, so the page never sees that drop, and sees the 502.
-    for (const expectWords of ['HTTP 503 Service Unavailable', 'HTTP 429 Too Many Requests', 'HTTP 502 Bad Gateway']) {
+    for (const expectWords of ['Something on the way to the node said it isn\'t available right now.', 'Something on the way to the node said too many tries.', 'Something on the way to the node got no good answer from it.']) {
       await click('plain-retry');
-      await waitFor(`no_answer: ${expectWords}`, async () => (await stateNow()) === 'no_answer' && (await textOf('plain-verbatim')).includes(expectWords), 20_000).catch(async (err) => {
+      await waitFor(`no_answer: ${expectWords}`, async () => (await stateNow()) === 'no_answer' && (await textOf('plain-verbatim')) === expectWords, 20_000).catch(async (err) => {
         throw new Error(`${err.message}; screen says ${await textOf('plain-verbatim')}`);
       });
       assert.equal(await js('document.getElementById("bar").checkVisibility()'), false);
@@ -963,7 +968,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await fastForwardToLeft(req.unlock, 5_000);
     await waitState('signed', 90_000);
     await waitFor('the words', async () => (await js('document.getElementById("root").dataset.broadcast')) === 'no_answer', 15_000);
-    assert.equal(await textOf('note'), 'Signed, not sent yet. Something on the way answered HTTP 503 Service Unavailable, not a node.');
+    assert.equal(await textOf('note'), 'Signed, not sent yet. Something on the way to the node said it isn\'t available right now.');
     assert.equal(await textOf('txid-row'), '', 'no txid before a node has it');
     await shot('22-signed-not-sent');
     stage.rig.setRule(null);
@@ -1016,6 +1021,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await textOf('note'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.', 'one sentence, and no code');
     // The read that accepts a fast-forward can be the one that reaches zero, and the digits draw on the next frame.
     await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
+    // The label under the zero follows the waiting state's rule: it does not say the contract signs over a sentence that says it can't.
+    assert.equal(await textOf('auto'), 'auto-execute off', 'what is off, under the zero');
+    assert.equal(await js('document.getElementById("root").dataset.auto'), 'off');
     await shot('26-relay-down-firing');
     await atOtherSizes('26-relay-down-firing', async ({ landscape }) => (landscape ? labelClear() : []));
     await assertFrame('firing, relay down');
