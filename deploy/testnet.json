@@ -3,8 +3,8 @@
   "network": "testnet",
   "label": "live-testnet",
   "placeholder": false,
-  "contract": "tmp-1107a.s.undo-btc.testnet",
-  "wasm_sha256": "4632075a369ffd448347b99eaa3c2e16a77c43c204cc3eb8ed11fc3532d29f6e",
+  "contract": "v1.s.undo-btc.testnet",
+  "wasm_sha256": "358c63bf9ff637ceea25c1ba4cc8454022768aeb7cab932829fd7e800ebb1290",
   "wasm_built_by": "operator",
   "signer": "v1.signer-prod.testnet",
   "rpc": [

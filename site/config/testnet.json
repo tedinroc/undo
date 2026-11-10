@@ -1,6 +1,6 @@
 {
   "mode": "testnet",
-  "contract": "tmp-1107a.s.undo-btc.testnet",
+  "contract": "v1.s.undo-btc.testnet",
   "rpc": ["https://test.rpc.fastnear.com", "https://near-testnet.drpc.org", "https://rpc.testnet.near.org"],
   "esplora": "https://mutinynet.com/api",
   "relay": "/api/relay",
@@ -10,5 +10,5 @@
   "nearTxUrl": "https://testnet.nearblocks.io/txns/{}",
   "rpId": "undo-btc.pages.dev",
   "softPasskey": false,
-  "h7": true
+  "h7": false
 }
