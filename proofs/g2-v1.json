@@ -1,0 +1,366 @@
+{
+  "schema": "undo-g2-v1",
+  "label": "live-mutinynet",
+  "gate": "G2",
+  "chain_id": "testnet",
+  "protocol_version": 88,
+  "node_version": "2.14.0-rc.5",
+  "wasm": {
+    "sha256": "358c63bf9ff637ceea25c1ba4cc8454022768aeb7cab932829fd7e800ebb1290",
+    "bytes": 381119
+  },
+  "contract": {
+    "account": "v1.s.undo-btc.testnet",
+    "code_hash": "4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1"
+  },
+  "signer": {
+    "account": "v1.signer-prod.testnet",
+    "version": "3.18.0"
+  },
+  "instance": {
+    "preset": "TestCoin",
+    "network": "mutinynet",
+    "sign_tgas_floor": 30,
+    "callback_tgas": 10,
+    "block_ms": 30000
+  },
+  "bitcoin": {
+    "network": "mutinynet",
+    "esplora": "https://mutinynet.com/api",
+    "genesis": "00000008819873e925422c1ff0f99f7cc9bbb232af63a077a480a3633bee1ef6",
+    "tip_at_start": 3582199
+  },
+  "outward_check": "passed before any write",
+  "csv_blocks": 6,
+  "fee_rate_sat_vb": 2,
+  "passkey": "[software authenticator]: a real phone is G3",
+  "vault": {
+    "id": "c70cdc607801f05a9ce65909debfbf9f9ef8734ab950acf79ba647cb9081328e",
+    "csv": 6,
+    "k_m": "029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471",
+    "k_u": "037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9c",
+    "k_e_leaf": "02f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35",
+    "script": "6321037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9cad21029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471ac6756b2752102f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35ac68",
+    "spk": "00202b8a1f8cebd7eba840813343db7cfeccc7b8316f0ac7871b9a490cb320509a8c",
+    "address": "tb1q9w9plr8t6l46ssypxdpakl87enrmsvt0ptrcwxu6fyxtxgzsn2xq3crdac",
+    "recovery_file": "written to a gitignored local path, never in this file",
+    "recovery_dry_run": "ok mutinynet 6 142",
+    "deposit_milli_near": 50,
+    "create_tx": "63a52eqBqq1F5wsG8gjFWDZFcSGMB5KjQ3FR2Udrtukq",
+    "spend_nonce_at_create": 0
+  },
+  "coins": [
+    {
+      "role": "cosign",
+      "txid": "25bc4b7c4fad5ce3f37f6ba67ca194b65b6692d461124f62433642749c0a7219",
+      "vout": 0,
+      "value": 20000,
+      "fee": 306,
+      "vsize": 153,
+      "inputs": [
+        "33524608b65269d47bab075cfdf5965d6bb91018595db8aa96cefac6742a9f9f:1"
+      ],
+      "change": 890174,
+      "broadcast": true,
+      "recorded_at": "2026-11-11T20:45:35.172Z",
+      "height": 3582203,
+      "block_hash": "00000343a95d42188cfc8024b94f60e0f6dd32de94cac06de7cb730cb4ffc4fa",
+      "confirmations_when_recorded": 1,
+      "spent_by": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2",
+      "raw_bytes": 234,
+      "funding_tx_hex": "020000000001019f9f2a74c6face96aab85d591810b96b5d96f5fd5c07ab7bd46952b6084652330100000000fdffffff02204e0000000000002200202b8a1f8cebd7eba840813343db7cfeccc7b8316f0ac7871b9a490cb320509a8c3e950d0000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b0247304402202e0aa66573d41274e9d8ea2ef55dbfdc1184b54481b789666acaf5adbcb91c1902207b9c8aec0cf0c19d6ea3434378b0207a8e76ca700ab305caad73049e3675d16a012103507c342de0f377290e1d8e5e10bc1868c5c4ae2cc7d8f79787bc53230928acae00000000"
+    },
+    {
+      "role": "escape",
+      "txid": "c833e6d59f6bb24370f15459f10f4a54e368b627eef045161065be83a21a8443",
+      "vout": 0,
+      "value": 20000,
+      "fee": 306,
+      "vsize": 153,
+      "inputs": [
+        "25bc4b7c4fad5ce3f37f6ba67ca194b65b6692d461124f62433642749c0a7219:1"
+      ],
+      "change": 869868,
+      "broadcast": true,
+      "recorded_at": "2026-11-11T20:57:11.390Z",
+      "height": 3582226,
+      "block_hash": "000000a9d657b0ac597d7b2ddc4e5a6928cca1f3021a99989e089fad44ee660b",
+      "confirmations_when_recorded": 1,
+      "spent_by": "ca68df62ee9d7046e33112c0126169438c730f32c7f669ffa3149b2bfe7618f2",
+      "raw_bytes": 235,
+      "funding_tx_hex": "0200000000010119720a9c74423643624f1261d492665bb694a17ca66b7ff3e35cad4f7c4bbc250100000000fdffffff02204e0000000000002200202b8a1f8cebd7eba840813343db7cfeccc7b8316f0ac7871b9a490cb320509a8cec450d0000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b02483045022100e342a909842edb1d8dad46bc230c1e706767863cade2b256f197a5db0f8774ed02202f85afe5b844f45033719826078980f67ab0deb8e9b6dd5e89e30c983be8943b012103507c342de0f377290e1d8e5e10bc1868c5c4ae2cc7d8f79787bc53230928acae00000000"
+    }
+  ],
+  "cosigned": {
+    "check": {
+      "tier": "New",
+      "delay_ms": 600000,
+      "fee": 296,
+      "unguarded": true
+    },
+    "to": "0014aa6be4422b35bef02b3fc771899ec9b18f29189b",
+    "amount": 19704,
+    "fee": 296,
+    "planned_vsize": 148,
+    "half_sig": "c6d6824288d3b8b1a156465291341f408617465425373ccc27dd05925e07a36c34ff3ba3c077c42983bbe1d66581f5627d87ba8caf314749d4adbeab0bbd6c6c01",
+    "coin": "25bc4b7c4fad5ce3f37f6ba67ca194b65b6692d461124f62433642749c0a7219:0",
+    "coin_confirmations_at_propose": 2,
+    "propose_tx": "EW6s79afQeCLHGPp2XAe3waFjJV9Acy3FYJThUTHJs4g",
+    "request": 0,
+    "tier": "New",
+    "unlock": 1794430593465,
+    "expires_at": 1794434193465,
+    "proposed_at": 1794429993465,
+    "unlocked_at_ms": 1794430595339,
+    "attempts": [
+      {
+        "execute_tx": "HpVWQDjf57nBxBLM4fVnDVZYZPggXmhjj1o7cD1yZiEh",
+        "attach_tgas": 30,
+        "prepaid_tgas": 70,
+        "outcome": "signed",
+        "ms": 5821,
+        "tx_status": "success",
+        "contract_logs": [
+          "undo:executing request=0 attempt=1 inputs=1",
+          "undo:signed request=0 input=0 complete=true"
+        ],
+        "signer_answer": {
+          "scheme": "Secp256k1",
+          "big_r": {
+            "affine_point": "02ae2acb2a879034c3b68771f0b5debdfdec519f3601a0726bcca2f9bef65cff92"
+          },
+          "s": {
+            "scalar": "335db2857c25a0dbca2daa0cfdada73b49f30dad0c2c5acde7d91fd538388d0b"
+          },
+          "recovery_id": 0
+        }
+      }
+    ],
+    "signer_s_was_high": false,
+    "local_checks": {
+      "txid": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2",
+      "vsize": 148,
+      "signatures": [
+        {
+          "key": "K_m",
+          "der_bytes": 71,
+          "strict_der": true,
+          "low_s": true,
+          "sighash_all": true,
+          "verified": true
+        },
+        {
+          "key": "K_u",
+          "der_bytes": 71,
+          "strict_der": true,
+          "low_s": true,
+          "sighash_all": true,
+          "verified": true
+        }
+      ],
+      "raw_bytes": 345
+    },
+    "consensus": {
+      "accepted": "libbitcoinconsensus, every input",
+      "wrong_value_control": "refused"
+    },
+    "raw": "0200000000010119720a9c74423643624f1261d492665bb694a17ca66b7ff3e35cad4f7c4bbc250000000000fdffffff01f84c000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b04483045022100ae2acb2a879034c3b68771f0b5debdfdec519f3601a0726bcca2f9bef65cff920220335db2857c25a0dbca2daa0cfdada73b49f30dad0c2c5acde7d91fd538388d0b01483045022100c6d6824288d3b8b1a156465291341f408617465425373ccc27dd05925e07a36c022034ff3ba3c077c42983bbe1d66581f5627d87ba8caf314749d4adbeab0bbd6c6c0101016f6321037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9cad21029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471ac6756b2752102f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35ac6800000000",
+    "txid": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2",
+    "ku_control": {
+      "txid": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2",
+      "raw": "0200000000010119720a9c74423643624f1261d492665bb694a17ca66b7ff3e35cad4f7c4bbc250000000000fdffffff01f84c000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b04483045022100ae2acb2a879034c3b68771f0b5debdfdec519f3601a0726bcca2f9bef65cff920220335db2857c25a0dbca2daa0cfdada73b49f30dad0c2c5acde7d91fd538388d0b010001016f6321037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9cad21029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471ac6756b2752102f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35ac6800000000",
+      "http_status": 400,
+      "text": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script failed an OP_CHECKSIGVERIFY operation), input 0 of 8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2 (wtxid 802f691bf1d3b8af4e24bffd7392813795a6a72c4b714ca586a341192b207177), spending 25bc4b7c4fad5ce3f37f6ba67ca194b65b6692d461124f62433642749c0a7219:0\"}",
+      "refusal": "script",
+      "names_the_check": true
+    },
+    "broadcast_answer": {
+      "http_status": 200,
+      "text": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2"
+    },
+    "broadcast": true,
+    "mined_height": 3582225,
+    "mined_block": "00000110fd3f4c366a6f35442076f9d06606f91186c123b40a1aa8da9b1f5247",
+    "readback": {
+      "txid": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2",
+      "height": 3582225,
+      "block": "00000110fd3f4c366a6f35442076f9d06606f91186c123b40a1aa8da9b1f5247",
+      "input": "25bc4b7c4fad5ce3f37f6ba67ca194b65b6692d461124f62433642749c0a7219:0",
+      "sequence": 4294967293,
+      "output_script": "0014aa6be4422b35bef02b3fc771899ec9b18f29189b",
+      "output_value": 19704,
+      "fee": 296,
+      "api_fee": 296,
+      "signatures": [
+        {
+          "key": "K_m",
+          "der_bytes": 71,
+          "strict_der": true,
+          "low_s": true,
+          "sighash_all": true,
+          "verified": true
+        },
+        {
+          "key": "K_u",
+          "der_bytes": 71,
+          "strict_der": true,
+          "low_s": true,
+          "sighash_all": true,
+          "verified": true
+        }
+      ],
+      "vsize": 148,
+      "coin_spent_by": "8081f059b9539f6b2fc3d1930ae48ae100d2fa396f32f0c2f1ee03e0c60c60a2",
+      "confirmations_at_readback": 1
+    }
+  },
+  "escape": {
+    "raw": "0200000000010143841aa283be65101645f0ee27b668e3544a0ff15954f17043b26b9fd5e633c8000000000006000000011c4d000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b03483045022100dfd672729009c4dff0529a70a1a91a13dde2692bd710431328924b87276bbb850220601c17c718d7a30b14df0c4d8f0bebaae97e7ffd8da0f4e69463d5bfded2ef4601006f6321037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9cad21029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471ac6756b2752102f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35ac6800000000",
+    "txid": "ca68df62ee9d7046e33112c0126169438c730f32c7f669ffa3149b2bfe7618f2",
+    "coin": "c833e6d59f6bb24370f15459f10f4a54e368b627eef045161065be83a21a8443:0",
+    "coin_height": 3582226,
+    "fee": 260,
+    "amount": 19740,
+    "local_checks": {
+      "txid": "ca68df62ee9d7046e33112c0126169438c730f32c7f669ffa3149b2bfe7618f2",
+      "vsize": 130,
+      "signatures": [
+        {
+          "key": "K_e",
+          "der_bytes": 71,
+          "strict_der": true,
+          "low_s": true,
+          "sighash_all": true,
+          "verified": true
+        }
+      ],
+      "raw_bytes": 271
+    },
+    "consensus": {
+      "accepted": "libbitcoinconsensus, every input",
+      "wrong_value_control": "refused"
+    },
+    "tool": [
+      "--recovery FILE",
+      "--utxos FILE",
+      "--to tb1q4f47gs3txkl0q2elcaccn8kfkx8jjxym4vqx9z",
+      "--fee 260"
+    ],
+    "utxo_list_entries": 1,
+    "early": {
+      "http_status": 400,
+      "text": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"non-BIP68-final\"}",
+      "refusal": "bip68",
+      "tip_before": 3582226,
+      "tip_after": 3582226,
+      "coin_height": 3582226,
+      "coin_confirmations": 1,
+      "csv": 6,
+      "mature_at_tip": 3582231
+    },
+    "csv_control": {
+      "txid": "55776e00701fc86c9f69cd4d3edd0b50d0e26626735e2fceb97a11ef8daacbeb",
+      "raw": "0200000000010143841aa283be65101645f0ee27b668e3544a0ff15954f17043b26b9fd5e633c8000000000005000000011c4d000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b03483045022100f5d9b0d49ea5baf940521edeb54159fd7fa04abfe887135aefafc0dff82d0b6002205796ea2cc0f36c7ce9b0502bd0fe237447926083ffd23971ef4056abb15f94de01006f6321037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9cad21029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471ac6756b2752102f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35ac6800000000",
+      "http_status": 400,
+      "text": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Locktime requirement not satisfied), input 0 of 55776e00701fc86c9f69cd4d3edd0b50d0e26626735e2fceb97a11ef8daacbeb (wtxid 4eee64f203f4b00e59d2ec28b14d32f01faea239763bd63ede0d0fa21ffeca81), spending c833e6d59f6bb24370f15459f10f4a54e368b627eef045161065be83a21a8443:0\"}",
+      "refusal": "script",
+      "names_the_check": true,
+      "sequence": 5,
+      "tip": 3582231
+    },
+    "rebuilt_identical": true,
+    "tip_at_broadcast": 3582231,
+    "mature_answer": {
+      "http_status": 200,
+      "text": "ca68df62ee9d7046e33112c0126169438c730f32c7f669ffa3149b2bfe7618f2"
+    },
+    "broadcast": true,
+    "mined_height": 3582232,
+    "mined_block": "00000050547025f76e6e78c5f86244cffc619b3c655b09fe6e04a4b3246973da",
+    "readback": {
+      "txid": "ca68df62ee9d7046e33112c0126169438c730f32c7f669ffa3149b2bfe7618f2",
+      "height": 3582232,
+      "block": "00000050547025f76e6e78c5f86244cffc619b3c655b09fe6e04a4b3246973da",
+      "input": "c833e6d59f6bb24370f15459f10f4a54e368b627eef045161065be83a21a8443:0",
+      "sequence": 6,
+      "output_script": "0014aa6be4422b35bef02b3fc771899ec9b18f29189b",
+      "output_value": 19740,
+      "fee": 260,
+      "api_fee": 260,
+      "blocks_after_coin": 6,
+      "signatures": [
+        {
+          "key": "K_e",
+          "der_bytes": 71,
+          "strict_der": true,
+          "low_s": true,
+          "sighash_all": true,
+          "verified": true
+        }
+      ],
+      "vsize": 130,
+      "coin_spent_by": "ca68df62ee9d7046e33112c0126169438c730f32c7f669ffa3149b2bfe7618f2",
+      "confirmations_at_readback": 1
+    }
+  },
+  "browser": {
+    "origin": "https://undo-btc.pages.dev",
+    "http_status": 204,
+    "allow_origin": "*",
+    "allow_methods": "GET, POST, OPTIONS",
+    "allow_headers": "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range",
+    "preflight_allows_post": true,
+    "method": "OPTIONS from this script, with an Origin header",
+    "real_browser_post_made": false,
+    "statement": "No browser made a real POST during this run. The headers say a browser would be let through, and only a real browser POST can show that it works. The gate stays incomplete until one is recorded."
+  },
+  "leftovers": {
+    "returned": [],
+    "listed_at_start": [],
+    "left_sats": 0,
+    "left_coins": []
+  },
+  "summary": {
+    "lines": [
+      {
+        "name": "cosigned_mined_and_read_back",
+        "pass": true
+      },
+      {
+        "name": "cosigned_without_ku_refused_by_script",
+        "pass": true
+      },
+      {
+        "name": "escape_refused_before_maturity",
+        "pass": true
+      },
+      {
+        "name": "escape_one_short_refused_by_script_after_maturity",
+        "pass": true
+      },
+      {
+        "name": "escape_mined_after_maturity_and_read_back",
+        "pass": true
+      },
+      {
+        "name": "browser_post",
+        "pass": null,
+        "note": "allow-origin *. No real browser POST on record, so the gate is not complete."
+      },
+      {
+        "name": "coins_returned",
+        "pass": null,
+        "note": "0 sats left in the vault"
+      }
+    ],
+    "pass": true,
+    "finished": true,
+    "gate_complete": false,
+    "gate_missing": [
+      "a browser POST"
+    ],
+    "failure": null,
+    "kill_condition_met": false,
+    "relay_answers_with_no_information": 3
+  }
+}

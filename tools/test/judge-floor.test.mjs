@@ -17,12 +17,16 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG_FORMAT, checkWatchConfig, makeTopic, StateStore, Watcher } from '../lib/watch.mjs';
 import { consensusJudge, consensusVerdict } from '../verify/rust.mjs';
 import { sha256 } from '../lib/crypto.mjs';
-import { toHex, utf8 } from '../lib/bytes.mjs';
+import { base58Decode, base58Encode, toHex, utf8 } from '../lib/bytes.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p) => readFileSync(join(REPO, p), 'utf8');
 const g2 = JSON.parse(read('proofs/g2.json'));
 const s2 = JSON.parse(read('proofs/s2-refusal.json'));
+// The later run, on the final build: its record, the spend key alone on its vault, and what the chain answered.
+const g2v1 = JSON.parse(read('proofs/g2-v1.json'));
+const s2v1 = JSON.parse(read('proofs/s2-refusal-v1.json'));
+const g2v1Chain = JSON.parse(read('tools/test/fixtures/g2-v1-archival.json'));
 const REFEREE = process.env.UNDO_TOOLS_CHECK_BIN && existsSync(process.env.UNDO_TOOLS_CHECK_BIN) ? process.env.UNDO_TOOLS_CHECK_BIN : null;
 const noReferee = REFEREE ? false : 'set UNDO_TOOLS_CHECK_BIN to the built tools/rust-check referee';
 
@@ -81,6 +85,11 @@ test('proof checkers: a referee that crashes on every control is no refusal, so 
   const two = spawnSync(process.execPath, [join(REPO, 'tools/test/check-g2-proof.mjs'), join(REPO, 'proofs/g2.json')], { encoding: 'utf8', env: { ...process.env, UNDO_TOOLS_CHECK_BIN: g2bin } });
   assert.equal(two.status, 1, two.stdout);
   for (const why of ['a wrong value was not refused', 'does not refuse the spend with no K_u signature', 'does not refuse the escape one block short']) assert.match(two.stdout, new RegExp(`G2 PROOF FAIL: .*${why}`));
+  // The later run's record is held to the same.
+  const v1bin = pickyReferee('picky-g2-v1', [[g2v1.cosigned.raw, [g2v1.coins.find((c) => c.role === 'cosign').value]], [g2v1.escape.raw, [g2v1.coins.find((c) => c.role === 'escape').value]]]);
+  const three = spawnSync(process.execPath, [join(REPO, 'tools/test/check-g2-proof.mjs'), join(REPO, 'proofs/g2-v1.json')], { encoding: 'utf8', env: { ...process.env, UNDO_TOOLS_CHECK_BIN: v1bin } });
+  assert.equal(three.status, 1, three.stdout);
+  for (const why of ['a wrong value was not refused', 'does not refuse the spend with no K_u signature', 'does not refuse the escape one block short']) assert.match(three.stdout, new RegExp(`G2 PROOF FAIL: .*${why}`));
   const g1 = JSON.parse(read('proofs/g1.json'));
   const runs = [];
   const walk = (n) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === 'object') { if (n.final_tx && n.input_values) runs.push(n); Object.values(n).forEach(walk); } };
@@ -99,7 +108,8 @@ test('the key-alone tool records a refusal only on the referee\'s own refusal, n
 });
 
 test('proof checkers, the real referee: the recorded G1 and G2 proofs still pass', { skip: noReferee }, () => {
-  for (const [checker, file, want] of [['check-g2-proof.mjs', 'g2.json', /G2 PROOF OK: chain lines pass, gate_complete true, consensus agrees/], ['check-g1-proof.mjs', 'g1.json', /^PASS \[consensus-lib\] \d+ final transactions accepted/m]]) {
+  const v1Gate = new RegExp(`G2 PROOF OK: chain lines pass, gate_complete ${g2v1.summary.gate_complete}, consensus agrees`);
+  for (const [checker, file, want] of [['check-g2-proof.mjs', 'g2.json', /G2 PROOF OK: chain lines pass, gate_complete true, consensus agrees/], ['check-g2-proof.mjs', 'g2-v1.json', v1Gate], ['check-g1-proof.mjs', 'g1.json', /^PASS \[consensus-lib\] \d+ final transactions accepted/m]]) {
     const r = spawnSync(process.execPath, [join(REPO, 'tools/test', checker), join(REPO, 'proofs', file)], { encoding: 'utf8', env: { ...process.env, UNDO_TOOLS_CHECK_BIN: REFEREE } });
     assert.equal(r.status, 0, r.stdout);
     assert.match(r.stdout, want);
@@ -110,13 +120,18 @@ test('proof checkers, the real referee: the recorded G1 and G2 proofs still pass
 
 const DEAD = 'http://127.0.0.1:9';
 
-/** A stand-in for mutinynet.com/api that knows the G2 transactions, with the S2 coin's spender chosen per test. */
-function esplora({ outspend }) {
-  const known = new Map([
-    [g2.cosigned.txid, { hex: g2.cosigned.raw, height: g2.cosigned.mined_height }],
-    [g2.escape.txid, { hex: g2.escape.raw, height: g2.escape.mined_height }],
-    [g2.escape.coin.split(':')[0], { hex: null, height: g2.escape.coin_height }],
-  ]);
+/**
+ * A stand-in for mutinynet.com/api that knows both runs' transactions, with the S2 coin's spender chosen per test.
+ * `outspendV1` is the same for the later run's key-alone coin: as recorded unless a test says otherwise. `change`
+ * edits what it knows.
+ */
+function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.mutinynet_txid, vin: 0 }, change = () => {} }) {
+  const known = new Map([g2, g2v1].flatMap((p) => [
+    [p.cosigned.txid, { hex: p.cosigned.raw, height: p.cosigned.mined_height }],
+    [p.escape.txid, { hex: p.escape.raw, height: p.escape.mined_height }],
+    [p.escape.coin.split(':')[0], { hex: null, height: p.escape.coin_height }],
+  ]));
+  change(known);
   const server = createServer((req, res) => {
     const m = /^\/api\/tx\/([0-9a-f]{64})\/(hex|status|outspend\/\d+)$/.exec(req.url);
     const send = (status, body) => {
@@ -125,7 +140,7 @@ function esplora({ outspend }) {
     };
     if (!m) return send(404, 'not found');
     const [, txid, what] = m;
-    if (what.startsWith('outspend')) return txid === s2.funding_coin.mutinynet_txid ? send(200, outspend) : send(404, 'not found');
+    if (what.startsWith('outspend')) return txid === s2.funding_coin.mutinynet_txid ? send(200, outspend) : txid === s2v1.funding_coin.mutinynet_txid ? send(200, outspendV1) : send(404, 'not found');
     const tx = known.get(txid);
     if (!tx) return send(404, 'Transaction not found');
     if (what === 'hex') return tx.hex ? send(200, tx.hex) : send(404, 'no hex here');
@@ -136,12 +151,12 @@ function esplora({ outspend }) {
 
 /**
  * tier-a.mjs with no cargo on PATH, NEAR at a dead port, and Esplora at `esploraUrl`. `archivalUrl` puts a stand-in
- * where the archival RPC is. Async: the stand-ins answer from here.
+ * where the archival RPC is, and `rpcUrl` one where the replay's views go. Async: the stand-ins answer from here.
  */
-function tierA({ esploraUrl, referee, archivalUrl = DEAD }) {
+function tierA({ esploraUrl, referee, archivalUrl = DEAD, rpcUrl = DEAD }) {
   const config = JSON.parse(read('deploy/testnet.json'));
   config.rpc = [DEAD];
-  config.replay = { ...config.replay, near_rpc: [DEAD], near_archival_rpc: [archivalUrl], mutinynet_esplora: esploraUrl };
+  config.replay = { ...config.replay, near_rpc: [rpcUrl], near_archival_rpc: [archivalUrl], mutinynet_esplora: esploraUrl };
   const path = join(work, `tier-a-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(path, JSON.stringify(config));
   const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: work, TMPDIR: work };
@@ -187,6 +202,10 @@ test('tier A with every endpoint dead: no [replay] line passes, and the recorded
   assert.equal(r.lines.filter((l) => /^PASS \S+ \[replay\]/.test(l)).length, 0, r.out);
   assert.ok(r.lines.some((l) => /^INFO C04 \[live-mutinynet, recorded in G2, 2026-10-31\] G2 escape sent before the coin was CSV old/.test(l)), r.out);
   assert.equal(r.lines.filter((l) => /^PASS C04 \[replay\] G2 escape sent before/.test(l)).length, 0);
+  // The later run's record is held to the same: its early escape is INFO, and what was not fetched says SKIP.
+  assert.ok(r.lines.some((l) => /^INFO C04 \[live-mutinynet, recorded on the final build, \d{4}-\d\d-\d\d\] Final build \(v1\.s\.undo-btc\.testnet\) escape sent before the coin was CSV old/.test(l)), r.out);
+  assert.ok(r.lines.some((l) => l.startsWith(`SKIP C12 [replay] proofs/g2-v1.json execute ${v1.execute}: SKIP (network)`)), r.out);
+  assert.ok(r.lines.some((l) => l.startsWith(`SKIP C03 [replay] Mutinynet coin ${s2v1.funding_coin.mutinynet_txid}: SKIP (network)`)), r.out);
   // The consensus checks still run on the raw hex in proofs/.
   assert.ok(r.lines.some((l) => /^PASS C02 \[consensus-lib\]/.test(l)), r.out);
   assert.ok(r.lines.some((l) => /^SKIP C12 \[live-testnet\] signer arguments: SKIP \(network\)/.test(l)), r.out);
@@ -229,9 +248,12 @@ const c14Chain = JSON.parse(read('tools/test/fixtures/c14-archival.json'));
  * A stand-in for the archival RPC that knows the agent run's transactions and one block, as the real one answered
  * them, after `change` has edited a copy. Anything else gets no answer, so the G1 and G2 lines say SKIP (network).
  */
-function archival(change = () => {}) {
-  const chain = structuredClone(c14Chain);
+function archival(change = () => {}, base = c14Chain) {
+  const chain = structuredClone(base);
   change(chain);
+  // A fixture's queries are kept under the words of the question: an account at a block, or a view and its arguments.
+  const asked = (q = {}) => (q.request_type === 'view_account' ? `view_account ${q.account_id} @${q.block_id}`
+    : q.request_type === 'call_function' ? `call_function ${q.account_id} ${q.method_name} ${Buffer.from(q.args_base64 ?? '', 'base64').toString('utf8')}` : '');
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -242,7 +264,8 @@ function archival(change = () => {}) {
       } catch {
         return req.socket.destroy();
       }
-      const result = call.method === 'tx' ? chain.tx[call.params?.tx_hash] : call.method === 'block' ? chain.block[call.params?.block_id] : undefined;
+      const result = call.method === 'tx' ? chain.tx[call.params?.tx_hash] : call.method === 'block' ? chain.block[call.params?.block_id]
+        : call.method === 'query' ? chain.query?.[asked(call.params)] : undefined;
       if (result === undefined) return req.socket.destroy();
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }));
@@ -430,6 +453,189 @@ test('tier A, C14: an archival node that stops answering part way gives SKIP (ne
   } finally {
     node.close();
   }
+});
+
+// ---------------------------------------------------------------- tier A: the later run, on the final build
+
+const v1 = {
+  contract: g2v1.contract.account,
+  execute: g2v1.cosigned.attempts.find((a) => a.execute_tx && a.signer_answer).execute_tx,
+  propose: g2v1.cosigned.propose_tx,
+  spend: g2v1.cosigned.txid,
+  escape: g2v1.escape.txid,
+  tag: `Final build (${g2v1.contract.account})`,
+};
+const v1Lines = (r) => r.lines.filter((l) => [v1.execute, v1.propose, v1.spend, v1.escape, v1.tag, 'at the block of that execute', 'proofs/g2-v1.json', 'proofs/s2-refusal-v1.json', s2v1.funding_coin.mutinynet_txid].some((w) => l.includes(w)));
+/** The stand-ins for one run of tier A over the later run's record: Esplora, and one node for archival RPC and views. */
+async function v1Run({ chain = () => {}, bitcoin = () => {}, outspendV1, referee = REFEREE } = {}) {
+  const api = await esplora({ outspend: { spent: true, txid: s2.coin_return.mutinynet_txid, vin: 0 }, outspendV1, change: bitcoin });
+  const node = await archival(chain, g2v1Chain);
+  try {
+    return await tierA({ esploraUrl: api.url, archivalUrl: node.url, rpcUrl: node.url, referee });
+  } finally {
+    api.close();
+    node.close();
+  }
+}
+
+test('proofs/g2-v1.json: a live run on the contract and the wasm deploy/testnet.json names, apart from the first run\'s record', () => {
+  const config = JSON.parse(read('deploy/testnet.json'));
+  assert.equal(g2v1.label, 'live-mutinynet');
+  assert.equal(g2v1.contract.account, config.contract);
+  assert.equal(g2v1.wasm.sha256, config.wasm_sha256);
+  assert.equal(g2v1.signer.account, config.signer);
+  assert.notEqual(g2v1.contract.account, g2.contract.account);
+  assert.notEqual(g2v1.vault.id, g2.vault.id);
+  // Nothing of the first run's is in it, and it holds no key.
+  for (const id of [g2.cosigned.txid, g2.escape.txid, g2.vault.address]) assert.equal(read('proofs/g2-v1.json').includes(id), false, id);
+  assert.doesNotMatch(read('proofs/g2-v1.json'), /"(seed|cold_key|private_key|secret_key|passkey)": "[0-9a-f]{64}"/);
+  assert.equal(g2v1.summary.pass, true);
+  assert.equal(g2v1.summary.kill_condition_met, false);
+  // The spend waited out the contract's unlock, and the escape the Bitcoin timelock.
+  assert.ok(g2v1.cosigned.unlocked_at_ms > g2v1.cosigned.unlock);
+  assert.equal(g2v1.cosigned.unlock - g2v1.cosigned.proposed_at, g2v1.cosigned.check.delay_ms);
+  assert.ok(g2v1.escape.readback.blocks_after_coin >= g2v1.csv_blocks);
+  assert.equal(s2v1.vault.near_testnet_contract, g2v1.contract.account);
+  assert.equal(s2v1.funding_coin.vault_address, g2v1.vault.address);
+  assert.equal(s2v1.node_answer.refusal, 'script');
+  assert.equal(s2v1.refused_tx.sats_moved, 0);
+});
+
+test('tier A, the final build\'s run: the execute, the code at its block, the wait and the Mutinynet transactions are fetched again and pass', { timeout: 150_000 }, async () => {
+  const r = await v1Run();
+  const lines = v1Lines(r);
+  assert.equal(lines.filter((l) => l.startsWith('FAIL')).length, 0, r.out);
+  const one = (re) => {
+    const hits = lines.filter((l) => re.test(l));
+    assert.equal(hits.length, 1, `${re}\n${r.out}`);
+    return hits[0];
+  };
+  const build = `the final build ${g2v1.wasm.sha256.slice(0, 10)}…`;
+  const esc = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const executed = one(new RegExp(`^PASS C12 \\[replay\\] NEAR testnet tx ${v1.execute}: an execute on ${esc(v1.contract)}, ${esc(build)}\\. `));
+  assert.ok(executed.includes(`was asked for the digest of Mutinynet txid ${v1.spend}`), executed);
+  assert.ok(executed.includes('is the K_m signature in that transaction\'s witness'), executed);
+  const code = one(/^PASS C12 \[replay\] NEAR testnet account \S+ ran code hash \S+ at the block of that execute, read from archival RPC/);
+  assert.ok(code.includes(`account ${v1.contract} ran code hash ${g2v1.contract.code_hash} `) && code.includes(`the sha256 ${g2v1.wasm.sha256} that proofs/g2-v1.json records`) && code.endsWith(': the final build'), code);
+  const waited = one(new RegExp(`^PASS C01 \\[replay\\] NEAR testnet tx ${v1.propose}: propose_btc on ${esc(v1.contract)}, ${esc(build)}, made request ${g2v1.cosigned.request} with its unlock 10:00 after the block it ran in; the execute, tx ${v1.execute}, ran in a block \\d+ s after that unlock, not before\\.`));
+  assert.ok(waited.endsWith('One request on NEAR testnet, read from archival RPC'), waited);
+  one(new RegExp(`^PASS C12 \\[replay\\] Mutinynet txid ${v1.spend} \\(${esc(v1.tag)} co-signed spend: .*\\): fetched again, same bytes as proofs/, mined at height ${g2v1.cosigned.mined_height}$`));
+  one(new RegExp(`^PASS C04 \\[replay\\] Mutinynet txid ${v1.escape} \\(${esc(v1.tag)} escape: .*\\): fetched again, same bytes as proofs/, mined at height ${g2v1.escape.mined_height}, ${g2v1.escape.readback.blocks_after_coin} blocks after the coin it spends$`));
+  // What a node refused left nothing on chain: the early escape is INFO, and it never passes as a replay.
+  const early = one(new RegExp(`^INFO C04 \\[live-mutinynet, recorded on the final build, \\d{4}-\\d\\d-\\d\\d\\] ${esc(v1.tag)} escape sent before the coin was CSV old: `));
+  assert.ok(early.includes(g2v1.escape.early.text) && early.includes('Not fetched again'), early);
+  one(new RegExp(`^PASS C03 \\[replay\\] Mutinynet coin ${s2v1.funding_coin.mutinynet_txid}:${s2v1.funding_coin.vout}: spent later by Mutinynet txid ${s2v1.coin_return.mutinynet_txid}, the cold-key return proofs/s2-refusal-v1\\.json records, not by the refused spend$`));
+  if (REFEREE) {
+    one(new RegExp(`^PASS C12 \\[consensus-lib\\] Mutinynet txid ${v1.spend} .*libbitcoinconsensus accepts every input of the fetched bytes$`));
+    one(new RegExp(`^PASS C04 \\[consensus-lib\\] Mutinynet txid ${v1.escape} .*libbitcoinconsensus accepts every input of the fetched bytes$`));
+    assert.ok(one(new RegExp(`^PASS C02 \\[consensus-lib\\] ${esc(v1.tag)} control: the same spend with no spend-key signature`)).includes(g2v1.cosigned.ku_control.text));
+    assert.ok(one(new RegExp(`^PASS C04 \\[consensus-lib\\] ${esc(v1.tag)} control: the escape signed one block below CSV`)).includes(g2v1.escape.csv_control.text));
+    assert.ok(one(new RegExp(`^PASS C03 \\[consensus-lib\\] ${esc(v1.tag)} spend key alone, sent to Mutinynet `)).includes(s2v1.node_answer.text_verbatim.trim().slice(0, 60)));
+    assert.equal(r.code, 0, r.out);
+  }
+  everyLineHasAClaim(r.lines);
+});
+
+test('tier A, the final build\'s run: another signature, another key, other code, a shorter wait, an early execute or other bytes each fail their line', { timeout: 600_000 }, async () => {
+  const execute = (chain) => chain.tx[v1.execute];
+  const answerOf = (chain) => execute(chain).receipts_outcome.find((x) => x.outcome.executor_id === g2v1.signer.account && x.outcome.status?.SuccessValue && Buffer.from(x.outcome.status.SuccessValue, 'base64').toString('utf8').includes('big_r'));
+  const blockOf = (chain, hash, shiftMs) => {
+    const header = chain.block[hash].header;
+    header.timestamp_nanosec = String(BigInt(header.timestamp_nanosec) + BigInt(shiftMs) * 1_000_000n);
+  };
+  const proposedIn = (chain) => chain.tx[v1.propose].receipts_outcome.find((x) => x.outcome.logs.some((l) => l.startsWith('undo:proposed '))).block_hash;
+  const ranIn = (chain) => execute(chain).receipts_outcome.find((x) => x.outcome.logs.some((l) => l.startsWith('undo:executing '))).block_hash;
+  const viewKey = Object.keys(g2v1Chain.query).find((k) => k.startsWith('call_function '));
+  const accountKey = Object.keys(g2v1Chain.query).find((k) => k.startsWith('view_account '));
+  const runs = [
+    // The signer's answer with one bit of S turned: it no longer verifies under the derived key.
+    [{ chain: (chain) => {
+      const receipt = answerOf(chain);
+      const answer = JSON.parse(Buffer.from(receipt.outcome.status.SuccessValue, 'base64').toString('utf8'));
+      answer.s.scalar = (BigInt(`0x${answer.s.scalar}`) ^ 1n).toString(16).padStart(64, '0');
+      receipt.outcome.status.SuccessValue = Buffer.from(JSON.stringify(answer)).toString('base64');
+    } }, new RegExp(`^FAIL C12 \\[replay\\] proofs/g2-v1\\.json execute ${v1.execute}: NEAR testnet tx ${v1.execute}: a returned signature does not verify under the derived key$`)],
+    // The signer derives another key for this vault: the same x with the other y.
+    [{ chain: (chain) => {
+      const xy = base58Decode(JSON.parse(Buffer.from(chain.query[viewKey].result).toString('utf8')).slice('secp256k1:'.length));
+      xy[63] ^= 1;
+      chain.query[viewKey].result = [...Buffer.from(JSON.stringify(`secp256k1:${base58Encode(xy)}`))];
+    } }, new RegExp(`^FAIL C12 \\[replay\\] proofs/g2-v1\\.json execute ${v1.execute}: NEAR testnet tx ${v1.execute}: a returned signature does not verify under the derived key$`)],
+    // The contract ran other code at that block: the first run's build.
+    [{ chain: (chain) => { chain.query[accountKey].code_hash = g2.contract.code_hash; } }, new RegExp(`^FAIL C12 \\[replay\\] .*${v1.contract} ran code ${g2.contract.code_hash} at the block of NEAR testnet tx ${v1.execute}; proofs/g2-v1\\.json names ${g2v1.contract.code_hash}`)],
+    // The block the proposal ran in was four minutes later than it says: the wait was 6:00, not the 10:00 on record.
+    [{ chain: (chain) => blockOf(chain, proposedIn(chain), 240_000) }, new RegExp(`^FAIL C01 \\[replay\\] .*NEAR testnet tx ${v1.propose}: the unlock is 360000 ms after its block, and proofs/g2-v1\\.json records a wait of 600000 ms$`)],
+    // The execute's block is put a second before the unlock.
+    [{ chain: (chain) => {
+      const at = BigInt(chain.block[ranIn(chain)].header.timestamp_nanosec) / 1_000_000n;
+      blockOf(chain, ranIn(chain), Number(BigInt(g2v1.cosigned.unlock) - 1000n - at));
+    } }, new RegExp(`^FAIL C01 \\[replay\\] .*NEAR testnet tx ${v1.execute}: the contract asked the signer \\d+ ms before request ${g2v1.cosigned.request}'s unlock$`)],
+    // The proposal went to another contract.
+    [{ chain: (chain) => { chain.tx[v1.propose].transaction.receiver_id = g2.contract.account; } }, new RegExp(`^FAIL C01 \\[replay\\] .*NEAR testnet tx ${v1.propose}: not one propose_btc on ${v1.contract} for vault `)],
+    // The node holds other bytes under the spend's txid, and another height for the escape.
+    [{ bitcoin: (known) => { known.get(v1.spend).hex = g2v1.cosigned.ku_control.raw; } }, new RegExp(`^FAIL C12 \\[replay\\] Mutinynet txid ${v1.spend} \\(.*\\): the API's bytes differ from proofs/$`)],
+    [{ bitcoin: (known) => { known.get(v1.escape).height += 1; } }, new RegExp(`^FAIL C04 \\[replay\\] Mutinynet txid ${v1.escape}: mined at ${g2v1.escape.mined_height + 1}, proofs/ say ${g2v1.escape.mined_height}$`)],
+    // The key-alone coin was spent by the refused spend itself, or by something the record does not name.
+    [{ outspendV1: { spent: true, txid: s2v1.refused_tx.mutinynet_txid_it_would_have_had, vin: 0 } }, new RegExp(`^FAIL C03 \\[replay\\] Mutinynet coin ${s2v1.funding_coin.mutinynet_txid}:\\d+: the refused spend is the one that spent the coin$`)],
+    [{ outspendV1: { spent: true, txid: 'cd'.repeat(32), vin: 0 } }, new RegExp(`^FAIL C03 \\[replay\\] Mutinynet coin ${s2v1.funding_coin.mutinynet_txid}:\\d+: spent by Mutinynet txid cdcd.*not the cold-key return proofs/s2-refusal-v1\\.json records`)],
+  ];
+  for (const [how, want] of runs) {
+    const r = await v1Run({ ...how, referee: null });
+    const failed = r.lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(failed.length, 1, `${want}\n${r.out}`);
+    assert.match(failed[0], want);
+    assert.equal(r.code, 1, r.out);
+    everyLineHasAClaim(r.lines);
+  }
+});
+
+test('tier A, the final build\'s run: with no archival answer its NEAR lines say SKIP (network), and none passes', { timeout: 150_000 }, async () => {
+  const r = await v1Run({ chain: (chain) => { delete chain.tx[v1.execute]; }, referee: null });
+  const lines = v1Lines(r);
+  assert.ok(lines.some((l) => l.startsWith(`SKIP C12 [replay] proofs/g2-v1.json execute ${v1.execute}: SKIP (network)`)), r.out);
+  assert.ok(lines.some((l) => l.startsWith(`SKIP C12 [replay] ${v1.contract}'s code at the block of that execute, and the wait before it: not read`)), r.out);
+  assert.equal(lines.filter((l) => /^PASS (C12|C01) \[replay\] NEAR testnet /.test(l)).length, 0, r.out);
+  assert.equal(lines.filter((l) => l.startsWith('FAIL')).length, 0, r.out);
+  everyLineHasAClaim(r.lines);
+});
+
+test('the outward gate reads a named run\'s record too: a verdict past its contents in proofs/g2-NAME.json stops it', { timeout: 120_000 }, () => {
+  // A throwaway git folder with this repo's scripts and the proof checker, as the G2 rehearsal makes one. The blocked
+  // list is a made-up word: the gate fails closed without one, and this test is about the proofs, not the names.
+  const copy = join(work, 'outward');
+  mkdirSync(join(copy, 'tools', 'test'), { recursive: true });
+  mkdirSync(join(copy, 'proofs'));
+  cpSync(join(REPO, 'scripts'), join(copy, 'scripts'), { recursive: true });
+  cpSync(join(REPO, 'tools/test/check-g2-proof.mjs'), join(copy, 'tools', 'test', 'check-g2-proof.mjs'));
+  // The list sits outside the folder it guards, as the real one does, or it would be its own first hit.
+  const blocked = join(work, 'outward-blocked.txt');
+  writeFileSync(blocked, 'undo-test-only-blocked-word\n');
+  // Not a contract: the gate reads a wasm's strings, and wants more of them than an empty file has.
+  writeFileSync(join(copy, 'some.wasm'), Array.from({ length: 60 }, (_, i) => `a printable run, number ${i}`).join('\n'));
+  const git = (...args) => spawnSync('git', args, { cwd: copy, encoding: 'utf8' });
+  git('init', '-q');
+  git('add', '-A');
+  const env = { PATH: process.env.PATH, HOME: copy, TMPDIR: work, UNDO_BLOCKED_WORDS: blocked };
+  const outward = () => spawnSync('bash', [join(copy, 'scripts', 'outward-check.sh'), '--wasm', join(copy, 'some.wasm')], { encoding: 'utf8', env });
+  const empty = outward();
+  assert.equal(empty.status, 0, `${empty.stdout}${empty.stderr}`);
+  // The recorded run passes it. Its label, chain and genesis are a live run's; only the verdict is edited below.
+  cpSync(join(REPO, 'proofs/g2-v1.json'), join(copy, 'proofs', 'g2-v1.json'));
+  const real = outward();
+  assert.equal(real.status, 0, `${real.stdout}${real.stderr}`);
+  assert.match(real.stdout, /G2 PROOF OK: chain lines pass/);
+  const past = structuredClone(g2v1);
+  delete past.cosigned.readback;
+  writeFileSync(join(copy, 'proofs', 'g2-v1.json'), JSON.stringify(past));
+  const planted = outward();
+  assert.notEqual(planted.status, 0, planted.stdout);
+  assert.match(planted.stdout, /G2 PROOF FAIL: pass without a co-signed spend read back/);
+  assert.match(planted.stdout, /OUTWARD FAIL/);
+  // And a rehearsal's label under a run's name is refused as it is at proofs/g2.json.
+  writeFileSync(join(copy, 'proofs', 'g2-v1.json'), JSON.stringify({ ...g2v1, label: 'rehearsal-regtest-mock-signer' }));
+  const rehearsal = outward();
+  assert.notEqual(rehearsal.status, 0, rehearsal.stdout);
+  assert.match(rehearsal.stdout, /G2 PROOF FAIL: its label is rehearsal-regtest-mock-signer, not a live run/);
 });
 
 test('proofs/c14-agent.json: nothing NEAR refused is recorded as on chain, the key is the narrow one, and it holds no secret', () => {
@@ -640,6 +846,51 @@ test('README and CLAIMS: no TODO, the agent and watcher are reachable, every has
   assert.match(row('C13')[1], /The deployed code hash equals the wasm this machine built/);
   assert.doesNotMatch(claims, /current build/, 'every build is named by what it was built from');
   for (const f of ['agent/README.md', 'docs/watch.md']) assert.ok(existsSync(join(REPO, f)), f);
+});
+
+test('README and CLAIMS: what they say of the final build\'s co-signed spend and escape is in its records, and says what did not run', () => {
+  const readme = read('README.md');
+  const claims = read('CLAIMS.md');
+  const records = `${read('proofs/g2-v1.json')}\n${read('proofs/s2-refusal-v1.json')}`;
+  const everyProof = ['g1.json', 'g2.json', 'g2-v1.json', 's2-refusal.json', 's2-refusal-v1.json'].map((f) => read(`proofs/${f}`)).join('\n');
+  const hashesIn = (text) => [...text.matchAll(/`([1-9A-HJ-NP-Za-km-z]{43,44}|[0-9a-f]{64})(?::\d+)?`/g)].map((m) => m[1]);
+  // The paragraph on the run cites nothing its two records do not hold.
+  const live = claims.split('\n').find((l) => l.startsWith('The co-signed spend and the escape, on the final build, '));
+  assert.ok(live, 'CLAIMS.md has a paragraph on the final build\'s live run');
+  const cited = hashesIn(live);
+  assert.ok(cited.length >= 11, 'the paragraph names its transactions');
+  for (const h of cited) assert.ok(records.includes(h), `the paragraph cites ${h}, which neither record holds`);
+  // Each row it touched cites only what some proof holds, and names the final build's hash for its claim.
+  const row = (id) => claims.split('\n').find((l) => l.startsWith(`| ${id} |`));
+  const execute = g2v1.cosigned.attempts.find((a) => a.signer_answer).execute_tx;
+  const wants = {
+    C01: [g2v1.cosigned.propose_tx, execute],
+    C02: [g2v1.cosigned.txid, g2.cosigned.txid],
+    C03: [s2v1.refused_tx.mutinynet_txid_it_would_have_had, s2v1.funding_coin.mutinynet_txid, s2v1.coin_return.mutinynet_txid, s2.refused_tx.mutinynet_txid_it_would_have_had],
+    C04: [g2v1.escape.txid, g2.escape.txid],
+    C12: [execute, g2v1.cosigned.txid, g2v1.contract.code_hash],
+    C18: [g2v1.escape.txid, g2.escape.txid],
+  };
+  for (const [id, hashes] of Object.entries(wants)) {
+    for (const h of hashesIn(row(id))) assert.ok(everyProof.includes(h), `${id} cites ${h}, which no proof holds`);
+    for (const h of hashes) assert.ok(row(id).includes(h), `${id} does not name ${h}`);
+  }
+  assert.match(row('C12'), new RegExp(`height ${g2v1.cosigned.mined_height}\\b`));
+  assert.match(row('C04'), new RegExp(`height ${g2v1.escape.mined_height}, ${g2v1.escape.readback.blocks_after_coin} blocks after its coin`));
+  // C01's live part is one request that waited, and the row says no early execute was tried there.
+  assert.match(row('C01'), /one request that waited, not a test of the rule: no early execute was tried on testnet/);
+  // The README's row for the contract no longer says it did not run, and names both transactions.
+  assert.doesNotMatch(readme, /cold-key escape, on the final build: \*\*not yet run\*\*/);
+  const contractRow = readme.split('\n').find((l) => l.startsWith('| `contracts/undo` |'));
+  assert.ok(contractRow.includes(g2v1.cosigned.txid) && contractRow.includes(g2v1.escape.txid), 'the README names the spend and the escape');
+  for (const h of hashesIn(contractRow)) assert.ok(records.includes(h), `the README cites ${h}, which neither record holds`);
+  // What the record does not hold is said: no browser POST in this run, so the gate reads incomplete.
+  assert.equal(g2v1.summary.gate_complete, Boolean(g2v1.browser?.real_post));
+  if (!g2v1.summary.gate_complete) {
+    assert.match(live, /a browser's POST to the Mutinynet API, .* is \*\*not yet run\*\* for this one, so `proofs\/g2-v1\.json` reads `gate_complete: false`/);
+    assert.doesNotMatch(contractRow, /gate G2|G2 passed|gate complete/i);
+  }
+  assert.match(live, /the vault's passkey was a software key and no cancel was made/);
 });
 
 test('the README status line prints the RPC\'s refusal instead of a traceback', () => {

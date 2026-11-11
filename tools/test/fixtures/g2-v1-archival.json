@@ -1,0 +1,380 @@
+{
+ "what": "What NEAR testnet answered for the calls ./verify.sh A makes about proofs/g2-v1.json: its execute and its proposal, the two blocks those ran in, the contract's account at the block of the execute (all from archival RPC), and the signer's derived_public_key view for the run's vault. Captured 2026-11-11 UTC from archival-rpc.testnet.fastnear.com and test.rpc.fastnear.com. Left out, as in c14-archival.json: each answer's receipts list and its Merkle proof and metadata fields; every block field but four of its header; every account field but its code hash and block; and each transaction's signature, which the secret scan would read as a key by its length. tools/test/judge-floor.test.mjs serves these from a stand-in node",
+ "tx": {
+  "HpVWQDjf57nBxBLM4fVnDVZYZPggXmhjj1o7cD1yZiEh": {
+   "final_execution_status": "FINAL",
+   "receipts_outcome": [
+    {
+     "block_hash": "8kqDxHnLbbYxVqHaoWMZK99E45u66WaicqDVyTEcZfMW",
+     "id": "7P2hz1hKEUNBeHq2hJSK4WfXxmBD7eMdnv1C4kGyDTf2",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 3342680068955,
+      "logs": [
+       "undo:executing request=0 attempt=1 inputs=1"
+      ],
+      "receipt_ids": [
+       "9wuQ75KSFT3ZVVX9eae5yuD5nRN7wTVJ4T7Nq7muCsKL",
+       "79u4dCrzqzLaj9DMmCtyeMGaT6vM5iqK8X7EAZC3pLMA",
+       "DhriNmwrL8u7oe7xetwHhoGkW9WitnnYs6W6tRKByZ7e"
+      ],
+      "status": {
+       "SuccessValue": "MQ=="
+      },
+      "tokens_burnt": "334268006895500000000"
+     }
+    },
+    {
+     "block_hash": "2g3prUgdARhp22EBN8Zs4mvSz9GAibptKp23u4VtjmmB",
+     "id": "9wuQ75KSFT3ZVVX9eae5yuD5nRN7wTVJ4T7Nq7muCsKL",
+     "outcome": {
+      "executor_id": "v1.signer-prod.testnet",
+      "gas_burnt": 4646012897509,
+      "logs": [
+       "sign: predecessor=AccountId(\"v1.s.undo-btc.testnet\"), request=SignRequestArgs { path: \"undo/c70cdc607801f05a9ce65909debfbf9f9ef8734ab950acf79ba647cb9081328e\", payload: Ecdsa(BoundedVec { inner: [236, 221, 211, 243, 209, 222, 149, 170, 192, 44, 241, 171, 2, 238, 28, 13, 240, 55, 75, 252, 244, 103, 248, 178, 45, 123, 10, 229, 247, 235, 232, 121], witness: NonEmpty(()) }), domain_id: DomainId(0) }"
+      ],
+      "receipt_ids": [
+       "FPgCdQRuR4wgBAMUwz6Xw3KgJuzm9b1R33JuGvCNbdLV",
+       "HUj7Kb3aLRqstjSK43kvL8L9X6Mji86V679egcrx61nv"
+      ],
+      "status": {
+       "SuccessReceiptId": "FPgCdQRuR4wgBAMUwz6Xw3KgJuzm9b1R33JuGvCNbdLV"
+      },
+      "tokens_burnt": "464601289750900000000"
+     }
+    },
+    {
+     "block_hash": "EHqCJpwt8E42JU4WHQxMKb7CP5mThLUChj7DHsgJj366",
+     "id": "FPgCdQRuR4wgBAMUwz6Xw3KgJuzm9b1R33JuGvCNbdLV",
+     "outcome": {
+      "executor_id": "v1.signer-prod.testnet",
+      "gas_burnt": 3770424450806,
+      "logs": [],
+      "receipt_ids": [
+       "HLL42gEpP5yUWGDQ744JuiNZ4QVDWvXGE4RkL3kZV66F"
+      ],
+      "status": {
+       "SuccessValue": "eyJzY2hlbWUiOiJTZWNwMjU2azEiLCJiaWdfciI6eyJhZmZpbmVfcG9pbnQiOiIwMmFlMmFjYjJhODc5MDM0YzNiNjg3NzFmMGI1ZGViZGZkZWM1MTlmMzYwMWEwNzI2YmNjYTJmOWJlZjY1Y2ZmOTIifSwicyI6eyJzY2FsYXIiOiIzMzVkYjI4NTdjMjVhMGRiY2EyZGFhMGNmZGFkYTczYjQ5ZjMwZGFkMGMyYzVhY2RlN2Q5MWZkNTM4Mzg4ZDBiIn0sInJlY292ZXJ5X2lkIjowfQ=="
+      },
+      "tokens_burnt": "377042445080600000000"
+     }
+    },
+    {
+     "block_hash": "G4QSDNLQLrgBnvEWJ7UH3mbq9kou5JmQBhpaMs2jKbKk",
+     "id": "HLL42gEpP5yUWGDQ744JuiNZ4QVDWvXGE4RkL3kZV66F",
+     "outcome": {
+      "executor_id": "s.undo-btc.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    },
+    {
+     "block_hash": "CgTyMjW6L3qXe3YJcn864p2HRrk3qTcnuTpFmDXNZzs7",
+     "id": "HUj7Kb3aLRqstjSK43kvL8L9X6Mji86V679egcrx61nv",
+     "outcome": {
+      "executor_id": "s.undo-btc.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    },
+    {
+     "block_hash": "G4QSDNLQLrgBnvEWJ7UH3mbq9kou5JmQBhpaMs2jKbKk",
+     "id": "79u4dCrzqzLaj9DMmCtyeMGaT6vM5iqK8X7EAZC3pLMA",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 3075869761915,
+      "logs": [
+       "undo:signed request=0 input=0 complete=true"
+      ],
+      "receipt_ids": [
+       "5qXREsfRHvyU4edPp4wcKxR1485BefJdh2XmPZeQjopz"
+      ],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "307586976191500000000"
+     }
+    },
+    {
+     "block_hash": "B8RACRS9Pn9i2Hcp8d2fAj9AGPxeqb9CKbT6TF4McM7e",
+     "id": "5qXREsfRHvyU4edPp4wcKxR1485BefJdh2XmPZeQjopz",
+     "outcome": {
+      "executor_id": "s.undo-btc.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    },
+    {
+     "block_hash": "2g3prUgdARhp22EBN8Zs4mvSz9GAibptKp23u4VtjmmB",
+     "id": "DhriNmwrL8u7oe7xetwHhoGkW9WitnnYs6W6tRKByZ7e",
+     "outcome": {
+      "executor_id": "s.undo-btc.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    }
+   ],
+   "status": {
+    "SuccessValue": "MQ=="
+   },
+   "transaction": {
+    "actions": [
+     {
+      "FunctionCall": {
+       "args": "eyJ2YXVsdCI6ImM3MGNkYzYwNzgwMWYwNWE5Y2U2NTkwOWRlYmZiZjlmOWVmODczNGFiOTUwYWNmNzliYTY0N2NiOTA4MTMyOGUiLCJyZXF1ZXN0IjowLCJzaWduX3RnYXMiOjMwfQ==",
+       "deposit": "0",
+       "gas": 70000000000000,
+       "method_name": "execute"
+      }
+     }
+    ],
+    "hash": "HpVWQDjf57nBxBLM4fVnDVZYZPggXmhjj1o7cD1yZiEh",
+    "nonce": 275643598000092,
+    "priority_fee": 0,
+    "public_key": "ed25519:4W7aoutQcmfkctj8PddfREwcySTQoyrM91F9Lh4M6RWq",
+    "receiver_id": "v1.s.undo-btc.testnet",
+    "signer_id": "s.undo-btc.testnet"
+   },
+   "transaction_outcome": {
+    "block_hash": "6T347w9B4TCUwPTsbg1jWzFucmVdQx4FSon6k2DnSJRz",
+    "id": "HpVWQDjf57nBxBLM4fVnDVZYZPggXmhjj1o7cD1yZiEh",
+    "outcome": {
+     "executor_id": "s.undo-btc.testnet",
+     "gas_burnt": 313304708650,
+     "logs": [],
+     "receipt_ids": [
+      "7P2hz1hKEUNBeHq2hJSK4WfXxmBD7eMdnv1C4kGyDTf2"
+     ],
+     "status": {
+      "SuccessReceiptId": "7P2hz1hKEUNBeHq2hJSK4WfXxmBD7eMdnv1C4kGyDTf2"
+     },
+     "tokens_burnt": "31330470865000000000"
+    }
+   }
+  },
+  "EW6s79afQeCLHGPp2XAe3waFjJV9Acy3FYJThUTHJs4g": {
+   "final_execution_status": "FINAL",
+   "receipts_outcome": [
+    {
+     "block_hash": "DZT1HnGjNMFWUxt7AcQXBdDJNq3soaR5GnC4KVAUCQ7i",
+     "id": "DiE2nKMXsYidKuD4oyNewCjGLHVRjSfx1yqvnvknz5sd",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 3035333058996,
+      "logs": [
+       "undo:proposed request=0 unlock=1794430593465"
+      ],
+      "receipt_ids": [
+       "DvKzbbeJ4Pz1H5Y2Di76rjVGnWhmX7MCFMfXVowdP229"
+      ],
+      "status": {
+       "SuccessValue": "MA=="
+      },
+      "tokens_burnt": "303533305899600000000"
+     }
+    },
+    {
+     "block_hash": "FEKmBhanrqp9WtDRwnvvWCC7pNUSPvhuEARq9MFKTYpt",
+     "id": "DvKzbbeJ4Pz1H5Y2Di76rjVGnWhmX7MCFMfXVowdP229",
+     "outcome": {
+      "executor_id": "s.undo-btc.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    }
+   ],
+   "status": {
+    "SuccessValue": "MA=="
+   },
+   "transaction": {
+    "actions": [
+     {
+      "FunctionCall": {
+       "args": "eyJ2YXVsdCI6ImM3MGNkYzYwNzgwMWYwNWE5Y2U2NTkwOWRlYmZiZjlmOWVmODczNGFiOTUwYWNmNzliYTY0N2NiOTA4MTMyOGUiLCJpbnB1dHMiOlt7InR4aWQiOiIyNWJjNGI3YzRmYWQ1Y2UzZjM3ZjZiYTY3Y2ExOTRiNjViNjY5MmQ0NjExMjRmNjI0MzM2NDI3NDljMGE3MjE5Iiwidm91dCI6MCwidmFsdWUiOjIwMDAwfV0sInRvIjoiMDAxNGFhNmJlNDQyMmIzNWJlZjAyYjNmYzc3MTg5OWVjOWIxOGYyOTE4OWIiLCJhbW91bnQiOjE5NzA0LCJjaGFuZ2UiOm51bGwsImhhbGZfc2lncyI6WyJjNmQ2ODI0Mjg4ZDNiOGIxYTE1NjQ2NTI5MTM0MWY0MDg2MTc0NjU0MjUzNzNjY2MyN2RkMDU5MjVlMDdhMzZjMzRmZjNiYTNjMDc3YzQyOTgzYmJlMWQ2NjU4MWY1NjI3ZDg3YmE4Y2FmMzE0NzQ5ZDRhZGJlYWIwYmJkNmM2YzAxIl0sIm5vbmNlIjowLCJleHBpcmVzX2F0IjoxNzk0NDMxNzgwMDY1LCJzcGVuZF9zaWciOiI3ZDc0OWVlYmFiYTkxMTM3OWQ0YzVkZTA4N2M5Y2JmMGQyNTcyY2EyOWI5NDk5MjY4YTE2Mjk4ZjliOWY2MTFmZmFlNDdkYjU3MzViODRjN2QwNThlNjhlNzY5YWVhODgwNDM3YjExODc1Mjc1NmFiMDMwODE0ZGYzNTUwYjkwYyIsIm1lbW8iOm51bGx9",
+       "deposit": "0",
+       "gas": 41000000000000,
+       "method_name": "propose_btc"
+      }
+     }
+    ],
+    "hash": "EW6s79afQeCLHGPp2XAe3waFjJV9Acy3FYJThUTHJs4g",
+    "nonce": 275643598000091,
+    "priority_fee": 0,
+    "public_key": "ed25519:4W7aoutQcmfkctj8PddfREwcySTQoyrM91F9Lh4M6RWq",
+    "receiver_id": "v1.s.undo-btc.testnet",
+    "signer_id": "s.undo-btc.testnet"
+   },
+   "transaction_outcome": {
+    "block_hash": "CD35JzXhQHpi7WjJBRdumbNiJABxJJzZHacWhysuSvm2",
+    "id": "EW6s79afQeCLHGPp2XAe3waFjJV9Acy3FYJThUTHJs4g",
+    "outcome": {
+     "executor_id": "s.undo-btc.testnet",
+     "gas_burnt": 337480352155,
+     "logs": [],
+     "receipt_ids": [
+      "DiE2nKMXsYidKuD4oyNewCjGLHVRjSfx1yqvnvknz5sd"
+     ],
+     "status": {
+      "SuccessReceiptId": "DiE2nKMXsYidKuD4oyNewCjGLHVRjSfx1yqvnvknz5sd"
+     },
+     "tokens_burnt": "33748035215500000000"
+    }
+   }
+  }
+ },
+ "block": {
+  "DZT1HnGjNMFWUxt7AcQXBdDJNq3soaR5GnC4KVAUCQ7i": {
+   "header": {
+    "hash": "DZT1HnGjNMFWUxt7AcQXBdDJNq3soaR5GnC4KVAUCQ7i",
+    "height": 277266142,
+    "timestamp": 1794429993465409000,
+    "timestamp_nanosec": "1794429993465408956"
+   }
+  },
+  "8kqDxHnLbbYxVqHaoWMZK99E45u66WaicqDVyTEcZfMW": {
+   "header": {
+    "hash": "8kqDxHnLbbYxVqHaoWMZK99E45u66WaicqDVyTEcZfMW",
+    "height": 277267197,
+    "timestamp": 1794430604840318000,
+    "timestamp_nanosec": "1794430604840317899"
+   }
+  }
+ },
+ "query": {
+  "view_account v1.s.undo-btc.testnet @6T347w9B4TCUwPTsbg1jWzFucmVdQx4FSon6k2DnSJRz": {
+   "block_hash": "6T347w9B4TCUwPTsbg1jWzFucmVdQx4FSon6k2DnSJRz",
+   "block_height": 277267196,
+   "code_hash": "4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1"
+  },
+  "call_function v1.signer-prod.testnet derived_public_key {\"path\":\"undo/c70cdc607801f05a9ce65909debfbf9f9ef8734ab950acf79ba647cb9081328e\",\"predecessor\":\"v1.s.undo-btc.testnet\",\"domain_id\":0}": {
+   "result": [
+    34,
+    115,
+    101,
+    99,
+    112,
+    50,
+    53,
+    54,
+    107,
+    49,
+    58,
+    51,
+    117,
+    84,
+    54,
+    65,
+    82,
+    112,
+    65,
+    122,
+    76,
+    82,
+    114,
+    109,
+    75,
+    109,
+    90,
+    104,
+    85,
+    76,
+    52,
+    51,
+    90,
+    67,
+    101,
+    78,
+    115,
+    104,
+    67,
+    110,
+    72,
+    122,
+    86,
+    114,
+    115,
+    57,
+    68,
+    113,
+    51,
+    116,
+    74,
+    116,
+    107,
+    80,
+    117,
+    101,
+    85,
+    114,
+    88,
+    57,
+    77,
+    87,
+    51,
+    119,
+    111,
+    78,
+    86,
+    101,
+    98,
+    101,
+    52,
+    112,
+    67,
+    115,
+    66,
+    100,
+    105,
+    114,
+    86,
+    87,
+    69,
+    83,
+    66,
+    107,
+    100,
+    109,
+    118,
+    84,
+    85,
+    67,
+    106,
+    88,
+    53,
+    70,
+    121,
+    65,
+    76,
+    112,
+    72,
+    34
+   ],
+   "logs": []
+  }
+ }
+}

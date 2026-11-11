@@ -13,6 +13,10 @@
 //    live signer derives for that vault. Every Mutinynet txid is fetched again and compared byte for
 //    byte with proofs/, and judged by libbitcoinconsensus. With no network, the raw hex in proofs/ is
 //    judged instead, and the fetch line says SKIP (network).
+//    Then the same for each later live run, proofs/g2-NAME.json, on the contract and build that record names:
+//    the contract's code hash at the block of the execute, the proposal's unlock and the execute's block against
+//    it, the signer's signature against the digest of the mined Bitcoin transaction and against its witness, and
+//    the Mutinynet transactions. With proofs/s2-refusal-NAME.json, the spend key alone on that run's vault.
 // 4. The agent run in proofs/c14-agent.json: the transaction that gave the agent its function-call key,
 //    its proposal, the calls the contract refused, the owner's cancel and rotation, each fetched again
 //    from archival RPC. What NEAR itself refused was never on chain, so that part is INFO.
@@ -27,9 +31,10 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseTx, parseWitnessScript, witnessScript } from '../lib/btc.mjs';
+import { derSig, makeTx, parseTx, parseWitnessScript, SEQUENCE_COSIGNED, sighash, witnessScript } from '../lib/btc.mjs';
 import { base58Encode, fromBase64, fromHex, toHex } from '../lib/bytes.mjs';
 import { randomBytes, secp256k1 } from '../lib/crypto.mjs';
+import { checkCosigned, checkEscape } from '../lib/g2-check.mjs';
 import { coldKeys, publicSecp, spendKeys } from '../lib/keys.mjs';
 import { buildRecovery } from '../lib/recovery.mjs';
 import { parseSignerKey } from '../lib/vault-client.mjs';
@@ -202,7 +207,7 @@ async function replayExecute({ proofName, run, contract, signer, archival, rpcUr
     const script = parseTx(fromHex(raw)).inputs[0].witness.at(-1);
     if (toHex(parseWitnessScript(script).km) !== toHex(km)) throw new Error(`NEAR testnet tx ${run.execute_tx}: the Bitcoin script names another K_m`);
   }
-  return { signatures: signatures.length, km, block: tx.transaction_outcome?.block_hash };
+  return { signatures: signatures.length, km, block: tx.transaction_outcome?.block_hash, tx, payloads, answers: signatures };
 }
 
 // ------------------------------------------------------------------ 1. the deployed contract
@@ -573,44 +578,166 @@ function refusedControl({ id, what, raw, spk, values, nodeText }) {
   return line('PASS', id, 'consensus-lib', `${what}: libbitcoinconsensus refuses it here too. The Mutinynet node's answer when it was sent, recorded in proofs/: ${nodeText}`);
 }
 
+/**
+ * The Mutinynet half of one G2-shaped record: the co-signed spend, the escape and the refusals a sound script gives.
+ * `tag` starts each line, and `where` is the INFO line's label for what is read from the record and not fetched.
+ */
+async function replayRunBitcoin({ p, esplora, tag, where }) {
+  const spk = p.vault.spk;
+  const valueOf = (role) => p.coins.find((c) => c.role === role)?.value;
+  const cosignValue = valueOf('cosign');
+  const escapeValue = valueOf('escape');
+  await replayBitcoin({ id: 'C12', what: `${tag} co-signed spend: the spend key and the contract-requested MPC signature`, txid: p.cosigned.txid, raw: p.cosigned.raw, spk, values: [cosignValue], esplora, expectHeight: p.cosigned.mined_height });
+  refusedControl({ id: 'C02', what: `${tag} control: the same spend with no spend-key signature, the MPC one alone`, raw: p.cosigned.ku_control.raw, spk, values: [cosignValue], nodeText: p.cosigned.ku_control.text });
+  await replayBitcoin({ id: 'C04', what: `${tag} escape: the cold key alone, from the recovery file, once the coin was CSV old`, txid: p.escape.txid, raw: p.escape.raw, spk, values: [escapeValue], esplora, expectHeight: p.escape.mined_height, coin: { txid: p.escape.coin.split(':')[0] } });
+  // Read from proofs/ only: nothing here fetches or judges it again, so it is INFO, not PASS.
+  line('INFO', 'C04', where, `${tag} escape sent before the coin was CSV old: the Mutinynet node refused it at tip ${p.escape.early.tip_before}, coin height ${p.escape.early.coin_height}: ${p.escape.early.text}. Not fetched again: a refused transaction leaves nothing on chain to fetch`);
+  refusedControl({ id: 'C04', what: `${tag} control: the escape signed one block below CSV`, raw: p.escape.csv_control.raw, spk, values: [escapeValue], nodeText: p.escape.csv_control.text });
+}
+
+/** The spend key alone, as one s2-refusal record holds it: judged here again, and its coin's spender read again. */
+async function replayKeyAlone({ s2, name, spk, esplora, tag = '' }) {
+  refusedControl({ id: 'C03', what: `${tag}spend key alone, sent to Mutinynet ${s2.node_answer.at_utc}: would have been txid ${s2.refused_tx.mutinynet_txid_it_would_have_had}`, raw: s2.refused_tx.raw_hex, spk, values: [s2.funding_coin.value_sats], nodeText: s2.node_answer.text_verbatim });
+  try {
+    const out = JSON.parse((await getText(`${esplora}/tx/${s2.funding_coin.mutinynet_txid}/outspend/${s2.funding_coin.vout}`)).text);
+    const coin = `Mutinynet coin ${s2.funding_coin.mutinynet_txid}:${s2.funding_coin.vout}`;
+    const back = s2.coin_return?.mutinynet_txid ?? null;
+    if (out.spent && out.txid === s2.refused_tx.mutinynet_txid_it_would_have_had) line('FAIL', 'C03', 'replay', `${coin}: the refused spend is the one that spent the coin`);
+    else if (out.spent && back && out.txid === back) line('PASS', 'C03', 'replay', `${coin}: spent later by Mutinynet txid ${out.txid}, the cold-key return ${name} records, not by the refused spend`);
+    else if (out.spent) line('FAIL', 'C03', 'replay', `${coin}: spent by Mutinynet txid ${out.txid}, which is ${back ? `not the cold-key return ${name} records (${back})` : `not in ${name}`}`);
+    else if (back) line('FAIL', 'C03', 'replay', `${coin}: the API says unspent, but ${name} records its cold-key return ${back}`);
+    else line('PASS', 'C03', 'replay', `${coin}: still unspent`);
+  } catch (err) {
+    if (err instanceof NetworkDown) line('SKIP', 'C03', 'replay', `Mutinynet coin ${s2.funding_coin.mutinynet_txid}: SKIP (network): ${err.message}`);
+    else line('FAIL', 'C03', 'replay', err.message);
+  }
+}
+
 async function replayMutinynet(config) {
   const esplora = config.replay.mutinynet_esplora;
   const g2 = proof('g2.json');
   console.log('\n== tier A: replay of real Mutinynet transactions in proofs/ (Bitcoin signet test coins)');
-  if (g2) {
-    const spk = g2.vault.spk;
-    const valueOf = (role) => g2.coins.find((c) => c.role === role)?.value;
-    const cosignValue = valueOf('cosign');
-    const escapeValue = valueOf('escape');
-    await replayBitcoin({ id: 'C12', what: 'G2 co-signed spend: the spend key and the contract-requested MPC signature', txid: g2.cosigned.txid, raw: g2.cosigned.raw, spk, values: [cosignValue], esplora, expectHeight: g2.cosigned.mined_height });
-    refusedControl({ id: 'C02', what: 'G2 control: the same spend with no spend-key signature, the MPC one alone', raw: g2.cosigned.ku_control.raw, spk, values: [cosignValue], nodeText: g2.cosigned.ku_control.text });
-    await replayBitcoin({ id: 'C04', what: 'G2 escape: the cold key alone, from the recovery file, once the coin was CSV old', txid: g2.escape.txid, raw: g2.escape.raw, spk, values: [escapeValue], esplora, expectHeight: g2.escape.mined_height, coin: { txid: g2.escape.coin.split(':')[0] } });
-    // Read from proofs/ only: nothing here fetches or judges it again, so it is INFO, not PASS.
-    line('INFO', 'C04', 'live-mutinynet, recorded in G2, 2026-10-31', `G2 escape sent before the coin was CSV old: the Mutinynet node refused it at tip ${g2.escape.early.tip_before}, coin height ${g2.escape.early.coin_height}: ${g2.escape.early.text}. Not fetched again: a refused transaction leaves nothing on chain to fetch`);
-    refusedControl({ id: 'C04', what: 'G2 control: the escape signed one block below CSV', raw: g2.escape.csv_control.raw, spk, values: [escapeValue], nodeText: g2.escape.csv_control.text });
-  } else line('SKIP', 'C12', 'replay', 'proofs/g2.json is not in this tree');
+  if (g2) await replayRunBitcoin({ p: g2, esplora, tag: 'G2', where: 'live-mutinynet, recorded in G2, 2026-10-31' });
+  else line('SKIP', 'C12', 'replay', 'proofs/g2.json is not in this tree');
 
   const s2 = proof('s2-refusal.json');
   if (s2) {
     const spk = g2?.vault?.address === s2.funding_coin.vault_address ? g2.vault.spk : null;
     if (!spk) line('FAIL', 'C03', 'replay', 'proofs/s2-refusal.json names a vault this tree has no script for');
-    else {
-      refusedControl({ id: 'C03', what: `spend key alone, sent to Mutinynet ${s2.node_answer.at_utc}: would have been txid ${s2.refused_tx.mutinynet_txid_it_would_have_had}`, raw: s2.refused_tx.raw_hex, spk, values: [s2.funding_coin.value_sats], nodeText: s2.node_answer.text_verbatim });
-      try {
-        const out = JSON.parse((await getText(`${esplora}/tx/${s2.funding_coin.mutinynet_txid}/outspend/${s2.funding_coin.vout}`)).text);
-        const coin = `Mutinynet coin ${s2.funding_coin.mutinynet_txid}:${s2.funding_coin.vout}`;
-        const back = s2.coin_return?.mutinynet_txid ?? null;
-        if (out.spent && out.txid === s2.refused_tx.mutinynet_txid_it_would_have_had) line('FAIL', 'C03', 'replay', `${coin}: the refused spend is the one that spent the coin`);
-        else if (out.spent && back && out.txid === back) line('PASS', 'C03', 'replay', `${coin}: spent later by Mutinynet txid ${out.txid}, the cold-key return proofs/s2-refusal.json records, not by the refused spend`);
-        else if (out.spent) line('FAIL', 'C03', 'replay', `${coin}: spent by Mutinynet txid ${out.txid}, which is ${back ? `not the cold-key return proofs/s2-refusal.json records (${back})` : 'not in proofs/s2-refusal.json'}`);
-        else if (back) line('FAIL', 'C03', 'replay', `${coin}: the API says unspent, but proofs/s2-refusal.json records its cold-key return ${back}`);
-        else line('PASS', 'C03', 'replay', `${coin}: still unspent`);
-      } catch (err) {
-        if (err instanceof NetworkDown) line('SKIP', 'C03', 'replay', `Mutinynet coin ${s2.funding_coin.mutinynet_txid}: SKIP (network): ${err.message}`);
-        else line('FAIL', 'C03', 'replay', err.message);
-      }
-    }
+    else await replayKeyAlone({ s2, name: 'proofs/s2-refusal.json', spk, esplora });
   }
+}
+
+// ------------------------------------------------------------------ 3b. later live runs, each on the build it names
+
+/** proofs/g2-NAME.json, with proofs/s2-refusal-NAME.json beside it if there is one. */
+function laterRuns() {
+  const dir = join(REPO, 'proofs');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((f) => /^g2-[a-z][a-z0-9]{0,15}\.json$/.test(f)).sort().map((f) => {
+    const s2File = f.replace(/^g2-/, 's2-refusal-');
+    return { name: `proofs/${f}`, p: proof(f), s2: proof(s2File), s2Name: `proofs/${s2File}` };
+  });
+}
+
+const clock = (ms) => `${Math.floor(ms / 60_000)}:${String(Math.round((ms % 60_000) / 1000)).padStart(2, '0')}`;
+const blockMs = async (archival, hash) => Number(BigInt((await rpc(archival, 'block', { block_id: hash })).header.timestamp_nanosec) / 1_000_000n);
+
+/**
+ * One later run. The NEAR half: which code the contract ran at the block of the execute, the proposal's unlock
+ * against the block it ran in and the execute's block against that unlock, and the signer's answer against the
+ * digest and the witness of the Bitcoin transaction the record says was mined. Then the Mutinynet half.
+ */
+async function replayLaterRun(config, { name, p, s2, s2Name }) {
+  const archival = config.replay.near_archival_rpc;
+  const rpcUrls = config.replay.near_rpc;
+  const esplora = config.replay.mutinynet_esplora;
+  const contract = p.contract?.account;
+  const signer = p.signer?.account;
+  const sha = p.wasm?.sha256 ?? '';
+  // CLAIMS.md calls the wasm deploy/testnet.json records the final build.
+  const isFinal = sha !== '' && sha === config.wasm_sha256;
+  const build = isFinal ? `the final build ${short(sha)}` : `the build ${short(sha)}`;
+  const tag = isFinal ? `Final build (${contract})` : `Build ${short(sha)} (${contract})`;
+  const day = (p.coins?.[0]?.recorded_at ?? '').slice(0, 10) || 'no date';
+  console.log(`\n== tier A: replay of the live run in ${name}: ${contract}, ${build}, with Mutinynet test coins`);
+  if (p.schema !== 'undo-g2-v1' || p.label !== 'live-mutinynet' || p.chain_id !== 'testnet' || !contract || !signer || !p.vault?.id) {
+    return line('FAIL', 'C12', 'replay', `${name} is not the record of a live run on NEAR testnet and Mutinynet`);
+  }
+  const c = p.cosigned ?? {};
+  const e = p.escape ?? {};
+  if (!c.readback || !e.readback) {
+    // What a record does not hold did not run. It is said once, and no line passes for it.
+    line('INFO', 'C12', `live-mutinynet, recorded ${day}`, `${name} holds ${c.readback ? 'a mined co-signed spend' : 'no mined co-signed spend'} and ${e.readback ? 'a mined escape' : 'no mined escape'}: the rest of that run is not yet run, and nothing here is replayed from it`);
+    return undefined;
+  }
+
+  const vault = p.vault.id;
+  const coinOf = (role) => p.coins.find((x) => x.role === role);
+  const cosignCoin = { txid: c.coin.split(':')[0], vout: Number(c.coin.split(':')[1]), value: coinOf('cosign')?.value };
+  const attempt = (c.attempts ?? []).find((a) => a.execute_tx && a.signer_answer);
+  let executed = null;
+  if (!attempt) line('FAIL', 'C12', 'replay', `${name} records a mined co-signed spend and no execute with a signer's answer`);
+  else {
+    await guarded('C12', 'replay', `${name} execute ${attempt.execute_tx}`, async () => {
+      const out = await replayExecute({ proofName: name, run: { ...attempt, vault, raw: c.raw, payloads: null }, contract, signer, archival, rpcUrls });
+      // The digest the signer was asked for is the one Bitcoin checks for the recorded transaction, and the
+      // signature in that transaction's witness is the signer's answer, with S on the low side as Bitcoin wants it.
+      const script = fromHex(p.vault.script);
+      const digest = toHex(sighash(makeTx([cosignCoin], SEQUENCE_COSIGNED, [{ value: c.amount, spk: fromHex(c.to) }]), 0, script, cosignCoin.value));
+      if (!out.payloads.some((q) => q.payload === digest)) throw new Error(`NEAR testnet tx ${attempt.execute_tx}: the signer was asked for another digest than Mutinynet txid ${c.txid}'s`);
+      const checked = checkCosigned({ rawHex: c.raw, coin: cosignCoin, to: fromHex(c.to), amount: c.amount, script, km: out.km, ku: fromHex(p.vault.k_u) });
+      if (checked.problem) throw new Error(`Mutinynet txid ${c.txid}: ${checked.problem.reason}: ${checked.problem.detail}`);
+      if (checked.facts.txid !== c.txid) throw new Error(`${name}: the recorded bytes are txid ${checked.facts.txid}, not ${c.txid}`);
+      // derSig writes r and s as Bitcoin takes them: strict DER, S on the low side, SIGHASH_ALL.
+      const inWitness = toHex(parseTx(fromHex(c.raw)).inputs[0].witness[0]);
+      const same = out.answers.some((a) => toHex(derSig(fromHex(`${a.big_r.affine_point.slice(2)}${a.s.scalar}`))) === inWitness);
+      if (!same) throw new Error(`Mutinynet txid ${c.txid}: the K_m signature in its witness is not the one the signer returned in NEAR testnet tx ${attempt.execute_tx}`);
+      executed = out;
+      line('PASS', 'C12', 'replay', `NEAR testnet tx ${attempt.execute_tx}: an execute on ${contract}, ${build}. ${signer} was asked for the digest of Mutinynet txid ${c.txid}, and its answer verifies here under the K_m it derives for undo/${short(vault)}, matches ${name}, and is the K_m signature in that transaction's witness, beside the spend key's, which verifies here too`);
+    });
+  }
+  if (attempt && !executed) line('SKIP', 'C12', 'replay', `${contract}'s code at the block of that execute, and the wait before it: not read, since the execute was not`);
+  else if (executed) {
+    await guarded('C12', 'replay', `${contract} code at the execute`, async () => {
+      const account = await rpc(archival, 'query', { request_type: 'view_account', account_id: contract, block_id: executed.block });
+      const want = base58Encode(fromHex(sha));
+      if (account.code_hash !== want || p.contract.code_hash !== want) throw new Error(`${contract} ran code ${account.code_hash} at the block of NEAR testnet tx ${attempt.execute_tx}; ${name} names ${p.contract.code_hash}, and its wasm ${sha} hashes to ${want}`);
+      line('PASS', 'C12', 'replay', `NEAR testnet account ${contract} ran code hash ${account.code_hash} at the block of that execute, read from archival RPC: the sha256 ${sha} that ${name} records${isFinal ? `, and that ${shown(configPath)} names: the final build` : ''}`);
+    });
+    await guarded('C01', 'replay', `${name} proposal ${c.propose_tx}`, async () => {
+      const tx = await rpc(archival, 'tx', { tx_hash: c.propose_tx, sender_account_id: contract, wait_until: 'NONE' });
+      const call = onlyCall(tx);
+      if (tx.transaction?.receiver_id !== contract || call?.method !== 'propose_btc' || call.args?.vault !== vault) throw new Error(`NEAR testnet tx ${c.propose_tx}: not one propose_btc on ${contract} for vault ${short(vault)}`);
+      const said = `undo:proposed request=${c.request} unlock=${c.unlock}`;
+      const receipt = (tx.receipts_outcome ?? []).find((r) => r.outcome.executor_id === contract && r.outcome.logs.includes(said));
+      if (!receipt) throw new Error(`NEAR testnet tx ${c.propose_tx}: no log "${said}" from ${contract}`);
+      const wait = c.unlock - (await blockMs(archival, receipt.block_hash));
+      if (wait !== c.check?.delay_ms) throw new Error(`NEAR testnet tx ${c.propose_tx}: the unlock is ${wait} ms after its block, and ${name} records a wait of ${c.check?.delay_ms} ms`);
+      const began = `undo:executing request=${c.request} `;
+      const ran = (executed.tx.receipts_outcome ?? []).find((r) => r.outcome.executor_id === contract && r.outcome.logs.some((l) => l.startsWith(began)));
+      if (!ran) throw new Error(`NEAR testnet tx ${attempt.execute_tx}: no log "${began.trim()}" from ${contract}`);
+      const after = (await blockMs(archival, ran.block_hash)) - c.unlock;
+      if (after < 0) throw new Error(`NEAR testnet tx ${attempt.execute_tx}: the contract asked the signer ${-after} ms before request ${c.request}'s unlock`);
+      line('PASS', 'C01', 'replay', `NEAR testnet tx ${c.propose_tx}: propose_btc on ${contract}, ${build}, made request ${c.request} with its unlock ${clock(wait)} after the block it ran in; the execute, tx ${attempt.execute_tx}, ran in a block ${Math.floor(after / 1000)} s after that unlock, not before. One request on NEAR testnet, read from archival RPC`);
+    });
+  }
+
+  // The escape is the cold key's alone: no NEAR transaction to fetch. Its signature is checked here, then the node's copy.
+  const escapeCoin = { txid: e.coin.split(':')[0], vout: Number(e.coin.split(':')[1]), value: coinOf('escape')?.value };
+  const escaped = checkEscape({ rawHex: e.raw, coin: escapeCoin, to: parseTx(fromHex(e.raw)).outputs[0].spk, amount: e.amount, script: fromHex(p.vault.script), csv: p.vault.csv, ke: fromHex(p.vault.k_e_leaf) });
+  if (escaped.problem) line('FAIL', 'C04', 'replay', `${name}: the recorded escape is not a cold-key spend of ${e.coin} at nSequence ${p.vault.csv}: ${escaped.problem.reason}: ${escaped.problem.detail}`);
+  await replayRunBitcoin({ p, esplora, tag, where: `live-mutinynet, recorded on ${isFinal ? 'the final build' : build}, ${day}` });
+
+  if (s2) {
+    if (s2.funding_coin?.vault_address !== p.vault.address) line('FAIL', 'C03', 'replay', `${s2Name} names another vault than ${name}'s`);
+    else await replayKeyAlone({ s2, name: s2Name, spk: p.vault.spk, esplora, tag: `${tag} ` });
+  }
+  return undefined;
+}
+
+async function replayLaterRuns(config) {
+  for (const run of laterRuns()) await replayLaterRun(config, run);
 }
 
 // ------------------------------------------------------------------ 5. recovery file, 6. static
@@ -689,6 +816,7 @@ await signerArgs(config);
 await replayNear(config);
 await replayAgent(config);
 await replayMutinynet(config);
+await replayLaterRuns(config);
 recoveryDryRun();
 staticChecks();
 console.log(`\nTIER A: ${tally.PASS} PASS, ${tally.SKIP} SKIP, ${tally.FAIL} FAIL${tally.INFO ? `, ${tally.INFO} INFO` : ''} in ${Math.round((Date.now() - started) / 1000)} s${config.placeholder ? '. The deployed-contract lines are SKIP because the config is a placeholder' : ''}`);

@@ -1,0 +1,78 @@
+{
+  "schema": "undo-s2-refusal-v1",
+  "chip": "signet test coins",
+  "bitcoin_chain": "Mutinynet (a signet)",
+  "near_chain": "NEAR testnet, read only",
+  "attempt": "A straight Bitcoin spend of the whole coin with the spend key alone: K_u's real signature, and nothing where K_m's goes.",
+  "node_answer": {
+    "endpoint": "POST https://mutinynet.com/api/tx",
+    "http_status": 400,
+    "text_verbatim": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), input 0 of bb6aa18fe3965427e53be2b4156f792d4228be4437229a74ef0279350965ba11 (wtxid 6ede0be72a8f0640936bf6ab306f986d25cef6a81daf563e18a9b2814c45025c), spending b1323e79d749ef0e0a81efb8d4097ea26a180a0e54667b8b14ff1e51399a5a7d:0\"}",
+    "at_utc": "2026-11-11T21:03:16.346Z",
+    "origin": "No browser and no page. A Node script sent it, and set no Origin header",
+    "kind": "rejected",
+    "refusal": "script",
+    "false_top_stack": true,
+    "names_op_checksigverify": false,
+    "names_this_tx": true,
+    "names_this_coin": true,
+    "answers_with_no_information_before_it": 0
+  },
+  "funding_coin": {
+    "mutinynet_txid": "b1323e79d749ef0e0a81efb8d4097ea26a180a0e54667b8b14ff1e51399a5a7d",
+    "vout": 0,
+    "value_sats": 10000,
+    "height": 3582237,
+    "block": "000002b940eb8895dca6353f21bbd6d9c23cc4f41ae7eccf2fbb776e55303ab9",
+    "fee_paid_sats": 306,
+    "vault_address": "tb1q9w9plr8t6l46ssypxdpakl87enrmsvt0ptrcwxu6fyxtxgzsn2xq3crdac"
+  },
+  "refused_tx": {
+    "mutinynet_txid_it_would_have_had": "bb6aa18fe3965427e53be2b4156f792d4228be4437229a74ef0279350965ba11",
+    "sha256_of_raw_bytes": "bc47b753928e06cfe272fbcaa105f1d0b7b916ad425cf666f783137278f37a1e",
+    "sha256_of_raw_hex_text": "efe45cee0461e5345c9b384007fd7dfdc3c78cf0dc37ab1bac06183972a52fa9",
+    "raw_hex": "020000000001017d5a9a39511eff148b7b66540e0a186aa27e09d4b8ef810a0eef49d7793e32b10000000000fdffffff01e825000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b0400483045022100b2ce2dc8857b49c3c337b0684d5c4bba53951cf02577065744236a62be9ec901022022820b477e38c7c99cb456c31ee7036c794c62e90bb51f3749728928de0fa88d0101016f6321037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9cad21029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471ac6756b2752102f3cdabf2acb1ce96f404c0133153141175a588bf7c4fa8bf3b6906708ef39d35ac6800000000",
+    "pays_to": "tb1q4f47gs3txkl0q2elcaccn8kfkx8jjxym4vqx9z",
+    "amount_sats": 9704,
+    "fee_it_offered_sats": 296,
+    "witness": [
+      "empty, where K_m goes",
+      "K_u, verified here before the POST",
+      "01, the co-signed branch",
+      "the vault script"
+    ],
+    "consensus_before_post": "libbitcoinconsensus refused it before the POST",
+    "sats_moved": 0
+  },
+  "vault": {
+    "near_testnet_contract": "v1.s.undo-btc.testnet",
+    "near_testnet_code_hash": "4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1",
+    "id": "c70cdc607801f05a9ce65909debfbf9f9ef8734ab950acf79ba647cb9081328e",
+    "csv_blocks": 6,
+    "k_m": "029143c4d916d0f56779933c8dc028a78d58a2c2100920b8a8309367118fe07471",
+    "k_u": "037dfa6f521c1fd2e356c7ec3618ef29b99f9c770a288be3e7f4387c6ebd7a5c9c",
+    "signer": "v1.signer-prod.testnet",
+    "note": "The vault of the tools/g2.mjs run on v1.s.undo-btc.testnet. The contract row and the signer's derived key were read before funding and both matched"
+  },
+  "after": {
+    "read_at_utc": "2026-11-11T21:03:18.075Z",
+    "tip": 3582237,
+    "outspend_answer": {
+      "spent": false
+    },
+    "in_address_utxo_list": true,
+    "refused_tx_known_to_the_api": false,
+    "coin_still_unspent": true
+  },
+  "coin_return": {
+    "path": "escape, signed by the cold key",
+    "mutinynet_txid": "0ceb7016fae8d2a432641765036f3b83f909531757b4975d789ad7f8772a243b",
+    "fee_sats": 260,
+    "amount_sats": 9740,
+    "to": "tb1q4f47gs3txkl0q2elcaccn8kfkx8jjxym4vqx9z",
+    "height": 3582243,
+    "block": "000002f0e6816551122e6e03f46f8363074563b5c18314af54856ff114c1bc2f",
+    "coin_spent_by": "0ceb7016fae8d2a432641765036f3b83f909531757b4975d789ad7f8772a243b",
+    "left_at_address_sats": 0
+  }
+}

@@ -73,10 +73,11 @@ if [ "${#extra[@]}" -gt 0 ]; then
   "$HERE/secret-scan.sh" --files "${extra[@]}"; worst $?
 fi
 
-# A rehearsal's result must never pass for a real one.
-if [ -f "$REPO/proofs/g2.json" ]; then
-  node "$REPO/tools/test/check-g2-proof.mjs" "$REPO/proofs/g2.json" || worst 1
-fi
+# A rehearsal's result must never pass for a real one, in the first run's record or in a named run's.
+for f in "$REPO"/proofs/g2.json "$REPO"/proofs/g2-*.json; do
+  [ -f "$f" ] || continue
+  node "$REPO/tools/test/check-g2-proof.mjs" "$f" || worst 1
+done
 if grep -rlq 'rehearsal-regtest-mock-signer' "$REPO/proofs" 2>/dev/null; then
   echo "OUTWARD FAIL: a rehearsal's proof is in proofs/"
   worst 1

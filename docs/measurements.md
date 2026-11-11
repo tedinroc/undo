@@ -64,6 +64,8 @@ Then, with no contract file changed and the same wasm `358c63bf…`, 2026-11-11 
 
 Then, the same day and on the same wasm: `./verify.sh A` compares the key that signed each of those twelve with the record (the agent's function-call key on its three, the full-access key the record names on seven, and on the relay's two any key but the agent's), held by a new `tools/test/judge-floor.test.mjs` case that fails on the earlier `tier-a.mjs` (21 of 21 with it); `agent/test/run-sandbox.sh 86 88` ran again, 53 of 53 on each, in 29 s.
 
+Then, 2026-11-11 UTC, with no contract file changed and on the same wasm `358c63bf…`, as it runs at `v1.s.undo-btc.testnet`: `tools/g2.mjs --live --run v1` ran a co-signed spend and a cold-key escape with Mutinynet test coins (18 min 13 s, record `proofs/g2-v1.json`), and `tools/s2-refusal.mjs` the spend key alone on that run's vault (3 min 45 s, record `proofs/s2-refusal-v1.json`); the steps are under Live on Mutinynet, on the final build, below. `g2.mjs` gained `--run NAME` and refuses a run that would write over another contract's record, `s2-refusal.mjs` refuses a capture file of another vault, `scripts/outward-check.sh` reads every `proofs/g2-*.json`, and `./verify.sh A` gained the lines that fetch that run again: its execute and its proposal, the contract's code hash at the block of the execute, and its Mutinynet transactions. On that tree: `./verify.sh A` 60 PASS, 0 SKIP, 1 FAIL (C11), 3 INFO, in 53 s, and again in 51 s started under 4 minutes after the first, with the same lines and no SKIP (74 s on this tree's first run, which also built `recovery-dry-run`); `./verify.sh B` TIER B PASS in 38 s; `tools/test/judge-floor.test.mjs` 27 of 27, 6 of them new, with what the archival RPC and the signer's view answered about that run served from `tools/test/fixtures/g2-v1-archival.json`; `tools/test/g2-units.test.mjs` 30 of 30, 5 new; `tools/test/run-all.sh` with the sandbox and mutants TOOLS OK in 48 min: its tools mutants 119 of 119 killed (5 of them new), the relay mutants with the stage 180 of 180, the G1 driver and the agent CLI on protocols 86 and 88 (53 of 53 on each), the G2 rehearsal 40 scenarios, the watcher on a local node 15 of 15. The two refusals' tests fail on the earlier `g2.mjs` and `s2-refusal.mjs`, and the new tier A and outward-gate tests on the earlier `tier-a.mjs` and `outward-check.sh`. `site/test` and `tools/test/film-e2e.mjs` were not run again: no file they run changed.
+
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |
@@ -228,7 +230,7 @@ Tried values were 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1 and 2 NEAR. These are san
 
 ## Live on the testnet signer (2026-10-31 UTC)
 
-This section and the next ran on the G1/G2 build, `4eafca45…`. The contract has changed since, and nothing below has been repeated on it. `tools/g1.mjs --live` against `v1.signer-prod.testnet` 3.18.0 on protocol 88. Proof: `proofs/g1.json`. Coins were made up: `execute` does not read Bitcoin, so nothing here moved a coin. `K_p` was a software authenticator.
+This section and the next ran on the G1/G2 build, `4eafca45…`. The contract has changed since. Nothing in this section has been repeated on the final build; the next section's run was, once, on 2026-11-11: see Live on Mutinynet, on the final build, below. `tools/g1.mjs --live` against `v1.signer-prod.testnet` 3.18.0 on protocol 88. Proof: `proofs/g1.json`. Coins were made up: `execute` does not read Bitcoin, so nothing here moved a coin. `K_p` was a software authenticator.
 
 | Stage | Result |
 |---|---|
@@ -270,3 +272,27 @@ What this taught the tools:
 - A mutation score means nothing until the tests pass on an unbroken copy. `tools/test/mutants.mjs` read every mutant as killed because a scratch copy with no `proofs/` failed one test. With a control, 4 real survivors appeared.
 - Esplora answers every node refusal with a 400, and also uses 400 for a busy node. Only a script refusal of a correctly built spend is G2's kill line.
 - On Mutinynet, `/tx/<unknown>/status` answers 200 `{"confirmed":false}` and `/tx/<unknown>/outspend/0` answers 200 `{"spent":false}`. Only `/tx/<unknown>` gives a 404, so a lost transaction has to be looked for there.
+
+## Live on Mutinynet, on the final build (2026-11-11 UTC)
+
+`tools/g2.mjs --live --run v1 --contract v1.s.undo-btc.testnet --relay s.undo-btc.testnet`: the run of the section above, once more, on the final build `358c63bf…` as `scripts/go-live` deployed it (code hash `4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1`), with the same signer, `v1.signer-prod.testnet` 3.18.0 on protocol 88. Nothing was deployed for it. Proof: `proofs/g2-v1.json`; the first run's `proofs/g2.json` was not touched. CSV 6 blocks, coins of 20,000 sats, 2 sat/vB, from the same dispenser key. Every NEAR transaction came from `s.undo-btc.testnet`. Then `tools/s2-refusal.mjs --vault-dir private/g2-v1 --capture proofs/s2-refusal-v1.json --live`, the spend key alone on that vault.
+
+| Step | Result |
+|---|---|
+| Vault | `c70cdc60…`, made with a 0.05 NEAR deposit and no guard, and read active |
+| Proposal | Request 0, tier New, unlock 10:00 after the block it ran in (no guard, so `T_new_unguarded`). 3.60 Tgas in all, 3.04 of it the contract's |
+| Execute | Ran in a block 11 s after the unlock. 70 Tgas prepaid, 30 attached to `sign`; 16.04 Tgas burnt in all: `execute` 3.34, the signer 4.65 and 3.77, `on_signed` 3.08. Signer answered in 5.8 s. Its S was low again |
+| Co-signed spend | `8081f059…`, 148 vB, 296 sats, mined at 3582225. The contract's `final_tx` and the bytes built here from the two raw signatures were the same. Strict DER and low S on both signatures |
+| Same spend without K_u's signature | Refused by the node: `mempool-script-verify-flag-failed (Script failed an OP_CHECKSIGVERIFY operation)` |
+| Escape at 1 of 6 confirmations | Refused: `non-BIP68-final` |
+| Escape signed for nSequence 5, on the mature coin | Refused by the node: `mempool-script-verify-flag-failed (Locktime requirement not satisfied)` |
+| Escape, same bytes as the early try | `ca68df62…`, built by `tools/escape.mjs` from the recovery file and one Esplora entry, 130 vB, 260 sats, mined at 3582232, 6 blocks after the coin |
+| The spend key alone, on a third coin of 10,000 sats | Refused by the node: `mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element)`. The coin read unspent, and went back by the escape in `0ceb7016…`, mined at 3582243 |
+| Real POST from a browser page | Not made in this run: the proof says `gate_complete: false`. The preflight read as before (`allow-origin *`) |
+
+Cost: 1,168 sats of fees for the two coins, as planned, and 566 for the third; 1,734 in all. Nothing is left in the vault, and everything else went back to the dispenser's address. The Esplora relay gave 3 answers with no information (a 5xx, a 429 or a dropped connection), each asked again. `g2.mjs` took 18 min 13 s, 10 of them the unlock; `s2-refusal.mjs` 3 min 45 s.
+
+What this taught the tools:
+
+- A second live run must not land on the first one's record. `g2.mjs` wrote to `proofs/g2.json` whatever contract it ran on; it now refuses a run that would write over another contract's record, before any request, and `--run NAME` gives such a run `proofs/g2-NAME.json` and `private/g2-NAME`. `s2-refusal.mjs` refuses a `--capture` file that records another vault.
+- `scripts/outward-check.sh` ran the proof checker on `proofs/g2.json` alone. It now reads every `proofs/g2-*.json` too.
