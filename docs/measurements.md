@@ -62,6 +62,8 @@ Then, with no contract file changed and the same wasm `358c63bf…`, 2026-11-08 
 
 Then, with no contract file changed and the same wasm `358c63bf…`, 2026-11-11 UTC: the agent CLI ran once on NEAR testnet against `v1.s.undo-btc.testnet` (`agent/test/testnet-c14.mjs --live`, 4 min 36 s, one vault and one test coin from the relay; record `proofs/c14-agent.json`), and `./verify.sh A` gained the lines that fetch that run's twelve transactions again, three at a time. On that tree: `./verify.sh A` 49 PASS, 0 SKIP, 1 FAIL (C11), 2 INFO, in 43 s with the referee built (60 s with those twelve fetched one at a time), four runs within 25 minutes and no SKIP; `tools/test/judge-floor.test.mjs` 20 of 20, 4 of them new, with the archival RPC's answers for those transactions served from `tools/test/fixtures/c14-archival.json`; `agent/test/offline.test.mjs` 15 of 15, 1 new. `agent/test/run-sandbox.sh` was not run again: no file it runs changed.
 
+Then, the same day and on the same wasm: `./verify.sh A` compares the key that signed each of those twelve with the record (the agent's function-call key on its three, the full-access key the record names on seven, and on the relay's two any key but the agent's), held by a new `tools/test/judge-floor.test.mjs` case that fails on the earlier `tier-a.mjs` (21 of 21 with it); `agent/test/run-sandbox.sh 86 88` ran again, 53 of 53 on each, in 29 s.
+
 ## Size
 
 | Thing | Bytes | NEAR at 1e19 yocto per byte |

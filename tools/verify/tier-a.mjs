@@ -386,7 +386,9 @@ const logsIn = (tx, executor) => (tx.receipts_outcome ?? []).filter((r) => r.out
 
 /**
  * proofs/c14-agent.json against the chain. Every line fetches one recorded transaction again and reads
- * what the chain says of it: who signed, with which key, which method, and how it ended.
+ * what the chain says of it: who signed, with which key, which method, and how it ended. The key is the
+ * agent's function-call key on the agent's three, the full-access key the record names on the AddKey and on
+ * the six calls relayed for the agent, and on the relay's two any key but the agent's.
  */
 async function replayAgent(config) {
   const c14 = proof('c14-agent.json');
@@ -396,6 +398,7 @@ async function replayAgent(config) {
   const contract = c14.contract.account;
   const agent = c14.agent.account;
   const key = c14.agent.function_call_key.public_key;
+  const fullKey = c14.agent.full_access_key;
   const vault = c14.vault.id;
   const relay = c14.relay.account;
   const fetchTx = (hash, sender) => rpc(archival, 'tx', { tx_hash: hash, sender_account_id: sender, wait_until: 'NONE' });
@@ -423,6 +426,14 @@ async function replayAgent(config) {
     if (!out.failure.includes(needle)) throw new Error(`NEAR testnet tx ${hash}: refused, but not with "${needle}": ${said(out.failure)}`);
     return said(out.failure);
   };
+  /** The full-access key the record names: it added the agent's key, and it sent what the agent could only sign. */
+  const byFullKey = (signedBy, hash) => {
+    if (signedBy !== fullKey) throw new Error(`NEAR testnet tx ${hash}: signed by ${signedBy}, not the full-access key proofs/c14-agent.json records`);
+  };
+  /** What the relay sent for the owner: the relay's key is not in the record, so the check is that it is not the agent's. */
+  const notByAgentKey = (signedBy, hash) => {
+    if (signedBy === key) throw new Error(`NEAR testnet tx ${hash}: signed by the agent's function-call key`);
+  };
 
   const add = c14.agent.function_call_key.add_key_tx;
   const propose = c14.propose;
@@ -437,6 +448,7 @@ async function replayAgent(config) {
       if (!outcomeOf(tx).ok) throw new Error(`NEAR testnet tx ${add}: it did not succeed`);
       if (added.public_key !== key) throw new Error(`NEAR testnet tx ${add}: it added ${added.public_key}, not the agent's key ${key}`);
       if (t.public_key === key) throw new Error(`NEAR testnet tx ${add}: signed by the agent's own key`);
+      byFullKey(t.public_key, add);
       const perm = added.access_key?.permission?.FunctionCall;
       if (!perm) throw new Error(`NEAR testnet tx ${add}: the key it added is not a function-call key (${JSON.stringify(added.access_key?.permission)})`);
       const methods = perm.method_names ?? [];
@@ -444,7 +456,7 @@ async function replayAgent(config) {
       if (methods.length === 0) throw new Error(`NEAR testnet tx ${add}: the key lists no method, which NEAR reads as every method`);
       const extra = methods.filter((m) => !AGENT_KEY_METHODS.includes(m));
       if (extra.length) throw new Error(`NEAR testnet tx ${add}: the key may also call ${extra.join(', ')}`);
-      return `NEAR testnet tx ${add}: ${agent} was given ${key} as a function-call key for ${contract}, methods ${methods.join(' and ')} only. NEAR refuses a transaction that key signs for any other method or account, or with a deposit, before a contract runs`;
+      return `NEAR testnet tx ${add}: ${agent} was given ${key} as a function-call key for ${contract}, methods ${methods.join(' and ')} only, signed by the full-access key the record names. NEAR refuses a transaction the agent's key signs for any other method or account, or with a deposit, before a contract runs`;
     }],
     [`the agent's propose_btc ${propose.tx}`, async () => {
       const out = await callTo(propose.tx, agent, 'propose_btc');
@@ -462,21 +474,24 @@ async function replayAgent(config) {
     }],
     ...c14.contract_refusals.attempts.map((r) => [`${r.method} ${r.tx}`, async () => {
       const out = await callTo(r.tx, r.sent_by, r.method);
+      byFullKey(out.signedBy, r.tx);
       const words = refusedWith(out, r.tx, r.needle);
-      return `NEAR testnet tx ${r.tx}: ${r.what}, sent by the full-access account ${r.sent_by}. The contract refused it: ${words}`;
+      return `NEAR testnet tx ${r.tx}: ${r.what}, sent by the full-access account ${r.sent_by} with the full-access key the record names. The contract refused it: ${words}`;
     }]),
     [`the owner's cancel ${cancel.tx}`, async () => {
       const out = await callTo(cancel.tx, relay, 'cancel');
+      notByAgentKey(out.signedBy, cancel.tx);
       if (out.call.args.request !== propose.request || !out.call.args.auth?.Passkey) throw new Error(`NEAR testnet tx ${cancel.tx}: not a passkey cancel of request ${propose.request}`);
       const want = `undo:cancelled request=${propose.request}`;
       if (!out.ok || !logsIn(out.tx, contract).includes(want)) throw new Error(`NEAR testnet tx ${cancel.tx}: no log "${want}" from ${contract}`);
-      return `NEAR testnet tx ${cancel.tx}: the owner's passkey cancel of request ${propose.request}, sent by the relay ${relay}, log "${want}". The passkey was a software authenticator`;
+      return `NEAR testnet tx ${cancel.tx}: the owner's passkey cancel of request ${propose.request}, sent by the relay ${relay} with a key that is not the agent's, log "${want}". The passkey was a software authenticator`;
     }],
     [`the owner's rotation ${rot.owner_rotate.tx}`, async () => {
       const out = await callTo(rot.owner_rotate.tx, relay, 'cancel_all_and_rotate');
+      notByAgentKey(out.signedBy, rot.owner_rotate.tx);
       const want = `undo:rotating grant=${rot.owner_rotate.grant}`;
       if (!out.ok || !logsIn(out.tx, contract).includes(want)) throw new Error(`NEAR testnet tx ${rot.owner_rotate.tx}: no log "${want}" from ${contract}`);
-      return `NEAR testnet tx ${rot.owner_rotate.tx}: the owner's passkey cancel_all_and_rotate, sent by the relay ${relay}, log "${want}". The passkey was a software authenticator`;
+      return `NEAR testnet tx ${rot.owner_rotate.tx}: the owner's passkey cancel_all_and_rotate, sent by the relay ${relay} with a key that is not the agent's, log "${want}". The passkey was a software authenticator`;
     }],
     [`the agent's propose_btc after the rotation ${rot.after_rotation.direct_tx}`, async () => {
       const out = await callTo(rot.after_rotation.direct_tx, agent, 'propose_btc');

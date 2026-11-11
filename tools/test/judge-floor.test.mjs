@@ -363,6 +363,56 @@ test('tier A, C14: a wider key, another signer, a call the contract took, other 
   }
 });
 
+test('tier A, C14: each of the twelve is read for the key that signed it; another key than the record says fails its line', { timeout: 300_000 }, async () => {
+  const p = c14;
+  const agentKey = p.agent.function_call_key.public_key;
+  const relayKey = c14Chain.tx[p.owner_cancel.tx].transaction.public_key;
+  const attempt = (what) => p.contract_refusals.attempts.find((a) => a.what.startsWith(what));
+  // As recorded: three by the agent's function-call key, seven by the full-access key, two by a key of the relay's.
+  const by = (key) => Object.values(c14Chain.tx).filter((t) => t.transaction.public_key === key).length;
+  assert.deepEqual([by(agentKey), by(p.agent.full_access_key), by(relayKey)], [3, 7, 2]);
+  assert.equal(new Set([agentKey, p.agent.full_access_key, relayKey]).size, 3);
+  const runs = [
+    // A key of the relay's, which is neither the agent's nor the full-access key, on the AddKey and on a relayed call.
+    [(chain) => {
+      chain.tx[p.agent.function_call_key.add_key_tx].transaction.public_key = relayKey;
+      chain.tx[attempt('set_policy').tx].transaction.public_key = relayKey;
+    }, [
+      [p.agent.function_call_key.add_key_tx, new RegExp(`signed by ${relayKey}, not the full-access key proofs/c14-agent\\.json records$`)],
+      [attempt('set_policy').tx, new RegExp(`signed by ${relayKey}, not the full-access key proofs/c14-agent\\.json records$`)],
+    ]],
+    // The agent's own key on what the relay sent for the owner, and on a call the full-access account relayed.
+    [(chain) => {
+      chain.tx[p.owner_cancel.tx].transaction.public_key = agentKey;
+      chain.tx[p.rotation.owner_rotate.tx].transaction.public_key = agentKey;
+      chain.tx[attempt('clear_hold').tx].transaction.public_key = agentKey;
+    }, [
+      [p.owner_cancel.tx, /signed by the agent's function-call key$/],
+      [p.rotation.owner_rotate.tx, /signed by the agent's function-call key$/],
+      [attempt('clear_hold').tx, new RegExp(`signed by ${agentKey}, not the full-access key proofs/c14-agent\\.json records$`)],
+    ]],
+  ];
+  for (const [change, wants] of runs) {
+    const node = await archival(change);
+    try {
+      const r = await tierA({ esploraUrl: `${DEAD}/api`, archivalUrl: node.url });
+      const lines = c14Lines(r);
+      assert.equal(r.code, 1, r.out);
+      for (const [hash, want] of wants) {
+        const failed = lines.filter((l) => l.startsWith(`FAIL C14 [replay] NEAR testnet tx ${hash}: `));
+        assert.equal(failed.length, 1, `${hash}\n${r.out}`);
+        assert.match(failed[0], want);
+        assert.equal(lines.some((l) => l.startsWith('PASS') && l.includes(hash)), false, `${hash} must not also pass`);
+      }
+      assert.equal(lines.filter((l) => l.startsWith('FAIL')).length, wants.length, r.out);
+      assert.equal(lines.filter((l) => l.startsWith('PASS')).length, Object.keys(c14Chain.tx).length - wants.length, r.out);
+      everyLineHasAClaim(r.lines);
+    } finally {
+      node.close();
+    }
+  }
+});
+
 test('tier A, C14: an archival node that stops answering part way gives SKIP (network) for that line and counts the rest, never PASS or FAIL', { timeout: 150_000 }, async () => {
   const gone = c14.contract_refusals.attempts[1].tx;
   const node = await archival((chain) => { delete chain.tx[gone]; });
