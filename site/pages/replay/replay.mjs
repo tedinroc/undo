@@ -25,12 +25,14 @@ function line(l) {
   }
   // A node's words, untouched.
   if (l.kind === 'node') return h('div', { class: 'node' }, h('div', { class: 'node-label' }, `${l.chain} node:`), h('div', { class: 'node-text' }, l.text));
+  // A pointer to another list on this site, never a hash of its own.
+  if (l.kind === 'link') return h('p', { class: 'line' }, h('a', { class: 'link', href: l.href }, l.text));
   return h('p', { class: 'line' }, l.text);
 }
 
 function stepCard(step, n, run) {
   const recorded = step.recorded !== false;
-  const when = recorded ? `replay · earlier run · ${run.runs[step.run].date} UTC${step.at ? ` ${step.at.slice(11, 19)}` : ''}` : 'not recorded yet';
+  const when = recorded ? `replay · earlier run · ${run.runs[step.run].date} UTC${step.at ? ` ${step.at.slice(11, 19)}` : ''}` : 'not in these runs';
   const card = h('li', { class: 'step', id: `step-${step.id}`, 'data-step': step.id, 'data-recorded': String(recorded) },
     h('div', { class: 'step-head' }, h('span', {}, `Step ${n} of ${run.steps.length}`), h('span', { class: 'when' }, when)),
     h('h2', { class: 'step-title' }, step.title),

@@ -106,7 +106,16 @@
       "lines": [
         {
           "kind": "text",
-          "text": "Not in this recording yet: no cancel on NEAR testnet is recorded here. This step stays empty until one is."
+          "text": "Not in these earlier runs: neither run replayed here holds a cancel, so this step has no hash of its own."
+        },
+        {
+          "kind": "text",
+          "text": "A cancel on NEAR testnet is recorded in the film's take of 2026-11-11, on another test vault: the phone page's Cancel (cancel_all_and_rotate) stopped a request the thief tab had made, and the coin did not move. Chrome's virtual authenticator stood in for a phone's passkey there; from a real phone that path has not yet run."
+        },
+        {
+          "kind": "link",
+          "href": "/#from-film",
+          "text": "Its hashes are on the landing page, under \"From the film:\""
         }
       ]
     },
@@ -162,6 +171,47 @@
       "film": true
     }
   ],
+  "film": {
+    "date": "2026-11-11",
+    "note": "Chrome's virtual authenticator stood in for a phone's passkey",
+    "hashes": [
+      {
+        "kind": "hash",
+        "chain": "Mutinynet",
+        "type": "address",
+        "hash": "tb1q6k53g2t69l0r8hrgqlf5am3ct2685zx0qmv9vuuxnkshmepfv99qmlk5az",
+        "what": "the film's test vault"
+      },
+      {
+        "kind": "hash",
+        "chain": "Mutinynet",
+        "type": "txid",
+        "hash": "864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd",
+        "what": "its coin: 2,000 sats, unspent when read again on 2026-11-11"
+      },
+      {
+        "kind": "hash",
+        "chain": "NEAR testnet",
+        "type": "tx",
+        "hash": "FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq",
+        "what": "the thief's request, made to wait 5:00"
+      },
+      {
+        "kind": "hash",
+        "chain": "NEAR testnet",
+        "type": "tx",
+        "hash": "HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL",
+        "what": "the phone page's cancel"
+      },
+      {
+        "kind": "hash",
+        "chain": "NEAR testnet",
+        "type": "tx",
+        "hash": "DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f",
+        "what": "after the wait, an execute of that request: refused by the contract"
+      }
+    ]
+  },
   "earlier": [
     {
       "kind": "hash",

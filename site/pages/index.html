@@ -11,15 +11,16 @@
 <meta property="og:title" content="Undo for Bitcoin">
 <meta property="og:description" content="A cancel button for Bitcoin. NEAR can refuse; it can't take. Signet test coins only.">
 <meta property="og:url" content="https://undo-btc.pages.dev/">
-<meta property="og:image" content="https://undo-btc.pages.dev/film/poster.png">
+<meta property="og:image" content="https://undo-btc.pages.dev/film/card.png">
 <meta property="og:image:type" content="image/png">
-<meta property="og:image:width" content="1080">
-<meta property="og:image:height" content="1350">
-<meta property="og:image:alt" content="An undo arrow on a dark ground.">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The film's headline, large type on black: Your Bitcoin key was just stolen. Under it: Undo for Bitcoin, a cancel button for Bitcoin.">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Undo for Bitcoin">
 <meta name="twitter:description" content="A cancel button for Bitcoin. NEAR can refuse; it can't take. Signet test coins only.">
-<meta name="twitter:image" content="https://undo-btc.pages.dev/film/poster.png">
+<meta name="twitter:image" content="https://undo-btc.pages.dev/film/card.png">
+<meta name="twitter:image:alt" content="The film's headline, large type on black: Your Bitcoin key was just stolen. Under it: Undo for Bitcoin, a cancel button for Bitcoin.">
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/_shell.css">
 <link rel="stylesheet" href="/landing/landing.css">
@@ -34,7 +35,7 @@
 <main id="landing">
   <section class="first">
     <figure id="film-slot" class="film" data-film="poster">
-      <video id="film" class="film-video" muted playsinline autoplay loop preload="metadata" poster="/film/poster.png" aria-label="An undo arrow, in place of the film, which is not published yet.">
+      <video id="film" class="film-video" muted playsinline autoplay loop controls preload="metadata" poster="/film/poster.png" aria-label="The film, about a minute: a thief sends everything with a stolen key, Bitcoin refuses, a NEAR contract makes the spend wait in public, and the phone page cancels. It starts muted, and every spoken line is also on screen.">
         <source id="film-source" src="/film/undo-for-bitcoin.mp4" type="video/mp4">
       </video>
     </figure>
@@ -48,7 +49,17 @@
     </div>
   </section>
 
-  <section class="below" aria-labelledby="from-runs">
+  <section class="below" aria-labelledby="from-film">
+    <h2 id="from-film" class="h2">From the film:</h2>
+    <ul class="hashes">
+      <li><a class="hash" href="https://mutinynet.com/address/tb1q6k53g2t69l0r8hrgqlf5am3ct2685zx0qmv9vuuxnkshmepfv99qmlk5az"><span class="chain">Mutinynet address</span> <span class="mono h">tb1q6k53g2t69l0r8hrgqlf5am3ct2685zx0qmv9vuuxnkshmepfv99qmlk5az</span></a><span class="what">the film's test vault · the film's take, 2026-11-11</span></li>
+      <li><a class="hash" href="https://mutinynet.com/tx/864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd"><span class="chain">Mutinynet txid</span> <span class="mono h">864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd</span></a><span class="what">its coin: 2,000 sats, unspent when read again on 2026-11-11 · the film's take, 2026-11-11</span></li>
+      <li><a class="hash" href="https://testnet.nearblocks.io/txns/FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq"><span class="chain">NEAR testnet tx</span> <span class="mono h">FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq</span></a><span class="what">the thief's request, made to wait 5:00 · the film's take, 2026-11-11</span></li>
+      <li><a class="hash" href="https://testnet.nearblocks.io/txns/HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL"><span class="chain">NEAR testnet tx</span> <span class="mono h">HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL</span></a><span class="what">the phone page's cancel · the film's take, 2026-11-11</span></li>
+      <li><a class="hash" href="https://testnet.nearblocks.io/txns/DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f"><span class="chain">NEAR testnet tx</span> <span class="mono h">DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f</span></a><span class="what">after the wait, an execute of that request: refused by the contract · the film's take, 2026-11-11</span></li>
+    </ul>
+    <p id="film-note" class="small">The film is cut from one take of these pages, 2026-11-11, on NEAR testnet and Mutinynet. Chrome's virtual authenticator stood in for a phone's passkey: from a real phone that path has not yet run. Where the recording was cut for time, the film says so on that shot. The narration is a synthetic voice (AI text-to-speech).</p>
+
     <h2 id="from-runs" class="h2">From earlier runs:</h2>
     <ul class="hashes">
       <li><a class="hash" href="https://mutinynet.com/address/tb1qkaq3lndkl5a88k9w5zsmj4ucjl7ddqezyfhp0m09q34zz4f5t5ms680mmz"><span class="chain">Mutinynet address</span> <span class="mono h">tb1qkaq3lndkl5a88k9w5zsmj4ucjl7ddqezyfhp0m09q34zz4f5t5ms680mmz</span></a><span class="what">the test vault · earlier run</span></li>

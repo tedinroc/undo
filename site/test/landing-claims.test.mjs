@@ -1,9 +1,11 @@
-// What the landing page and the replay may claim, from the attack on them: no film is named before one is
-// published, a step from another run says so in its title, and the status line prints the RPC's refusal instead of a
-// Python traceback. Offline: python3 runs the status line's decoder on recorded answer shapes.
+// What the landing page and the replay may claim, from the attack on them: the film it shows is the file its own
+// capture record names, and the page lists that take's hashes and says what the take was; a step from another run says
+// so in its title, and the status line prints the RPC's refusal instead of a Python traceback. Offline: python3 runs
+// the status line's decoder on recorded answer shapes.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -16,14 +18,44 @@ const landingJs = readFileSync(join(PAGES, 'landing', 'landing.mjs'), 'utf8');
 const run = buildRun();
 const unescape = (html) => html.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 
-test('with no film published, the landing page names no film: no "From the film" list, and the slot\'s label says so', () => {
-  assert.equal(existsSync(join(PAGES, 'film', 'undo-for-bitcoin.mp4')), false, 'a film file is here: replace this test with one that checks the film\'s own capture record');
-  assert.doesNotMatch(landing, /From the film/i);
-  assert.doesNotMatch(landing, /aria-label="The film/);
-  assert.match(landing, /<video id="film"[^>]*aria-label="[^"]*not published yet[^"]*"/);
-  assert.equal('film' in run, false, 'run.json has no list named for a film');
-  assert.ok(Array.isArray(run.earlier) && run.earlier.length > 0);
-  assert.match(landingJs, /addEventListener\('playing'[\s\S]*?setAttribute\('aria-label'/, 'once a film plays, the not-published label is replaced');
+test('the film is published with its own capture record: the file that record names, a "From the film" list that is the record\'s, and a label and a note that say what it is', () => {
+  const take = JSON.parse(readFileSync(join(REPO, 'proofs', 'film-take.json'), 'utf8'));
+  const film = readFileSync(join(PAGES, 'film', 'undo-for-bitcoin.mp4'));
+  assert.equal(take.film.file, 'site/pages/film/undo-for-bitcoin.mp4');
+  assert.equal(createHash('sha256').update(film).digest('hex'), take.film.sha256, 'proofs/film-take.json names another cut: after a new cut, write its sha256 and its length there');
+  assert.ok(take.film.seconds >= 60 && take.film.seconds <= 75);
+  // What the take was, said the same way everywhere: test networks, Chrome's virtual authenticator, a synthetic voice.
+  assert.deepEqual(take.labels, ['live-testnet', 'live-mutinynet', 'virtual authenticator']);
+  assert.match(take.what, /virtual authenticator, not a phone's/);
+  assert.match(take.film.narration, /synthetic voice/);
+  // The record holds no key: every 64-hex string in it is the vault id, the film's hash, or a Bitcoin txid it names.
+  const named = new Set([take.vault.id, take.film.sha256, take.coin.mutinynet_txid, ...take.thief.node_answer_verbatim.match(/\b[0-9a-f]{64}\b/g)]);
+  for (const h of JSON.stringify(take).match(/\b[0-9a-f]{64}\b/g)) assert.ok(named.has(h), `an unnamed 32-byte hex string in the record: ${h.slice(0, 8)}…`);
+  assert.doesNotMatch(JSON.stringify(take), /"[^"]*(seed|secret|private|spend_key)[^"]*":/i);
+  assert.ok(take.thief.node_answer_verbatim.includes(take.coin.mutinynet_txid), 'the node refused a spend of the film\'s coin');
+  assert.equal(take.thief.unlock_ms - take.thief.proposed_at_ms, take.thief.wait_ms);
+  // The landing page's list is the record's, in the film's order, and nothing else on the page is named for the film.
+  assert.deepEqual(run.film.hashes.map((l) => l.hash), [take.vault.address, take.coin.mutinynet_txid, take.thief.propose_tx, take.cancel.tx, take.after.execute_after_the_wait_tx]);
+  assert.equal(run.film.date, take.started_utc.slice(0, 10));
+  assert.equal(landing.match(/From the film/g).length, 1);
+  assert.match(landing, /<h2 id="from-film" class="h2">From the film:<\/h2>/);
+  const note = /<p id="film-note" class="small">([^<]+)<\/p>/.exec(landing)[1];
+  assert.ok(note.includes(`one take of these pages, ${run.film.date}, on NEAR testnet and Mutinynet`));
+  assert.ok(note.includes(run.film.note), 'the note says a virtual authenticator stood in for the phone');
+  assert.match(note, /from a real phone that path has not yet run/);
+  assert.match(note, /Where the recording was cut for time, the film says so on that shot\./);
+  assert.match(note, /The narration is a synthetic voice \(AI text-to-speech\)\./);
+  // The slot's label says what plays, and that it starts muted with its words on screen; no script has to correct it.
+  assert.match(landing, /<video id="film"[^>]*aria-label="The film, about a minute: [^"]*It starts muted, and every spoken line is also on screen\."/);
+  assert.doesNotMatch(landing, /not published yet/);
+  assert.doesNotMatch(landingJs, /setAttribute\('aria-label'/);
+  assert.match(landing, /<meta property="og:image:alt" content="The film's headline, large type on black: Your Bitcoin key was just stolen\. Under it: Undo for Bitcoin, a cancel button for Bitcoin\.">/);
+  // The README says the same of the voice, next to the line about AI coding assistance.
+  const readme = readFileSync(join(REPO, 'README.md'), 'utf8');
+  assert.match(readme, /with AI coding assistance \(Claude\)\. The film's narration is a synthetic voice \(AI text-to-speech\), not a recording of a person\./);
+  // The replay still claims no cancel of its own vault: the film's take is another vault on another day.
+  assert.equal(run.steps.find((s) => s.id === 'cancel').recorded, false);
+  assert.notEqual(take.vault.id, run.vault.id);
 });
 
 test('replay: a step from another run than the refusal says so in its title, with that run\'s date, and that it was the owner\'s test spend', () => {

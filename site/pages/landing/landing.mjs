@@ -5,7 +5,7 @@ import { loadConfig } from '/site/lib/index.mjs';
 
 const $ = (id) => document.getElementById(id);
 
-/** The film slot keeps its poster when the film file is missing or will not play: that is the slot's normal state. */
+/** The film slot keeps its poster, the film's first frame, when the film file is missing or will not play. */
 function watchFilm() {
   const slot = $('film-slot');
   const video = $('film');
@@ -18,8 +18,6 @@ function watchFilm() {
   video.addEventListener('error', missing);
   video.addEventListener('playing', () => {
     slot.dataset.film = 'playing';
-    // The static label says the film is not out yet; once a film file plays, that is no longer true.
-    video.setAttribute('aria-label', 'Undo for Bitcoin, the film');
   });
   // An error that fired before this module ran leaves its mark here.
   if (video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) missing();

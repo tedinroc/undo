@@ -86,4 +86,4 @@ Git tag `hackathon-submission` marks the judged commit once it exists.
 
 ## Credits and license
 
-Built by Ted Chen with AI coding assistance (Claude). MIT, see [LICENSE](LICENSE).
+Built by Ted Chen with AI coding assistance (Claude). The film's narration is a synthetic voice (AI text-to-speech), not a recording of a person. MIT, see [LICENSE](LICENSE).

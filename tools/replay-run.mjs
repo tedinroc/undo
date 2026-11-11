@@ -3,7 +3,8 @@
 // Mutinynet and NEAR testnet (proofs/g2.json) and the refused key-alone spend on the same test vault
 // (proofs/s2-refusal.json). Nothing here is typed by hand: every hash, time, amount and node answer is copied from
 // those files, so the page cannot show a hash that did not happen. site/test/landing.test.mjs rebuilds it and
-// compares, so the file cannot drift from its sources.
+// compares, so the file cannot drift from its sources. The landing page's "From the film:" list comes the same way
+// from the film's own capture record (proofs/film-take.json); the replay's steps do not use it.
 //
 //   node tools/replay-run.mjs            writes site/pages/replay/run.json
 //   node tools/replay-run.mjs --check    exits 1 if the file is not what the proofs make
@@ -27,7 +28,8 @@ const btcAddress = (hash, what) => ({ kind: 'hash', chain: BTC, type: 'address',
 const node = (text) => ({ kind: 'node', chain: BTC, text });
 const say = (text) => ({ kind: 'text', text });
 
-export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } = {}) {
+export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json'), take = read('film-take.json') } = {}) {
+  if (take.schema !== 'undo-film-take-v1' || take.cancel.method !== 'cancel_all_and_rotate' || take.after.execute_refusal !== 'RequestNotFound') throw new Error('proofs/film-take.json is not the film\'s take');
   if (g2.label !== 'live-mutinynet' || g2.gate !== 'G2' || g2.chain_id !== 'testnet') throw new Error('proofs/g2.json is not the live G2 record');
   if (s2.schema !== 'undo-s2-refusal-v1' || s2.node_answer.kind !== 'rejected' || s2.node_answer.refusal !== 'script') throw new Error('proofs/s2-refusal.json is not a script refusal');
   if (s2.vault.id !== g2.vault.id || s2.funding_coin.vault_address !== g2.vault.address) throw new Error('the two records are not the same test vault');
@@ -77,9 +79,16 @@ export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } 
         ],
       },
       {
+        // True of the two runs replayed here: neither holds a cancel, so the step has no hash of its own. A cancel on
+        // NEAR testnet is recorded, in the film's take, on another vault and another day: the step says so and points
+        // to that list, and still borrows no hash from it.
         id: 'cancel', run: null, at: null, recorded: false,
         title: 'Your phone cancels first.',
-        lines: [say('Not in this recording yet: no cancel on NEAR testnet is recorded here. This step stays empty until one is.')],
+        lines: [
+          say('Not in these earlier runs: neither run replayed here holds a cancel, so this step has no hash of its own.'),
+          say(`A cancel on NEAR testnet is recorded in the film's take of ${dateOf(take.started_utc)}, on another test vault: the phone page's Cancel (${take.cancel.method}) stopped a request the thief tab had made, and the coin did not move. Chrome's virtual authenticator stood in for a phone's passkey there; from a real phone that path has not yet run.`),
+          { kind: 'link', href: '/#from-film', text: 'Its hashes are on the landing page, under "From the film:"' },
+        ],
       },
       {
         id: 'signed', run: 'g2', at: isoOf(c.unlocked_at_ms),
@@ -101,8 +110,20 @@ export function buildRun({ g2 = read('g2.json'), s2 = read('s2-refusal.json') } 
         film: true,
       },
     ],
-    // What the landing page links "From earlier runs:", and what else it lists from the same vault. When the film
-    // ships, its own capture record supplies a "From the film:" list instead.
+    // What the landing page links "From the film:": the film's own take, from its capture record. Another vault and
+    // another day than the replay's steps above, so it is a list of its own and no step borrows from it.
+    film: {
+      date: dateOf(take.started_utc),
+      note: 'Chrome\'s virtual authenticator stood in for a phone\'s passkey',
+      hashes: [
+        btcAddress(take.vault.address, 'the film\'s test vault'),
+        btcTx(take.coin.mutinynet_txid, `its coin: ${take.coin.value_sats.toLocaleString('en-US')} sats, unspent when read again on ${dateOf(take.after.coin_unspent_read_utc)}`),
+        nearTx(take.thief.propose_tx, `the thief's request, made to wait ${mmss(take.thief.wait_ms)}`),
+        nearTx(take.cancel.tx, 'the phone page\'s cancel'),
+        nearTx(take.after.execute_after_the_wait_tx, 'after the wait, an execute of that request: refused by the contract'),
+      ],
+    },
+    // What the landing page links "From earlier runs:", and what else it lists from the same vault.
     earlier: [
       btcAddress(g2.vault.address, 'the test vault'),
       btcTx(s2.funding_coin.mutinynet_txid, 'the coin the spend key alone could not move'),

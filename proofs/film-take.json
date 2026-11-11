@@ -1,0 +1,59 @@
+{
+  "schema": "undo-film-take-v1",
+  "what": "The one live take the film on the landing page is cut from: the phone page and the thief tab of https://undo-btc.pages.dev, driven in headless Chrome, against the NEAR testnet contract below and Mutinynet. The passkey was Chrome's virtual authenticator, not a phone's. This record never held the vault's spend key.",
+  "labels": [
+    "live-testnet",
+    "live-mutinynet",
+    "virtual authenticator"
+  ],
+  "started_utc": "2026-11-11T05:00:29.968Z",
+  "origin": "https://undo-btc.pages.dev",
+  "contract": "v1.s.undo-btc.testnet",
+  "near_chain": "NEAR testnet",
+  "bitcoin_chain": "Mutinynet (a Bitcoin signet)",
+  "vault": {
+    "id": "1155802f3cec20ee02b514cbb12b3bda404d7f04886602e0fbbbbbff7311d82d",
+    "address": "tb1q6k53g2t69l0r8hrgqlf5am3ct2685zx0qmv9vuuxnkshmepfv99qmlk5az",
+    "create_tx": "9xf6SoyfykZXsgd57sEhw1kPJwrnH1aDussJcPZJdZ4h"
+  },
+  "coin": {
+    "mutinynet_txid": "864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd",
+    "vout": 0,
+    "value_sats": 2000,
+    "height": 3580379
+  },
+  "thief": {
+    "sent_to": "tb1qud4w04ety4s6zxq0v9lpxu66xhc406rkqksue2",
+    "node_answer_verbatim": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), input 0 of 16671e8ae0fa6b91a6e15e9dcb6781a04140e47c44012f6481752adfa9a4fcc5 (wtxid 46aa86c2ecbe1930f1850f6a4787b03ad8871a52254b6c9fe695a85b3b585e7b), spending 864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd:0\"}",
+    "propose_tx": "FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq",
+    "request_id": 0,
+    "proposed_at_ms": 1794373291428,
+    "unlock_ms": 1794373591428,
+    "wait_ms": 300000
+  },
+  "cancel": {
+    "method": "cancel_all_and_rotate",
+    "tx": "HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL",
+    "log": "undo:rotating grant=0",
+    "tap_to_page_reading_cancelled_ms": 3598,
+    "thief_tab_read_it_after_the_phone_ms": 657
+  },
+  "after": {
+    "execute_after_the_wait_tx": "DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f",
+    "execute_refusal": "RequestNotFound",
+    "coin_unspent_read_utc": "2026-11-11T18:57Z"
+  },
+  "read_again_utc": "2026-11-11T18:57Z",
+  "read_again": "The four NEAR testnet transactions were fetched again from archival RPC and the coin from the Mutinynet explorer API: create_vault and heartbeat (undo:created, undo:active for this vault), propose_btc (undo:proposed request=0 unlock=1794373591428), cancel_all_and_rotate (undo:rotating grant=0), execute failing with RequestNotFound; the coin 2,000 sats at height 3580379, unspent.",
+  "film": {
+    "file": "site/pages/film/undo-for-bitcoin.mp4",
+    "sha256": "f8d81500680c840bd39deafcf92b1a52a381642bc46ccbd9bce02ac9b2b0b649",
+    "seconds": 64.9667,
+    "frame": "1080x1350, 30 fps",
+    "from_the_take": "every picture of the thief tab and the phone page, with their hashes, clocks and the node's words: cut for time, cropped and scaled, nothing in them redrawn. The first shot crops the thief tab below its key field",
+    "cut_for_time": "where the recording was cut, the next shot carries a label: 2.3 s of the thief tab between the node's refusal and its request ('2.3 s CUT BEFORE THIS SHOT'); the phone page's clock 11.6 s further on than the thief tab's in the shot before it, which the label gives to the nearest second ('12 s LATER': 4:51.0, then 4:39.4); the thief tab reading the cancel 0.7 s after the phone page ('0.7 s LATER'). Where the thief tab prints 5:00 and then draws its clock at 4:58, nothing is cut ('NO CUT'): the page's clock is the contract's unlock less the block time, and the wait was already running. Just before the tap the phone page's clock steps from 4:36.5 back to 4:36.9: that step is in the recording itself, between two consecutive frames of the take, not a cut",
+    "added_in_the_edit": "the title, the captions and cards, the labels that say where time was cut, tap rings, a highlight box, an underline, a flash on the stamp and the corner tag, some of them drawn over empty parts of the recording; and the sound",
+    "narration": "a synthetic voice (AI text-to-speech, VoxCPM2 run locally), not a person's recording",
+    "sound": "effects and music synthesised for the film; no samples"
+  }
+}
