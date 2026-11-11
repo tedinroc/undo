@@ -121,7 +121,7 @@ async function main() {
   const init = initArgs({ parent, signer, signTgas, outflowCap, operatorPasskey });
 
   console.log(`10-deploy-instance: ${live ? 'LIVE' : 'DRY RUN'} on ${network} [${label}]`);
-  note(`contract ${contract}${temp ? ' (temporary: a throwaway software operator passkey, and the deployer key stays on it, so the deployer can replace or delete it at any time; step 90 deletes it)' : ' (the real instance: the deployer key added here stays on it until 60-lock-instance.mjs removes it, after Ted\'s yes)'}`);
+  note(`contract ${contract}${temp ? ' (temporary: a throwaway software operator passkey, and the deployer key stays on it, so the deployer can replace or delete it at any time; step 90 deletes it)' : ' (the real instance: the deployer key added here stays on it until 60-lock-instance.mjs removes it, after the operator\'s yes)'}`);
   note(`wasm ${facts.size} bytes, sha256 ${facts.sha256}`);
   note(`signer ${signer}, origins [${SITE.origin}], rp id ${SITE.rpId}, network ${SITE.btcNetwork}`);
   note(`operator ${parent}, operator passkey ${operatorPasskey.pubkey}`);
@@ -145,7 +145,7 @@ async function main() {
     console.log(`NOTHING TO SEND: ${contract} already holds this wasm. Reading it back.`);
     // A re-run with --temp makes a new throwaway key, which cannot match the first one's.
     const verdicts = await readBack({ near, contract, expect: { signer, parent, signTgas, operatorPasskey: temp ? null : operatorPasskey, fullAccess: temp ? 'temp' : 'before-lock' }, facts, label });
-    if (!temp) console.log(`NEXT: 60-lock-instance.mjs --dry-run --name ${name}, then --live with Ted's yes, so ${contract} ends with no full-access key`);
+    if (!temp) console.log(`NEXT: 60-lock-instance.mjs --dry-run --name ${name}, then --live with the operator's yes, so ${contract} ends with no full-access key`);
     process.exit(verdicts.includes('FAIL') ? 1 : 0);
   }
 
@@ -196,7 +196,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 500));
   }
   const verdicts = await readBack({ near, contract, expect: { signer, parent, signTgas, operatorPasskey, fullAccess: temp ? 'temp' : 'before-lock' }, facts, label });
-  if (!temp) console.log(`NEXT: 60-lock-instance.mjs --dry-run --name ${name}, then --live with Ted's yes, so ${contract} ends with no full-access key`);
+  if (!temp) console.log(`NEXT: 60-lock-instance.mjs --dry-run --name ${name}, then --live with the operator's yes, so ${contract} ends with no full-access key`);
   process.exit(verdicts.includes('FAIL') ? 1 : 0);
 }
 

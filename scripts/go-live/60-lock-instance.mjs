@@ -2,7 +2,7 @@
 // Step 60. Removes the deployer's full-access key from the real instance, so the contract account ends with no
 // full-access key (SPEC 5, CLAIMS C11): after this, its code changes only through upgrade_propose and its public wait,
 // and nobody can delete the account. This cannot be undone, so --live also needs --yes-delete-the-last-key, given
-// only after Ted says yes.
+// only after the operator says yes.
 //
 //   node scripts/go-live/60-lock-instance.mjs --dry-run --name v1
 //   node scripts/go-live/60-lock-instance.mjs --live    --name v1 --yes-delete-the-last-key
@@ -29,7 +29,7 @@ async function main() {
   });
   const { network, live, defaults } = modeOf(a, USAGE);
   if (live && a.offline) throw new Refused('--offline is for a dry run');
-  if (live && !a['yes-delete-the-last-key']) throw new Refused(`--live deletes the last full-access key, which cannot be undone: add --yes-delete-the-last-key once Ted has said yes\n${USAGE}`);
+  if (live && !a['yes-delete-the-last-key']) throw new Refused(`--live deletes the last full-access key, which cannot be undone: add --yes-delete-the-last-key once the operator has said yes\n${USAGE}`);
   const parent = a.parent ?? defaults.parent;
   if (!parent) throw new Refused('--network sandbox needs --parent');
   if (!a.name) throw new Refused('give --name, the real instance\'s label');
@@ -72,7 +72,7 @@ async function main() {
   planTx(1, { signer: contract, receiver: contract, actions: [describe.deleteKey(keys ? keys[0] : `<${parent}'s own public key, the one 10-deploy-instance.mjs added>`)] });
   plan(`then: read back that ${contract} has no full-access key, and that the instance still reads as deployed`);
   if (!live) {
-    console.log('DRY RUN: nothing sent. This step cannot be undone: --live needs --yes-delete-the-last-key, after Ted\'s yes.');
+    console.log('DRY RUN: nothing sent. This step cannot be undone: --live needs --yes-delete-the-last-key, after the operator\'s yes.');
     return 0;
   }
 

@@ -13,7 +13,7 @@ export const isTemp = (contract) => contract.startsWith(TEMP_PREFIX);
 /**
  * Full-access keys on the contract account. `mode` is 'require-none' (the real instance after step 60: any key is a
  * FAIL, because its holder could replace the code at once, without the upgrade wait), 'before-lock' (the real
- * instance right after step 10: said, and left for step 60, which needs Ted's yes) or 'temp'. Returns a verdict or
+ * instance right after step 10: said, and left for step 60, which needs the operator's yes) or 'temp'. Returns a verdict or
  * null for an INFO line.
  */
 export async function fullAccessVerdict({ near, contract, mode, label }) {
@@ -28,10 +28,10 @@ export async function fullAccessVerdict({ near, contract, mode, label }) {
     return null;
   }
   if (mode === 'before-lock') {
-    line('INFO', label, `${contract} still has ${keys.length} full-access key(s) (${list}). Until 60-lock-instance.mjs removes it (Ted's yes, cannot be undone), its holder can replace the code at once, so the README's operator row and C11 are not yet true for it`);
+    line('INFO', label, `${contract} still has ${keys.length} full-access key(s) (${list}). Until 60-lock-instance.mjs removes it (the operator's yes, cannot be undone), its holder can replace the code at once, so the README's operator row and C11 are not yet true for it`);
     return null;
   }
-  line('FAIL', label, `${contract} has ${keys.length} full-access key(s) (${list}): its holder could replace the code at once, without the upgrade wait. Run 60-lock-instance.mjs, after Ted's yes`);
+  line('FAIL', label, `${contract} has ${keys.length} full-access key(s) (${list}): its holder could replace the code at once, without the upgrade wait. Run 60-lock-instance.mjs, after the operator's yes`);
   return 'FAIL';
 }
 
