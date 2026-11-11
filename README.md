@@ -10,7 +10,7 @@ No key, no wallet, no browser: Node 20+ and Rust. Each command prints one line p
 |---|---|---|
 | `./verify.sh A` | under 1 min; about 2 on the first run, which builds the referee in `tools/rust-check` | `TIER A: 37 PASS, 0 SKIP, 1 FAIL, 1 INFO`, exit 1. The one FAIL is C11: the deploy's full-access key is still on the test contract, so its holder could replace the code without the 1 h public wait (see Operator below). The other lines read the deployed contract, fetch the real NEAR testnet and Mutinynet transactions in `proofs/` again and re-verify their signatures here, and run a recovery-file dry run and a static check |
 | `./demo.sh` | 2 to 3 min | `PASS demo-1` to `PASS demo-5`, then `DEMO PASS`: a vault, a proposal, a passkey cancel and a send the live signer signs, on the contract `deploy/testnet.json` names |
-| `./verify.sh B` | under 1 min once compiled; several minutes on the first run, which compiles | `TIER B PASS`: the vault state machine and the Bitcoin consensus tests, offline |
+| `./verify.sh B` | under 1 min once compiled; about 2 on the first run, which compiles | `TIER B PASS`: the vault state machine and the Bitcoin consensus tests, offline |
 
 ## Try it
 
