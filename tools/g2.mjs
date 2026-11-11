@@ -8,6 +8,10 @@
 //                                      escape. Needs only the recovery files, Esplora and the dispenser
 //   node tools/g2.mjs --record-browser FILE   writes a browser POST's result into the proof. No network
 //   node tools/g2.mjs --regtest        rehearses on bitcoind, a local NEAR node and a mock signer
+//   node tools/g2.mjs --run NAME ...   a live run with its own state folder, private/g2-NAME, and its own record,
+//                                      proofs/g2-NAME.json: for a run on another contract than the first one's.
+//                                      Without it a run on another contract is refused, since it would write over
+//                                      the record in proofs/g2.json
 //
 // A co-signed spend is proposed, waits out the unlock, is signed by the signer, read back mined. Then
 // the escape: built only from the recovery file and an Esplora UTXO list by tools/escape.mjs, sent
@@ -40,6 +44,7 @@ import { randomBytes, sha256 } from './lib/crypto.mjs';
 import { buildFunding, fundingVsize, loadDispenser } from './lib/dispenser.mjs';
 import { checkEndpoints, classifyBroadcast, EndpointRefused, Esplora, ESPLORA_ALLOW, NEAR_RPC_ALLOW, RelayError } from './lib/esplora.mjs';
 import { assembleCosigned, checkCosigned, checkEscape, checkReadback, cosignedVsize, escapeOneShort, escapeVsize, isHighS, matureTip, withoutKuSig, witnessHexOf } from './lib/g2-check.mjs';
+import { liveRunPaths, movedAside, recordOfAnotherRun, RunNameError } from './lib/g2-run.mjs';
 import { spendKeys } from './lib/keys.mjs';
 import { action, credentialsPath, failureOf, loadCredentials, logsOf, Near, RpcError, TGAS } from './lib/near.mjs';
 import { buildRecovery, parseRecovery, RecoveryError } from './lib/recovery.mjs';
@@ -51,7 +56,7 @@ const PROOFS = join(REPO, 'proofs');
 const PRIVATE = join(REPO, 'private');
 const REHEARSAL_ROOT = join(REPO, 'target', 'g2-rehearsal');
 
-const USAGE = `usage: g2.mjs [--live | --regtest] [--return-coins] [--new-run] [--list-stops] [--record-browser FILE]
+const USAGE = `usage: g2.mjs [--live | --regtest] [--run NAME] [--return-coins] [--new-run] [--list-stops] [--record-browser FILE]
   [--coin-sats N] [--csv N] [--fee-rate N] [--fee-ceiling N] [--confirmations N] [--sign-timeout-sec N] [--mine-timeout-sec N]
   [--dispenser FILE] [--payer ACCOUNT] [--relay ACCOUNT] [--contract ACCOUNT] [--esplora URL] [--rpc URL] [--wasm FILE]
   rehearsal only: --rig FILE --state-dir DIR --out FILE --test-stop-at NAME --test-fault NAME --poll-ms N`;
@@ -68,8 +73,7 @@ const LIVE = {
   relay: 's.undo-relay.testnet',
   contract: 'g1.s.undo-btc.testnet',
   credNetwork: 'testnet',
-  stateDir: join(REPO, 'private', 'g2'),
-  out: join(PROOFS, 'g2.json'),
+  ...liveRunPaths(REPO),
   label: 'live-mutinynet',
   gate: 'G2',
 };
@@ -977,7 +981,7 @@ class Driver {
       '',
       js,
       '',
-      '2. Save the one line it prints to a file, and run: node tools/g2.mjs --record-browser FILE',
+      `2. Save the one line it prints to a file, and run: node tools/g2.mjs ${cfg.runName ? `--run ${cfg.runName} ` : ''}--record-browser FILE`,
       '',
     ].join('\n'), { mode: 0o600 });
     log(`G2 IS NOT COMPLETE: no browser POST is on record. The steps are in ${scrub(path)}`);
@@ -1214,7 +1218,7 @@ class Driver {
 
 // ---------------------------------------------------------------- plan
 
-async function printPlan({ cfg, facts, instance, dispenser, dispenserProblem, near, state, strayKeys, payerProblem, relayProblem, signerOk, codeOk, instanceProblem, plan, need, utxos, estimates, preflight }) {
+async function printPlan({ kept, cfg, facts, instance, dispenser, dispenserProblem, near, state, strayKeys, payerProblem, relayProblem, signerOk, codeOk, instanceProblem, plan, need, utxos, estimates, preflight }) {
   const balance = async (name) => Number((await near.account(name))?.amount ?? 0) / 1e24;
   const payerNear = await balance(cfg.payer);
   const relayNear = await balance(cfg.relay);
@@ -1235,7 +1239,7 @@ async function printPlan({ cfg, facts, instance, dispenser, dispenserProblem, ne
   log(`  state            ${strayKeys ? 'STRAY KEYS: a recovery or key file that no state file names. Use --return-coins, then --new-run' : state ? `exists: would resume${state.failed ? `, last stop ${state.failed.reason}` : ''}${state.done ? ', and it already finished' : ''}` : 'none: would start fresh'}`);
   log('');
   log('Would do, in order:');
-  log(`  1. create and activate one vault on ${cfg.contract}: CSV ${state?.csv ?? cfg.csv} blocks, ${DEPOSIT_MILLI} milliNEAR credit, recovery file under the gitignored private/g2`);
+  log(`  1. create and activate one vault on ${cfg.contract}: CSV ${state?.csv ?? cfg.csv} blocks, ${DEPOSIT_MILLI} milliNEAR credit, recovery file under the gitignored ${relative(REPO, cfg.stateDir)}`);
   log(`  2. send ${cfg.coinSats} sats from the dispenser to the vault's P2WSH, about ${plan.fees.funding} sats fee, and wait for a confirmation`);
   log(`  3. propose from ${cfg.relay}, wait out the unlock (${unlockMin} min here: an address the vault does not know, no guard), execute at ${SIGN_TGAS} Tgas, wait for the real signature`);
   log('     assemble the witness here, compare with the contract\'s bytes, check strict DER, low S and consensus');
@@ -1249,7 +1253,7 @@ async function printPlan({ cfg, facts, instance, dispenser, dispenserProblem, ne
   log('  6. list what is left in the vault and send it back by the escape');
   log('');
   log(`Needs about ${need.sats} sats on hand (${lost} lost to fees, the rest comes back), ${need.payerNear.toFixed(3)} NEAR from the payer and ${need.relayNear.toFixed(3)} from the relay. Credit stays in the vault row.`);
-  log(`About 20 minutes, most of it the unlock. Proof goes to proofs/g2.json.`);
+  log(`About 20 minutes, most of it the unlock. Proof goes to ${relative(REPO, cfg.out)}.`);
   const short = [];
   if (!dispenser) short.push('dispenser');
   if (dispenser && allSats < need.sats) short.push(`sats: ${allSats} of ${need.sats}`);
@@ -1260,6 +1264,7 @@ async function printPlan({ cfg, facts, instance, dispenser, dispenserProblem, ne
   if (instanceProblem) short.push(instanceProblem);
   if (!cfg.checkBin) short.push('undo-tools-check');
   if (strayKeys) short.push('stray keys');
+  if (kept) short.push(`${relative(REPO, cfg.out)} is the record of a run on ${kept}: this run needs --run NAME`);
   log(short.length ? `NOT READY: ${short.join(', ')}.` : 'READY. It would go.');
   return short.length ? 4 : 0;
 }
@@ -1292,10 +1297,7 @@ function loadState(dir) {
 /** This run's folder and each one --new-run moved aside, if they hold a recovery file. */
 function runFolders(stateDir) {
   const parent = dirname(stateDir);
-  const moved = !existsSync(parent) ? [] : readdirSync(parent)
-    .filter((name) => name.startsWith(`${basename(stateDir)}-`) && /-[0-9]+$/.test(name))
-    .sort()
-    .map((name) => join(parent, name));
+  const moved = !existsSync(parent) ? [] : movedAside(stateDir, readdirSync(parent)).map((name) => join(parent, name));
   return [stateDir, ...moved].filter((dir) => existsSync(join(dir, 'vault-recovery.json')));
 }
 
@@ -1347,7 +1349,7 @@ async function returnCoins({ cfg, base, esplora, dispenserPath, feeRateGiven }) 
 }
 
 /** The gate's last clause. Reads a file, rewrites the proof, sends nothing. */
-function recordBrowser({ file, stateDir, out, regtest, label }) {
+function recordBrowser({ file, stateDir, out, regtest, label, runName }) {
   const state = loadState(stateDir);
   if (!state?.done) throw new Refused('this run has not finished, so there is nothing to add a browser POST to');
   if (state.regtest !== regtest) throw new Refused('that state file belongs to the other mode');
@@ -1371,7 +1373,7 @@ function recordBrowser({ file, stateDir, out, regtest, label }) {
     recorded_from: 'a browser console, by hand',
   };
   state.browser.statement = 'A browser tried the POST. The result is in real_post, as printed by that browser.';
-  const driver = new Driver({ cfg: { stateDir, out, regtest, label }, state, facts: state.facts });
+  const driver = new Driver({ cfg: { stateDir, out, regtest, label, runName }, state, facts: state.facts });
   driver.loadSecretsIfAny();
   driver.save();
   driver.writeProof();
@@ -1383,7 +1385,7 @@ let ownRig = null;
 
 async function main() {
   const a = parseArgs(process.argv.slice(2), {
-    live: 'flag', regtest: 'flag', 'return-coins': 'flag', 'new-run': 'flag', 'list-stops': 'flag', 'record-browser': 'text',
+    live: 'flag', regtest: 'flag', run: 'text', 'return-coins': 'flag', 'new-run': 'flag', 'list-stops': 'flag', 'record-browser': 'text',
     'coin-sats': 'int', csv: 'int', 'fee-rate': 'int', 'fee-ceiling': 'int', confirmations: 'int', 'sign-timeout-sec': 'int', 'mine-timeout-sec': 'int',
     dispenser: 'text', payer: 'text', relay: 'text', contract: 'text', esplora: 'text', rpc: 'text', wasm: 'text',
     rig: 'text', 'state-dir': 'text', out: 'text', 'test-stop-at': 'text', 'test-fault': 'text', 'poll-ms': 'int',
@@ -1393,6 +1395,14 @@ async function main() {
     return 0;
   }
   if (a.live && a.regtest) throw new UsageError('--live and --regtest are opposites');
+  if (a.run !== undefined && a.regtest) throw new UsageError('--run names a live run. A rehearsal has --state-dir and --out');
+  let live = LIVE;
+  try {
+    if (a.run !== undefined) live = { ...LIVE, ...liveRunPaths(REPO, a.run) };
+  } catch (err) {
+    if (err instanceof RunNameError) throw new UsageError(err.message);
+    throw err;
+  }
   const rehearsalFlags = ['rig', 'state-dir', 'out', 'test-stop-at', 'test-fault', 'poll-ms'];
   if (!a.regtest) {
     const used = rehearsalFlags.filter((f) => a[f] !== undefined);
@@ -1421,10 +1431,11 @@ async function main() {
   if (a['record-browser']) {
     return recordBrowser({
       file: a['record-browser'],
-      stateDir: stateArg ?? (a.regtest ? join(REHEARSAL_ROOT, 'state') : LIVE.stateDir),
-      out: resolve(a.out ?? (a.regtest ? join(REHEARSAL_ROOT, 'g2-rehearsal.json') : LIVE.out)),
+      stateDir: stateArg ?? (a.regtest ? join(REHEARSAL_ROOT, 'state') : live.stateDir),
+      out: resolve(a.out ?? (a.regtest ? join(REHEARSAL_ROOT, 'g2-rehearsal.json') : live.out)),
       regtest: Boolean(a.regtest),
-      label: a.regtest ? REGTEST_LABEL : LIVE.label,
+      label: a.regtest ? REGTEST_LABEL : live.label,
+      runName: a.run,
     });
   }
 
@@ -1446,9 +1457,10 @@ async function main() {
         chain: null, network: 'regtest', rpc: [rigInfo.rpc], esplora: rigInfo.esplora, genesis: REGTEST_GENESIS, signer: rigInfo.signer, payer: rigInfo.payer, relay: rigInfo.relay,
         contract: rigInfo.contract, credNetwork: 'sandbox', stateDir: join(REHEARSAL_ROOT, 'state'), out: join(REHEARSAL_ROOT, 'g2-rehearsal.json'), label: REGTEST_LABEL,
       }
-    : LIVE;
+    : live;
 
   const cfg = {
+    runName: a.run,
     regtest: Boolean(a.regtest),
     live: Boolean(a.live) || Boolean(a.regtest),
     returnCoins: Boolean(a['return-coins']),
@@ -1477,6 +1489,9 @@ async function main() {
   if (cfg.regtest && insideProofs(cfg.out)) throw new UsageError('a rehearsal never writes into proofs/');
 
   // ------------------------------------------------------------ refusals before any request
+  // A record already in proofs/ is some run's only copy. One on another contract is never written over.
+  const kept = !cfg.regtest && !cfg.returnCoins && existsSync(cfg.out) ? recordOfAnotherRun(readFileSync(cfg.out, 'utf8'), cfg.contract) : null;
+  if (kept && cfg.live) throw new Refused(`${relative(REPO, cfg.out)} is the record of a run on ${kept}, and a run on ${cfg.contract} would write over it. Nothing was sent. Give this run its own record with --run NAME`);
   checkEndpoints({ regtest: cfg.regtest, esplora: cfg.esplora, rpc: cfg.rpc });
   if (cfg.feeRate < 1) throw new Refused('fee_over_ceiling: a fee rate under 1 sat/vB would not relay');
 
@@ -1598,7 +1613,7 @@ async function main() {
   if (!cfg.live) {
     const preflight = await esplora.preflight(ORIGIN).catch(() => null);
     return printPlan({
-      cfg, facts, instance, dispenser, dispenserProblem, near, state, strayKeys, plan, need, utxos, estimates, preflight, signerOk, codeOk, instanceProblem,
+      kept, cfg, facts, instance, dispenser, dispenserProblem, near, state, strayKeys, plan, need, utxos, estimates, preflight, signerOk, codeOk, instanceProblem,
       payerProblem: credProblem(cfg, cfg.payer), relayProblem: credProblem(cfg, cfg.relay),
     });
   }
@@ -1644,7 +1659,7 @@ async function main() {
       code = 1;
     }
   }
-  log(cfg.regtest ? `Proof written to the rehearsal folder. Label: ${cfg.label}. This is a local rehearsal, not a G2 result.` : `Proof written to proofs/g2.json. Label: ${cfg.label}.`);
+  log(cfg.regtest ? `Proof written to the rehearsal folder. Label: ${cfg.label}. This is a local rehearsal, not a G2 result.` : `Proof written to ${relative(REPO, cfg.out)}. Label: ${cfg.label}.`);
   return code;
 }
 

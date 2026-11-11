@@ -5,7 +5,10 @@
 //   node tools/s2-refusal.mjs --vault-dir DIR --capture FILE          plan only: reads public state, sends nothing
 //   node tools/s2-refusal.mjs --vault-dir DIR --capture FILE --live   runs it, or picks it up from where it stopped
 //
-// --vault-dir is a finished G2 run's folder, read and never written. No NEAR write: the vault already
+// --vault-dir is a finished G2 run's folder (private/g2, or private/g2-NAME for a run made with --run NAME), read
+// and never written, and --capture is the record to write: the first run's is proofs/s2-refusal.json, so a later
+// run's takes another name, proofs/s2-refusal-NAME.json, which ./verify.sh A reads beside proofs/g2-NAME.json.
+// A capture file that already records another vault is never written over. No NEAR write: the vault already
 // exists, and NEAR is only read, to show it is the vault the contract knows. The Mutinynet transactions:
 // funding from the dispenser, the refused POST (pays nothing), and the escape that sends the coin back
 // once it matures. State goes in the gitignored private/s2, and it holds no secret.
@@ -233,7 +236,7 @@ function captureOf({ state, vault, cfg, thief }) {
       consensus_before_post: thief.consensus,
       sats_moved: 0,
     },
-    vault: { near_testnet_contract: vault.contract, near_testnet_code_hash: vault.code, id: vault.v.id, csv_blocks: vault.v.csv, k_m: vault.v.k_m, k_u: vault.v.k_u, signer: vault.signer, note: 'The G2 vault. The contract row and the signer\'s derived key were read before funding and both matched' },
+    vault: { near_testnet_contract: vault.contract, near_testnet_code_hash: vault.code, id: vault.v.id, csv_blocks: vault.v.csv, k_m: vault.v.k_m, k_u: vault.v.k_u, signer: vault.signer, note: `The vault of the tools/g2.mjs run on ${vault.contract}. The contract row and the signer's derived key were read before funding and both matched` },
     after: state.after ?? null,
     coin_return: state.returned ?? null,
   };
@@ -294,6 +297,20 @@ async function main() {
   if (!a['vault-dir'] || !a.capture) throw new UsageError(USAGE);
   const coinSats = a['coin-sats'] ?? COIN_SATS;
   if (coinSats < 6000) throw new UsageError('--coin-sats must be at least 6000, or escape.mjs asks about its fee');
+  // A record already there is some vault's only copy. A run adds to its own, and never writes over another's:
+  // read from the two files alone, before any request.
+  const capturePath = resolve(a.capture);
+  if (existsSync(capturePath)) {
+    const vaultOf = (path) => {
+      try {
+        return JSON.parse(readFileSync(path, 'utf8'))?.vault?.id ?? null;
+      } catch {
+        return null;
+      }
+    };
+    const mine = vaultOf(join(resolve(a['vault-dir']), 'state.json'));
+    if (!mine || vaultOf(capturePath) !== mine) throw new Refused('--capture names a file that records another vault, or that this tool did not write. Nothing was sent. Give this run a file of its own');
+  }
   const checkBin = process.env.UNDO_TOOLS_CHECK_BIN;
   if (!checkBin || !existsSync(checkBin)) throw new Refused('set UNDO_TOOLS_CHECK_BIN');
 
@@ -385,7 +402,7 @@ async function main() {
     };
     save();
   }
-  const capture = () => writeJson(resolve(a.capture), captureOf({ state, vault, cfg, thief }), secrets);
+  const capture = () => writeJson(capturePath, captureOf({ state, vault, cfg, thief }), secrets);
   capture();
   log(`Capture written. Coin still unspent: ${state.after.coin_still_unspent}. Refusal kind: ${last.refusal}`);
   if (!state.after.coin_still_unspent) throw new Stop('the coin does not read as unspent');

@@ -2,7 +2,7 @@
 // Needs UNDO_TOOLS_CHECK_BIN. Test keys come from public labels or are thrown away here.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -14,6 +14,7 @@ import { secp256k1, sha256 } from '../lib/crypto.mjs';
 import { buildFunding, parseDispenser, selectCoins } from '../lib/dispenser.mjs';
 import { checkEndpoints, classifyBroadcast, EndpointRefused, Esplora, RelayError, refusalKind } from '../lib/esplora.mjs';
 import { assembleCosigned, checkCosigned, checkEscape, checkReadback, checkSig, cosignedVsize, escapeOneShort, escapeVsize, isHighS, matureTip, strictDerProblem, withoutKmSig, withoutKuSig, witnessHexOf } from '../lib/g2-check.mjs';
+import { liveRunPaths, movedAside, recordOfAnotherRun, RunNameError } from '../lib/g2-run.mjs';
 import { keyAloneHalfSig } from '../lib/spend.mjs';
 import { publicSecp, spendKeys } from '../lib/keys.mjs';
 import { loadKeyFile, Near } from '../lib/near.mjs';
@@ -506,5 +507,112 @@ test('the proof checker refuses a label that is not a live run, and a verdict pa
     assert.equal(run('not json').status, 1);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------- a run on another contract keeps its own record
+
+const TOOLS = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+test('a named live run has a state folder and a record of its own, and no name is the first run\'s', () => {
+  assert.deepEqual(liveRunPaths('/r'), { stateDir: '/r/private/g2', out: '/r/proofs/g2.json' });
+  assert.deepEqual(liveRunPaths('/r', 'v1'), { stateDir: '/r/private/g2-v1', out: '/r/proofs/g2-v1.json' });
+  // Nothing that could leave the two folders, and nothing that reads as a folder --new-run moved aside.
+  for (const bad of ['', 'V1', '1', '1793489000000', 'v-1', 'v1-2', '../x', 'a/b', 'a.b', 'x'.repeat(17), 7]) {
+    assert.throws(() => liveRunPaths('/r', bad), RunNameError, String(bad));
+  }
+});
+
+test('the folders --new-run moved aside are told apart by name: a named run\'s are not the first run\'s', () => {
+  const names = ['g2', 'g2-1793489000000', 'g2-v1', 'g2-v1-1793489000001', 'g2x-1', 'g2-', 'g2-12a', 's2'];
+  assert.deepEqual(movedAside('/r/private/g2', names), ['g2-1793489000000']);
+  assert.deepEqual(movedAside('/r/private/g2-v1', names), ['g2-v1-1793489000001']);
+});
+
+test('a record of a run on another contract is named, and a record this driver cannot read is never its own', () => {
+  const first = JSON.stringify({ schema: 'undo-g2-v1', contract: { account: 'g1.s.undo-btc.testnet', code_hash: 'x' } });
+  assert.equal(recordOfAnotherRun(first, 'g1.s.undo-btc.testnet'), null);
+  assert.equal(recordOfAnotherRun(first, 'v1.s.undo-btc.testnet'), 'g1.s.undo-btc.testnet');
+  for (const text of ['not json', '{}', '{"contract":{}}', '{"contract":{"account":7}}']) assert.match(recordOfAnotherRun(text, 'x'), /cannot read/, text);
+});
+
+/** A scratch tree with a copy of the tools, where a test can put its own proofs/ and keep the real ones out of reach. */
+function scratchTree() {
+  const dir = mkdtempSync(join(tmpdir(), 'undo-g2-units-'));
+  cpSync(TOOLS, join(dir, 'tools'), { recursive: true, filter: (p) => !p.includes('rust-check') && !p.includes(`${join('tools', 'test')}`) });
+  mkdirSync(join(dir, 'proofs'));
+  mkdirSync(join(dir, 'home'));
+  // No key and no dispenser can be reached from this home: whatever a tool did here, it could send nothing.
+  const env = { PATH: process.env.PATH, HOME: join(dir, 'home'), NEAR_CREDENTIALS_DIR: join(dir, 'home') };
+  return { dir, env, proof: (name) => join(dir, 'proofs', name) };
+}
+
+test('g2.mjs refuses a live run that would write over another contract\'s record, before any request; --run gives it its own', () => {
+  const t = scratchTree();
+  // Both endpoints are dead and off the allow list, so the check after this one refuses too, in other words.
+  const dead = ['--rpc', 'http://127.0.0.1:9', '--esplora', 'http://127.0.0.1:9'];
+  const run = (...args) => spawnSync(process.execPath, [join(t.dir, 'tools/g2.mjs'), ...args, ...dead], { encoding: 'utf8', env: { ...t.env, UNDO_TOOLS_CHECK_BIN: BIN } });
+  const first = JSON.stringify({ schema: 'undo-g2-v1', label: 'live-mutinynet', contract: { account: 'g1.s.undo-btc.testnet' } });
+  const later = JSON.stringify({ schema: 'undo-g2-v1', label: 'live-mutinynet', contract: { account: 'v1.s.undo-btc.testnet' } });
+  writeFileSync(t.proof('g2.json'), first);
+  writeFileSync(t.proof('g2-v1.json'), later);
+  try {
+    const over = run('--live', '--contract', 'v1.s.undo-btc.testnet');
+    assert.equal(over.status, 3, over.stderr);
+    assert.match(over.stderr, /^Refused: proofs\/g2\.json is the record of a run on g1\.s\.undo-btc\.testnet, and a run on v1\.s\.undo-btc\.testnet would write over it\. Nothing was sent\. Give this run its own record with --run NAME$/m);
+    // The first run's own contract passes that check, and stops at the next one: the endpoints.
+    const own = run('--live');
+    assert.equal(own.status, 3, own.stderr);
+    assert.match(own.stderr, /not on the allow list/);
+    // A named run on the contract its record names passes it too; on another contract it is refused the same way.
+    const named = run('--live', '--run', 'v1', '--contract', 'v1.s.undo-btc.testnet');
+    assert.equal(named.status, 3, named.stderr);
+    assert.match(named.stderr, /not on the allow list/);
+    const swapped = run('--live', '--run', 'v1', '--contract', 'g1.s.undo-btc.testnet');
+    assert.equal(swapped.status, 3, swapped.stderr);
+    assert.match(swapped.stderr, /^Refused: proofs\/g2-v1\.json is the record of a run on v1\.s\.undo-btc\.testnet, and a run on g1\.s\.undo-btc\.testnet would write over it/m);
+    // A name with no record yet has nothing to write over.
+    const fresh = run('--live', '--run', 'v2', '--contract', 'v1.s.undo-btc.testnet');
+    assert.equal(fresh.status, 3, fresh.stderr);
+    assert.match(fresh.stderr, /not on the allow list/);
+    for (const [args, want] of [[['--run', 'V1'], /--run takes a short name/], [['--run', 'v1', '--regtest'], /--run names a live run/], [['--run'], /needs a value/]]) {
+      const bad = spawnSync(process.execPath, [join(t.dir, 'tools/g2.mjs'), ...args], { encoding: 'utf8', env: t.env });
+      assert.equal(bad.status, 2, bad.stderr);
+      assert.match(bad.stderr, want);
+    }
+    assert.equal(readFileSync(t.proof('g2.json'), 'utf8'), first, 'proofs/g2.json is what it was');
+    assert.equal(readFileSync(t.proof('g2-v1.json'), 'utf8'), later, 'proofs/g2-v1.json is what it was');
+    assert.equal(existsSync(join(t.dir, 'private')), false, 'no state folder was made');
+  } finally {
+    rmSync(t.dir, { recursive: true, force: true });
+  }
+});
+
+test('s2-refusal.mjs never writes over the record of another vault: refused before any request', () => {
+  const t = scratchTree();
+  const tool = join(t.dir, 'tools/s2-refusal.mjs');
+  // A run folder whose state names one vault, and three files that are not that vault's record.
+  const vaultDir = join(t.dir, 'run');
+  mkdirSync(vaultDir);
+  writeFileSync(join(vaultDir, 'state.json'), JSON.stringify({ regtest: false, network: 'mutinynet', vault: { id: 'ab'.repeat(32), active: true } }));
+  const others = { 's2-refusal.json': JSON.stringify({ schema: 'undo-s2-refusal-v1', vault: { id: 'cd'.repeat(32) } }), 'g2.json': JSON.stringify({ schema: 'undo-g2-v1', vault: { id: 'ef'.repeat(32) } }), 'notes.txt': 'not a record at all' };
+  for (const [name, text] of Object.entries(others)) writeFileSync(t.proof(name), text);
+  const run = (capture) => spawnSync(process.execPath, [tool, '--vault-dir', vaultDir, '--capture', capture, '--live'], { encoding: 'utf8', env: t.env });
+  try {
+    for (const name of Object.keys(others)) {
+      const r = run(t.proof(name));
+      assert.equal(r.status, 3, `${name}: ${r.stderr}`);
+      assert.match(r.stderr, /^Refused: --capture names a file that records another vault, or that this tool did not write\. Nothing was sent\. Give this run a file of its own$/m);
+      assert.equal(readFileSync(t.proof(name), 'utf8'), others[name], `${name} is what it was`);
+    }
+    // A new file, or the vault's own record, gets past that check and stops at the next one: no referee was named.
+    writeFileSync(t.proof('own.json'), JSON.stringify({ schema: 'undo-s2-refusal-v1', vault: { id: 'ab'.repeat(32) } }));
+    for (const name of ['new.json', 'own.json']) {
+      const r = run(t.proof(name));
+      assert.equal(r.status, 3, r.stderr);
+      assert.match(r.stderr, /^Refused: set UNDO_TOOLS_CHECK_BIN$/m);
+    }
+  } finally {
+    rmSync(t.dir, { recursive: true, force: true });
   }
 });
