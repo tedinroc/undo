@@ -1133,7 +1133,7 @@ test('Make a test vault: two taps, each line when its step ends, then the page r
   await shot('21b-request-after-copy');
 });
 
-// What a test run made and saw is kept in the tab's sessionStorage, never in the link (71079fd).
+// What a test run made and saw is kept in the tab's sessionStorage, never in the link (c2a445e).
 const h7Kept = () => cdp.page('return JSON.parse(sessionStorage.getItem("undo-h7") ?? "{}");');
 const h7Tries = async () => ((await h7Kept()).log ?? '').split('~').filter(Boolean);
 
