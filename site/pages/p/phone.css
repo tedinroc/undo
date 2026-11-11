@@ -54,6 +54,11 @@ a { color: inherit; }
 .go:disabled { opacity: 0.4; }
 .go.quiet { background: transparent; color: var(--white); border: 2px solid var(--line); font-size: 22px; font-weight: 700; }
 .go + .go, .go + #cancel { margin-top: 10px; }
+/* A second, small line inside a button, in the room the button already has. The line and its gap are 13px x 1.2 + 3px,
+   and the button's padding gives up exactly that, half above and half below, so the button is as tall as a one-line
+   one and nothing above or below it moves. */
+.go.two { --sub: calc(13px * 1.2 + 3px); padding-top: calc(16px - var(--sub) / 2); padding-bottom: calc(16px - var(--sub) / 2); }
+.go .sub { display: block; margin-top: 3px; font: 500 13px/1.2 var(--sans); letter-spacing: 0; color: var(--dim); }
 /* Second to Cancel on its screen, so it takes less of it. */
 #save-cancel { font-size: 18px; min-height: 44px; padding: 10px 12px; }
 .small + .go { margin-top: 10px; }

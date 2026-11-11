@@ -135,6 +135,32 @@ export function passkeyErrorWords(kind) {
   return 'The passkey did not sign.';
 }
 
+/**
+ * What a contract account's access-key list says of a key that could replace its code at once. `keys` is the list
+ * public RPC gave (NearReader.accessKeys), or null when no node gave one. 'none' only when every key on the list is a
+ * function-call key, or the list is empty; a key this page cannot read counts as not known.
+ */
+export function codeKeyState(keys) {
+  if (!Array.isArray(keys)) return 'unknown';
+  let state = 'none';
+  for (const key of keys) {
+    const permission = key?.access_key?.permission;
+    if (permission === 'FullAccess') return 'present';
+    if (permission === null || typeof permission !== 'object' || !Object.hasOwn(permission, 'FunctionCall')) state = 'unknown';
+  }
+  return state;
+}
+
+// The 1 hour is the test instance's upgrade wait (the contract's `status` view says it as 60 min).
+const UPGRADE_WORDS = {
+  none: 'The operator can upgrade this test contract after 1 hour.',
+  present: 'The operator can upgrade this test contract after a 1 hour public wait. Today its deploy key is still on it, and that key could change the code at once.',
+  unknown: 'The operator can upgrade this test contract after a 1 hour public wait. This page could not read whether its deploy key is still on it, and such a key could change the code at once.',
+};
+
+/** The phone page's sentence on upgrades: the short one only when the account's key list shows no full-access key. */
+export const upgradeWords = (keys) => UPGRADE_WORDS[codeKeyState(keys)];
+
 /** A config this page refused, in this project's own words for it ("config: rpc needs at least one URL"), or a sentence. */
 export const configWords = (err) => (err instanceof ConfigError ? err.message : 'Its settings file is not one this page can read.');
 

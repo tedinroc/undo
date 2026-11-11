@@ -893,6 +893,182 @@ test('README and CLAIMS: what they say of the final build\'s co-signed spend and
   assert.match(live, /the vault's passkey was a software key and no cancel was made/);
 });
 
+// ---------------------------------------------------------------- the README's first screens
+
+/** The README between two of its lines, each matched whole. */
+function readmeBetween(from, to) {
+  const lines = read('README.md').split('\n');
+  const a = lines.indexOf(from);
+  const b = lines.indexOf(to);
+  assert.ok(a >= 0 && b > a, `the README has "${from}" and then "${to}"`);
+  return lines.slice(a + 1, b).join('\n');
+}
+
+test('README: the lead says what only this entry has, with the contract as the one that waits and "alone" beside what NEAR cannot do; then the film, the problem, and how NEAR fits', () => {
+  const lines = read('README.md').split('\n');
+  assert.equal(lines[0], '# Undo for Bitcoin');
+  const lead = lines[2];
+  for (const phrase of [
+    'native Bitcoin', 'on test networks', 'Bitcoin itself refuses a stolen spend key alone', 'NEAR Chain Signatures gives the second signature when a public NEAR contract asks',
+    'the contract asks only after a public wait', 'passkey can cancel', 'NEAR alone cannot take the coins', 'after a Bitcoin timelock',
+  ]) assert.ok(lead.includes(phrase), `the lead says: ${phrase}`);
+  assert.ok(lead.split(/\s+/).length <= 66, `the lead is ${lead.split(/\s+/).length} words`);
+  assert.ok(lead.split(/[.](?:\s|$)/).filter(Boolean).length <= 2, 'one or two sentences');
+  // Never the signers as the ones who wait, never "cannot take" without "alone", never a first or an always.
+  assert.doesNotMatch(lead, /Chain Signatures (signs|waits|gives[^,]*) only/);
+  assert.doesNotMatch(lead, /(?<!alone )cannot take|can't take/);
+  assert.doesNotMatch(lead, /\b(first|always|every|never)\b/i);
+  // The film: its poster, small, linked to the page that plays it, and a caption that says what it is.
+  const film = readmeBetween(lead, '## Problem');
+  assert.match(film, /^\n\[<img src="site\/pages\/film\/poster\.png" width="200" alt="[^"]+">\]\(https:\/\/undo-btc\.pages\.dev\/\)\n\n\[The film\]\(https:\/\/undo-btc\.pages\.dev\/\): one-minute screen recording, on test networks, with a test passkey\.\n$/);
+  assert.ok(existsSync(join(REPO, 'site/pages/film/poster.png')));
+  assert.match(read('site/pages/index.html'), /<video id="film"[^>]*poster="\/film\/poster\.png"/, 'the page the poster links to plays the film');
+  // The problem, in three sentences, and each NEAR feature under its own name with its claim rows.
+  const problem = readmeBetween('## Problem', '## How NEAR fits (tracks: open, security, defi)').trim();
+  assert.equal(problem, 'A stolen Bitcoin spend key means stolen coins, at once and for good. Multisig stops that only if a second key signs every spend. Undo keeps one-key spending and adds a public wait and a cancel.');
+  const fits = readmeBetween('## How NEAR fits (tracks: open, security, defi)', '## Run it');
+  const bullets = fits.split('\n').filter((l) => l.startsWith('- '));
+  assert.deepEqual(bullets.map((b) => /^- \*\*([^*]+)\*\*/.exec(b)[1]), ['Chain Signatures.', 'A public contract as referee.', 'Function-call keys.', 'NEAR alone can refuse, not take.', 'Not used:']);
+  const rows = new Set(read('CLAIMS.md').split('\n').map((l) => /^\| (C\d\d) \|/.exec(l)?.[1]).filter(Boolean));
+  const cited = bullets.map((b) => [...b.matchAll(/\bC\d\d\b/g)].map((m) => m[0]));
+  assert.deepEqual(cited, [['C01', 'C12'], ['C05', 'C17'], ['C14'], ['C02', 'C04', 'C18'], ['C08']]);
+  for (const id of cited.flat()) assert.ok(rows.has(id), `${id} is a row of CLAIMS.md`);
+  // The count of signing transactions is the records' own: every execute in the three proofs tier A replays.
+  const executes = (o, acc = []) => {
+    if (Array.isArray(o)) o.forEach((v) => executes(v, acc));
+    else if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) (k === 'execute_tx' && typeof v === 'string' ? acc.push(v) : executes(v, acc));
+    return acc;
+  };
+  const earlier = new Set([...executes(JSON.parse(read('proofs/g1.json'))), ...executes(g2)]).size;
+  const final = new Set(executes(g2v1)).size;
+  assert.ok(bullets[0].includes(`fetches ${earlier + final} recorded signing transactions again and verifies the signer's signatures in them here: ${earlier} on an earlier build of the contract, ${final} on the final build (C12)`), `${earlier} + ${final} executes are recorded`);
+  assert.match(read('CLAIMS.md'), new RegExp(`\\(${earlier + final} of ${earlier + final} executes\\)`), 'and C12 says the same number');
+  assert.match(bullets[0], /The contract asks them to sign only after a request's public wait has run out \(C01\)/);
+  // What has not run is said where the feature is claimed.
+  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; from a real phone: \*\*not yet run\*\*\./);
+  assert.match(read('CLAIMS.md'), /Several pending requests killed by one call, on testnet: \*\*not yet run\*\*/, 'C17 says the same of testnet');
+  assert.match(bullets[2], /`propose_btc` and `execute` only/);
+  assert.match(bullets[3], /All three ran on the final build with Mutinynet test coins, 2026-11-11\./);
+  assert.equal(g2v1.cosigned.attempts.at(-1).contract_logs.length > 0 && g2v1.coins[0].recorded_at.slice(0, 10), '2026-11-11');
+  assert.equal(bullets[4], '- **Not used:** NEAR Intents, TEE attestation. A NEAR AI model signature checked on testnet is **not yet run** (C08).');
+  assert.match(fits, /Track hints this leans on: chain abstraction \(open\), function-call keys and agent security \(security\), Chain Signatures \(defi\)\./);
+  assert.match(fits, /^\nEach claim number below is a row of \[CLAIMS\.md\]\(CLAIMS\.md\), with its command, its date and the hash it rests on\.\n/);
+  // The earlier build's executes are on another contract account than the final build's, as the bullet says.
+  assert.notEqual(g2.contract.account, g2v1.contract.account);
+});
+
+test('README, See it on chain: four links, each to a hash its record holds, each saying its build and what signed', () => {
+  const take = JSON.parse(read('proofs/film-take.json'));
+  const section = readmeBetween('### See it on chain', '## Try it');
+  const execute = g2v1.cosigned.attempts.find((a) => a.signer_answer).execute_tx;
+  const links = [...section.matchAll(/\[`([^`]+)`\]\((https:\/\/[^)]+)\)/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(links, [
+    [g2v1.cosigned.txid, `https://mutinynet.com/tx/${g2v1.cosigned.txid}`],
+    [execute, `https://testnet.near.rocks/tx/${execute}`],
+    [g2v1.escape.txid, `https://mutinynet.com/tx/${g2v1.escape.txid}`],
+    [take.cancel.tx, `https://testnet.near.rocks/tx/${take.cancel.tx}`],
+  ]);
+  // No other hash in the section, and none cut short.
+  const long = [...section.matchAll(/\b(?:[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{43,44})\b/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(long)], links.map((l) => l[0]));
+  assert.doesNotMatch(section.replace('`358c63bf…`', ''), /…/);
+  const items = section.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(items.length, 4);
+  // Its build, from the records: the wasm, the contract, the day.
+  assert.ok(g2v1.wasm.sha256.startsWith('358c63bf'));
+  assert.ok(section.includes(`Four transactions of the final build (wasm \`358c63bf…\`, contract \`${g2v1.contract.account}\`), ${take.started_utc.slice(0, 10)}`));
+  assert.equal(take.contract, g2v1.contract.account);
+  assert.equal(g2v1.cosigned.attempts.find((a) => a.signer_answer).tx_status, 'success');
+  // What signed each one.
+  assert.ok(items[0].includes(`mined on Mutinynet at height ${g2v1.cosigned.mined_height} with two signatures, the spend key's and the one Chain Signatures gave`));
+  assert.deepEqual(g2v1.cosigned.readback.signatures.map((x) => [x.key, x.verified]), [['K_m', true], ['K_u', true]]);
+  assert.ok(items[1].includes(`asking \`${g2v1.signer.account}\` to sign`) && items[1].includes('with no page and no relay'));
+  assert.equal(Math.round((g2v1.cosigned.unlock - g2v1.cosigned.proposed_at) / 60000), 10, 'a 10:00 wait');
+  assert.match(items[1], /11 s after the request's 10:00 unlock/);
+  assert.match(read('CLAIMS.md'), new RegExp(`tx \`${execute}\`: its execute, in a block 11 s after that unlock`), 'the 11 s is C01\'s, read from chain by tier A');
+  assert.ok(items[2].includes(`mined on Mutinynet at height ${g2v1.escape.mined_height}, ${g2v1.escape.readback.blocks_after_coin} blocks after its coin, with one signature, the cold key's from the recovery file, and no NEAR call`));
+  assert.deepEqual(g2v1.escape.readback.signatures.map((x) => [x.key, x.verified]), [['K_e', true]]);
+  assert.ok(items[3].includes(`\`${take.cancel.method}\``) && items[3].includes('The passkey was Chrome\'s virtual authenticator, not a phone\'s'));
+  assert.ok(take.labels.includes('virtual authenticator'));
+  assert.match(section, /`\.\/verify\.sh A` fetches the first three again \(`proofs\/g2-v1\.json`\); the fourth is recorded in `proofs\/film-take\.json`\./);
+});
+
+test('README: the commands are listed once, with what a SKIP means beside them; the relay\'s accounting, the dated tests and the mainnet numbers each rest on a file', () => {
+  const readme = read('README.md');
+  // Run it holds the three commands; Try it opens with the site and the cancel steps, and repeats none of them.
+  const run = readmeBetween('## Run it', '### See it on chain');
+  assert.deepEqual(run.split('\n').filter((l) => l.startsWith('| `')).map((l) => /^\| (`[^`]+`)/.exec(l)[1]), ['`./verify.sh A`', '`./demo.sh`', '`./verify.sh B`']);
+  for (const phrase of [
+    '`SKIP` means the check did not run, and the line says why.', 'those replay lines then print `SKIP (network)`', 'the run prints `SKIP (relay)` and points to `./verify.sh A` and `B`',
+    'a throwaway vault with a software passkey, a proposal to a new address, a passkey cancel, and a send back to the vault\'s own address that the live signer signs after its 1:00 wait',
+    'No coin moves, but its NEAR calls are real NEAR testnet transactions',
+  ]) assert.ok(run.includes(phrase), `beside the Run it table: ${phrase}`);
+  const tryIt = readmeBetween('## Try it', '### Try a cancel yourself');
+  const doCells = tryIt.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Do |')).map((l) => /^\| ([^|]+) \|/.exec(l)[1]);
+  assert.equal(doCells[0], 'Open https://undo-btc.pages.dev', 'the site comes first');
+  for (const cell of doCells) assert.doesNotMatch(cell, /^`\.\/(verify|demo)\.sh/, 'a command of the Run it table is not listed a second time');
+  assert.match(readme, /\n- The agent on a local node: `agent\/test\/run-sandbox\.sh 86 88` /, 'the agent\'s sandbox run is under More');
+  // The relay: the paragraph before the steps stops at "So it can be full." and the rest is in the doc it links.
+  const before = readmeBetween('### Try a cancel yourself', '1. On the phone, open https://undo-btc.pages.dev/p/ and tap **Make a test vault**, then **Confirm with your passkey**: two passkey prompts. This makes a passkey for undo-btc.pages.dev and a vault on NEAR testnet.');
+  assert.match(before, /So it can be full\. \[docs\/relay\.md\]\(docs\/relay\.md\) has the rest of the relay's accounting\.\n/);
+  const relay = read('docs/relay.md');
+  for (const moved of ['The coin count can run one over for each relay fault of one kind:', 'a request that stalls for over two minutes before its coin goes out can also end with two coins', 'counts on the earlier day, the day it was charged.']) {
+    assert.ok(relay.includes(moved), `docs/relay.md holds: ${moved}`);
+    assert.equal(readme.includes(moved), false, 'and the README no longer does');
+  }
+  for (const kept of ['at most 13 new vaults and 20 test coins a day in all', '`CEILING_GENERAL_MICRO=1500000`, `CEILING_FUNDS_SATS=100000`', 'at most 32 new vaults and 50 test coins a day in all', '3 vaults and 2 test coins an hour']) {
+    assert.ok(relay.includes(kept) && readme.includes(kept), `both say: ${kept}`);
+  }
+  // The dated tests: the numbers are the measurements file's, with its date and its label.
+  const tests = run.split('\n').find((l) => l.startsWith('**Tests behind these.**'));
+  const measured = read('docs/measurements.md');
+  assert.match(measured, /## Last full run\n\n2026-11-07 UTC, on the wasm below, sandbox with the mock signer/);
+  assert.match(measured, /\| `scripts\/protocol-check\.sh` \| 151 passed, 0 failed, on each of protocols 86 and 88/);
+  assert.match(measured, /\| `crates\/undo-core\/props\/mutation-check\.py` \| 187 of 187 killed, control green \|/);
+  assert.match(measured, /\| `scripts\/shell-mutants\.py`, protocol 88 \| 200 of 200 killed/);
+  assert.equal(tests, '**Tests behind these.** Last full local run, 2026-11-07, with a mock signer in place of Chain Signatures ([docs/measurements.md](docs/measurements.md)): 151 sandbox tests passed on each of NEAR protocols 86 and 88, and mutation testing with hand-written one-rule mutants killed 187 of 187 in the core and 200 of 200 in the contract shell. They are not part of `./verify.sh`; see Build under More.');
+  assert.doesNotMatch(read('verify.sh'), /protocol-check|mutation-check|shell-mutants/, 'and verify.sh runs none of them');
+  // The waits: the test preset's, and the mainnet preset's as the code has them.
+  const policy = read('crates/undo-core/src/policy.rs');
+  const body = (name) => policy.slice(policy.indexOf(`pub fn ${name}(`), policy.indexOf('\n    }\n', policy.indexOf(`pub fn ${name}(`)));
+  assert.match(body('test_coin'), /t_known_ms: MINUTE,\s+t_new_ms: 5 \* MINUTE,\s+t_new_unguarded_ms: 10 \* MINUTE,/);
+  assert.match(body('mainnet_proof'), /t_new_ms: 10 \* MINUTE,\s+t_new_unguarded_ms: 20 \* MINUTE,/);
+  assert.match(body('mainnet'), /min: Policy \{ fee_cap_tx: 500, fee_budget_24h: 1_000, outflow_cap_24h: 0, \.\.deployed \},\s+max: Policy \{\s+t_known_ms: HOUR,\s+t_new_ms: 24 \* HOUR,\s+t_new_unguarded_ms: 48 \* HOUR,/);
+  const preset = readme.split('\n').find((l) => l.startsWith('**5:00 is the test preset.**'));
+  for (const phrase of [
+    '1:00 to an address the vault knows, 5:00 to a new one and 10:00 with the guard offline, are the test-coin preset\'s',
+    'The contract\'s mainnet preset is in the code, not deployed and not run (C19)', 'waits at least 10 minutes, 20 with the guard offline, and a vault can set those as long as 24 and 48 hours',
+    'The outflow cap is not a loss limit: over it a known address waits like a new one, nothing is refused, and a send to a new address is never capped.',
+  ]) assert.ok(preset.includes(phrase), `the preset paragraph says: ${phrase}`);
+  assert.match(read('CLAIMS.md'), /\| C19 \| On mainnet: a co-signed spend, a cancel, a cold-key exit \| — \| — \| — \| \*\*not run\*\*: this build has no mainnet deploy \| — \|/);
+});
+
+test('README: the party table is headed as the failure cases it holds, and says what the test page does with the keys; CLAIMS names its live take', () => {
+  const readme = read('README.md');
+  assert.equal(readme.split('\n').filter((l) => /^## Who can do what/.test(l)).join('|'), '## Who can do what, and what happens if each is gone');
+  for (const f of ['README.md', 'CLAIMS.md', 'agent/README.md', 'docs/watch.md', 'docs/relay.md', 'tools/README.md', 'site/pages/index.html']) {
+    assert.doesNotMatch(read(f).replaceAll('Who can do what, and what happens if each is gone', ''), /Who can do what/, `${f} names the heading as it is`);
+  }
+  const table = readmeBetween('## Who can do what, and what happens if each is gone', '**Why not 2-of-3?** If one key is stolen and nobody is watching, 2-of-3 is safer: that thief gets nothing, and Undo\'s thief gets the coins after the wait. Undo makes a different trade. Spending needs no second device or hardware, so it can be used for everyday spending; a public contract controls the second signature, not a company; a phone can cancel during the wait; a cold key leaves alone if NEAR is gone. If you can keep two keys in reach for every spend, use 2-of-3.');
+  const row = (start) => table.split('\n').find((l) => l.startsWith(`| ${start}`));
+  assert.equal(table.split('\n')[1], '| Party | Alone it can | Alone it cannot | If it is gone |', 'the last column is what happens if each is gone');
+  assert.ok(row('Owner\'s phone').includes('On a vault the page made, that means the cold key: the page\'s Cancel swaps in a `K_s` whose secret it does not keep, so save the recovery file first.'));
+  assert.ok(row('Cold key (the recovery file; offline once you have saved it and closed the page) |'));
+  assert.ok(row('Operator').includes('A changed page could lie, or take the spend key and the cold key: the test page makes both in one tab and holds them while it is open |'));
+  assert.doesNotMatch(table, /offline recovery file|take a spend key it holds in your browser/);
+  // The same three facts, in the page's code and on the page.
+  assert.match(read('site/lib/intents.mjs'), /newVaultKeys\(\{ seed = randomBytes\(32\), cold = randomBytes\(32\) \} = \{\}\)/);
+  assert.match(read('site/pages/p/phone.mjs'), /const newKs = spendKeys\(randomBytes\(32\)\)\.ks\.pub;/);
+  assert.match(read('site/pages/p/phone.mjs'), /'Save it before your first Cancel'/);
+  // The paragraph two rows and the README point to has a name a reader can search for, and is there once.
+  const claims = read('CLAIMS.md');
+  assert.equal(claims.split('\n').filter((l) => l.startsWith('**Live take.** The pages, live, 2026-11-11, ')).length, 1);
+  assert.equal(claims.match(/\(Live take below\)/g).length, 2, 'C05 and C17 point to it');
+  assert.match(readme, /the live take in \[CLAIMS\.md\]\(CLAIMS\.md\)/);
+  // Another entry shares the name: said once, plainly, with no other product named.
+  assert.equal(readme.split('\n').filter((l) => l === '- Name: another entry in this hackathon is also named Undo. It is a different project by a different team.').length, 1);
+});
+
 test('the README status line prints the RPC\'s refusal instead of a traceback', () => {
   const code = /python3 -c '([^']+)'/.exec(read('README.md'))[1];
   const decode = (answer) => spawnSync('python3', ['-c', code], { input: JSON.stringify(answer), encoding: 'utf8' });

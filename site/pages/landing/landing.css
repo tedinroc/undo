@@ -19,6 +19,9 @@ main { width: 100%; max-width: 1200px; margin: 0 auto; padding: 0 16px; flex: 1;
 .film { margin: 0; justify-self: center; aspect-ratio: 4 / 5; width: min(100%, calc((100svh - 400px) * 0.8)); min-width: 180px;
   background: var(--field); border: 1px solid var(--line); overflow: hidden; }
 .film-video { display: block; width: 100%; height: 100%; object-fit: cover; background: var(--ground); }
+/* On a short phone the line that names Chain Signatures takes two more rows of the first screen, and the film gives
+   them up, so the replay link keeps its room above the fold. */
+@media (max-height: 700px) and (max-width: 899px) { .film { width: min(100%, calc((100svh - 440px) * 0.8)); } }
 
 .headline { margin: 0; font: 800 28px/1.08 var(--sans); letter-spacing: -0.02em; text-wrap: balance; }
 .sentence { margin: 10px 0 0; font: 400 17px/1.42 var(--sans); }

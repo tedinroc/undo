@@ -65,7 +65,7 @@ function setHash(el, label, link) {
   }
 }
 
-function plain(state, sentence, { verbatim = '', address = null, retry = null } = {}) {
+function plain(state, sentence, { verbatim = '', address = null, retry = null, start = false } = {}) {
   setState(state, 'plain');
   $('plain-text').textContent = sentence;
   $('plain-verbatim').textContent = verbatim;
@@ -74,6 +74,8 @@ function plain(state, sentence, { verbatim = '', address = null, retry = null } 
   const button = $('plain-retry');
   button.classList.toggle('on', Boolean(retry));
   button.onclick = retry;
+  // The way on from a tab opened with no link: the phone page makes the vault, and its thief link opens this tab.
+  $('plain-start').classList.toggle('on', start);
 }
 
 /** The raw words of an error, for the console only. A screen says a sentence instead. */
@@ -930,7 +932,7 @@ async function boot() {
   measureClock();
   requestAnimationFrame(draw);
 
-  if (!S.vaultHex) return plain('no_vault', 'This tab needs a vault link. There is no vault in this one.');
+  if (!S.vaultHex) return plain('no_vault', 'This tab needs a vault link. There is no vault in this one.', { start: true });
   refreshRelay();
   setInterval(() => refreshRelay().catch(() => {}), STATUS_MS);
   return loadVault();

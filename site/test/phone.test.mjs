@@ -1095,6 +1095,48 @@ test('nothing waiting: the vault\'s address and a plain sentence, no clock. A sh
   }
 });
 
+// ---------------------------------------------------------------- the footer of the screen with no vault
+
+test('no vault: the footer reads the contract account\'s keys from public RPC. With its deploy key on it, that key could change the code at once; with none, an upgrade waits 1 hour; with no answer, it says it could not read', { skip, timeout: 120_000 }, async () => {
+  const SHORT = 'The operator can upgrade this test contract after 1 hour.';
+  const KEY_ON = 'The operator can upgrade this test contract after a 1 hour public wait. Today its deploy key is still on it, and that key could change the code at once.';
+  const NOT_READ = 'The operator can upgrade this test contract after a 1 hour public wait. This page could not read whether its deploy key is still on it, and such a key could change the code at once.';
+  const footAt = async () => {
+    await go('/p/', {});
+    await waitState('no_vault');
+    return textOf('#foot');
+  };
+  const only = (foot, sentence) => [SHORT, KEY_ON, NOT_READ].filter((x) => foot.includes(x)).join('|') === sentence;
+  // The stage's contract account holds the key that deployed it, as the live test instance does today: read here from
+  // the same node the page reads.
+  const onChain = await reader.accessKeys(stage.contract);
+  assert.deepEqual(onChain.map((k) => k.access_key.permission), ['FullAccess']);
+  const real = await footAt();
+  assert.ok(only(real, KEY_ON), real);
+  assert.ok(real.includes('This page makes your spend key and your cold key and holds them while it is open, so a changed page could take both.'));
+  assert.ok(real.endsWith('The signing network alone can refuse, not take.'));
+  await shot('19-no-vault-deploy-key-on');
+  // The longest of the three still leaves Make a test vault and the whole footer on both phone screens.
+  await atPhoneSizes('19-no-vault-deploy-key-on', async (at) => {
+    await assertWhole('#make', at);
+    await assertWhole('#foot', at);
+    assert.ok(await fitsAcross(at.width), at.size);
+  });
+  // The same page with the node's answer changed on the way in, for that one read only: no key on the account, a
+  // function-call key alone, and then no answer at all.
+  const answering = (answer) => async (request) => (request.postData?.includes('view_access_key_list') ? answer : null);
+  const list = (keys) => ({ status: 200, body: { jsonrpc: '2.0', id: 1, result: { keys, block_height: 1, block_hash: '11111111111111111111111111111111' } } });
+  const call = { public_key: 'ed25519:Anva5xK7ZRtcJS2PPT7Dj3Fv23s3SkZLk8v6kZzGZXjq', access_key: { nonce: 1, permission: { FunctionCall: { allowance: null, receiver_id: stage.contract, method_names: ['execute'] } } } };
+  for (const keys of [[], [call]]) {
+    const foot = await intercept(`${stage.config.rpc[0]}*`, answering(list(keys)), footAt);
+    assert.ok(only(foot, SHORT), foot);
+  }
+  await shot('19-no-vault-no-deploy-key');
+  const dark = await intercept(`${stage.config.rpc[0]}*`, answering('fail'), footAt);
+  assert.ok(only(dark, NOT_READ), dark);
+  assert.equal(await exists('#make'), true, 'and the page still makes a vault');
+});
+
 // ---------------------------------------------------------------- making a vault, and the test mode
 
 test('Make a test vault: two taps, each line when its step ends, then the page reads the vault it made', { skip, timeout: 120_000 }, async () => {
@@ -1117,6 +1159,15 @@ test('Make a test vault: two taps, each line when its step ends, then the page r
   assert.equal(vault.guard_online, true, 'the relay beat at creation');
   assert.ok(await exists('#recovery'));
   assert.ok(await exists('#thief-link'));
+  // The page's Cancel leaves only the cold key able to move the coins, so the button for its file says when to save it:
+  // inside the button, which stays the height of the one above it, whole on the screen.
+  assert.equal(await textOf('#recovery'), 'Recovery file\nSave it before your first Cancel');
+  const [linkBox, fileBox] = await cdp.page('return ["#thief-link", "#recovery"].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, height: r.height, width: r.width }; });');
+  assert.ok(Math.abs(fileBox.height - linkBox.height) < 0.25, `two lines in the room of one: ${fileBox.height} and ${linkBox.height}`);
+  assert.equal(fileBox.top - linkBox.bottom, 10, 'the gap between two buttons, as before');
+  assert.ok(fileBox.bottom <= 844, 'whole on the screen');
+  const why = await cdp.page('const e = document.getElementById("recovery-why"); const r = e.getBoundingClientRect(); const b = document.getElementById("recovery").getBoundingClientRect(); return { inside: r.top >= b.top && r.bottom <= b.bottom && r.left >= b.left && r.right <= b.right, lines: Math.round(r.height / parseFloat(getComputedStyle(e).lineHeight)) };');
+  assert.deepEqual(why, { inside: true, lines: 1 });
   await shot('21-idle-own-vault');
 
   // Copy the thief link, as the film does, and stay on the page: its notice is the idle screen's. When the thief's

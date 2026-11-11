@@ -64,3 +64,31 @@ test('phone boot: the operator check reads no relay and no contract, and test mo
   assert.ok(relay);
   for (const f of h7.fetched.filter((x) => x.kind === 'vault')) assert.ok(f.start >= relay.end, 'test mode makes its own reads, after boot');
 });
+
+test('phone boot, no vault: the footer reads the contract account\'s keys with the boot reads and says the short sentence only when no full-access key is on it', () => {
+  const SHORT = 'The operator can upgrade this test contract after 1 hour.';
+  const KEY_ON = 'The operator can upgrade this test contract after a 1 hour public wait. Today its deploy key is still on it, and that key could change the code at once.';
+  const NOT_READ = 'The operator can upgrade this test contract after a 1 hour public wait. This page could not read whether its deploy key is still on it, and such a key could change the code at once.';
+  const footOf = (page) => page.text.split('\n').find((l) => l.startsWith('Test coins only.'));
+  for (const [keys, sentence] of [['full', KEY_ON], ['none', SHORT], ['call', SHORT], [undefined, NOT_READ]]) {
+    const page = load({ hash: '', delayMs: 200, waitMs: 1500, keys });
+    assert.equal(page.state, 'no_vault', String(keys));
+    const foot = footOf(page);
+    assert.ok(foot, 'the screen with no vault has the footer');
+    assert.ok(foot.includes(` ${sentence} `), `${keys}: ${foot}`);
+    for (const other of [SHORT, KEY_ON, NOT_READ].filter((x) => x !== sentence)) assert.equal(foot.includes(other), false, `${keys}: only one of the three`);
+    // What else the footer says: the page makes both keys, and the signers alone cannot take.
+    assert.ok(foot.includes('This page makes your spend key and your cold key and holds them while it is open, so a changed page could take both.'));
+    assert.ok(foot.endsWith('The signing network alone can refuse, not take.'));
+    const asked = page.fetched.filter((f) => f.kind === 'keys');
+    assert.equal(asked.length, 1, 'one read of the key list');
+    const instance = firstOf(page.fetched, 'instance');
+    assert.ok(asked[0].start < instance.end, 'sent with the boot reads, not after them');
+  }
+  // A key list that comes late does not hold the screen, and the footer then says it could not read it.
+  const slow = load({ hash: '', delayMs: 200, delays: { keys: 6000 }, waitMs: 4000, keys: 'none' });
+  assert.equal(slow.state, 'no_vault');
+  assert.ok(footOf(slow).includes(NOT_READ));
+  // A link that names a vault draws no footer, so it asks for no key list; nor does the operator check.
+  assert.equal(load({ hash: `#v=${VAULT}&r=1`, delayMs: 200, waitMs: 1500, keys: 'full' }).fetched.filter((f) => f.kind === 'keys').length, 0);
+});

@@ -34,6 +34,7 @@ html, body { min-height: 100%; }
 .again { display: none; margin: calc(40 * var(--u)) calc(64 * var(--u)) 0 0; padding: calc(20 * var(--u)) calc(40 * var(--u)); background: var(--white); color: var(--ground); border: 0;
   font: 800 calc(48 * var(--u))/1 var(--sans); letter-spacing: -0.015em; cursor: pointer; }
 .again.on { display: inline-block; }
+a.again { text-decoration: none; }
 
 /* ---------------------------------------------- armed */
 #armed { padding: calc(var(--top) * var(--u)) calc(64 * var(--u)) 0; }

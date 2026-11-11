@@ -128,11 +128,18 @@ test('landing: the story, the closing line, "Why not 2-of-3?", the privacy line,
   const text = landing.replace(/<\/?span[^>]*>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   for (const phrase of [
     'A cancel button for Bitcoin.', 'Your Bitcoin key is stolen. Bitcoin refuses that key alone. A public NEAR contract makes the thief wait, and your phone can cancel first.',
+    'The second signature comes from NEAR Chain Signatures, when that contract asks.',
     'NEAR can refuse; it can\'t take.', 'If NEAR goes away, your cold key gets the coins out after a timelock.',
     'Why not 2-of-3?', 'If you can keep two keys in reach for every spend, use 2-of-3.',
     'anyone can read each waiting request\'s amount and destination, before Bitcoin moves', '"method_name":"status"', 'github.com/tedinroc/undo',
   ]) assert.ok(text.includes(phrase.replace(/'/g, '\'')), `missing: ${phrase}`);
   assert.match(landing, /href="https:\/\/github\.com\/tedinroc\/undo"/);
+  // The first screen names what signs second, in the line under the story, and the contract is the one that asks: the
+  // signers are never the subject of the wait.
+  const first = landing.slice(landing.indexOf('<section class="first">'), landing.indexOf('<section class="below"'));
+  assert.match(first, /<p class="trust">The second signature comes from NEAR Chain Signatures, when that contract asks\. /);
+  assert.equal(first.match(/Chain Signatures/g).length, 1);
+  assert.doesNotMatch(text, /Chain Signatures[^.]*\b(signs|waits)\b[^.]*\b(only|after)\b/i);
   assert.doesNotMatch(text, /AI agent|Let your/i);
   assert.doesNotMatch(text, /Steal a test coin|one tap/i);
   assert.doesNotMatch(text, /\b\d+ (vaults|cancels|strangers|users)\b/i);
@@ -240,10 +247,13 @@ test('Chrome 390x844: chip, film slot, sentence and replay link on the first scr
   assert.deepEqual([playing.w, playing.h], [1080, 1350], 'the film is 4:5, as its slot and its poster are');
   assert.ok(playing.seconds >= 60 && playing.seconds <= 75, `the film runs ${playing.seconds} s`);
   assert.deepEqual([playing.muted, playing.controls, playing.loop, playing.paused, playing.error], [true, true, true, false, null]);
-  for (const sel of ['#chip', '#film-slot', '#sentence', '#replay-link']) {
+  for (const sel of ['#chip', '#film-slot', '#sentence', '.trust', '#replay-link']) {
     const b = await box(sel);
     assert.ok(b.top >= 0 && b.bottom <= 844 && b.width > 0, `${sel} is not on the first screen: ${JSON.stringify(b)}`);
   }
+  assert.match(await cdp.page("return document.querySelector('.trust').textContent;"), /^The second signature comes from NEAR Chain Signatures, when that contract asks\./, 'the first screen names Chain Signatures');
+  // Nothing on the first screen moves by itself: no animation or transition on its text.
+  assert.deepEqual(await cdp.page("return [...document.querySelectorAll('.copy *')].filter((e) => { const c = getComputedStyle(e); return c.animationName !== 'none' || parseFloat(c.transitionDuration) > 0; }).map((e) => e.className || e.id);"), []);
   const film = await box('#film-slot');
   assert.ok(Math.abs(film.width / film.height - 0.8) < 0.01, 'the slot is 4:5');
   assert.ok(film.width >= 300, 'the film slot is the width of the phone, near enough');
@@ -262,6 +272,12 @@ test('Chrome 375x667: the film shrinks so the replay link stays above the fold',
   await cdp.open(`${served.testnet.origin}/`);
   const link = await box('#replay-link');
   assert.ok(link.bottom <= 667, `the replay link ends at ${link.bottom}`);
+  // With room to spare, so a font a few pixels taller does not push it under the fold; and the line that names
+  // Chain Signatures is above it.
+  assert.ok(link.bottom <= 667 - 24, `the replay link ends at ${link.bottom}, too near the fold`);
+  const trust = await box('.trust');
+  assert.ok(trust.top >= 0 && trust.bottom <= link.top, 'the Chain Signatures line is on the first screen, above the link');
+  assert.ok((await box('#film-slot')).width >= 180, 'and the film is still a film');
   assert.equal(await cdp.page('return document.documentElement.scrollWidth;'), 375);
   await shot('landing-375x667');
 });

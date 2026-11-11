@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { segwitAddress } from '../../tools/lib/btc.mjs';
 import { sha256 } from '../../tools/lib/crypto.mjs';
-import { contractWords, logRaw, noNodeWords, nodeRefusalWords, panicOf, passkeyErrorWords, passkeyWords, relayWords } from '../lib/plain-words.mjs';
+import { codeKeyState, contractWords, logRaw, noNodeWords, nodeRefusalWords, panicOf, passkeyErrorWords, passkeyWords, relayWords, upgradeWords } from '../lib/plain-words.mjs';
 import { RELAY_ERRORS } from '../lib/relay-table.mjs';
 import { destinationWords } from '../pages/t/logic.mjs';
 
@@ -74,6 +74,39 @@ test('every relay code has a sentence with no code in it, and a refusal that car
   assert.equal(relayWords({ code: 'something_new' }), 'The relay said no.');
   for (const refusal of ['webauthn: bad signature', 'webauthn: wrong rp id', 'webauthn: user not verified', 'webauthn signature must be 64 bytes']) plainSentence(passkeyWords(refusal), refusal);
   for (const kind of ['no_support', 'wrong_site', 'other']) plainSentence(passkeyErrorWords(kind), kind);
+});
+
+test('the footer says an upgrade waits 1 hour only when the contract account\'s key list shows no full-access key; with one, or with no list, it says the key could change the code at once', () => {
+  // The shapes public RPC gives for view_access_key_list (recorded from v1.s.undo-btc.testnet and a function-call key).
+  const full = { public_key: 'ed25519:4W7aoutQcmfkctj8PddfREwcySTQoyrM91F9Lh4M6RWq', access_key: { nonce: 277136000000012, permission: 'FullAccess' } };
+  const call = { public_key: 'ed25519:Anva5xK7ZRtcJS2PPT7Dj3Fv23s3SkZLk8v6kZzGZXjq', access_key: { nonce: 1, permission: { FunctionCall: { allowance: '250000000000000000000000', receiver_id: 'v1.s.undo-btc.testnet', method_names: ['propose_btc', 'execute'] } } } };
+  const SHORT = 'The operator can upgrade this test contract after 1 hour.';
+  const KEY_ON = 'The operator can upgrade this test contract after a 1 hour public wait. Today its deploy key is still on it, and that key could change the code at once.';
+  const NOT_READ = 'The operator can upgrade this test contract after a 1 hour public wait. This page could not read whether its deploy key is still on it, and such a key could change the code at once.';
+  // No full-access key: a locked account with no key at all, and one that holds only function-call keys.
+  for (const keys of [[], [call], [call, call]]) {
+    assert.equal(codeKeyState(keys), 'none');
+    assert.equal(upgradeWords(keys), SHORT);
+  }
+  // A full-access key anywhere on the list, whatever else is there.
+  for (const keys of [[full], [call, full], [full, call], [{ access_key: {} }, full]]) {
+    assert.equal(codeKeyState(keys), 'present');
+    assert.equal(upgradeWords(keys), KEY_ON);
+  }
+  // No list, or an entry this page cannot read: never the short sentence, and never a claim that the key is there.
+  for (const keys of [null, undefined, 'FullAccess', {}, [null], [{}], [{ access_key: {} }], [{ access_key: { permission: 'Something' } }], [call, { access_key: { permission: null } }]]) {
+    assert.equal(codeKeyState(keys), 'unknown', JSON.stringify(keys));
+    assert.equal(upgradeWords(keys), NOT_READ);
+  }
+  for (const words of [SHORT, KEY_ON, NOT_READ]) {
+    assert.doesNotMatch(words, RAW);
+    assert.match(words, /^The operator can upgrade this test contract after /);
+  }
+  // Only the short one leaves out the key, and only the one with a key on the list says "Today".
+  assert.doesNotMatch(SHORT, /key/);
+  assert.match(KEY_ON, /Today its deploy key is still on it/);
+  assert.doesNotMatch(NOT_READ, /Today/);
+  assert.match(NOT_READ, /could not read whether its deploy key is still on it/);
 });
 
 test('the raw words still reach the console, once for each new line', () => {

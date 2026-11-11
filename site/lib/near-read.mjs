@@ -118,6 +118,18 @@ export class NearReader {
   }
 
   /**
+   * An account's access keys at a final block, as the node lists them: [{ public_key, access_key: { permission } }].
+   * A full-access key on a contract's account can replace its code at once, so a page reads this before it says how
+   * long an upgrade waits. Throws when no node gives a list.
+   */
+  async accessKeys(account) {
+    const { result, error } = await this.rpc('query', { request_type: 'view_access_key_list', account_id: account, finality: 'final' });
+    if (error) throw new ViewRefused('view_access_key_list', JSON.stringify(error));
+    if (!Array.isArray(result?.keys)) throw new ViewRefused('view_access_key_list', 'the answer holds no key list');
+    return result.keys;
+  }
+
+  /**
    * The time of the block at `height`, or null when no node answers with it: a height the chain skipped, one older
    * than a node keeps, or no node at all. Only a lower bound on a height is ever drawn from it.
    */

@@ -120,6 +120,7 @@ function kindOf(url, init) {
     const { method, params } = JSON.parse(init.body);
     if (method === 'block') return { kind: 'block' };
     if (method === 'query' && params.request_type === 'call_function') return { kind: params.method_name, args: JSON.parse(Buffer.from(params.args_base64, 'base64').toString()) };
+    if (method === 'query' && params.request_type === 'view_access_key_list') return { kind: 'keys', args: { account: params.account_id, finality: params.finality } };
     return { kind: `rpc:${method}` };
   }
   if (u.startsWith('https://esplora.example.test')) return { kind: 'esplora' };
@@ -143,6 +144,11 @@ globalThis.fetch = async (url, init = {}) => {
     case 'vault': return view(args.vault === VAULT ? answers.vault : null);
     case 'request': return view(args.request === 1 ? answers.request : null);
     case 'esplora': return json([]);
+    // The contract account's access keys: `opts.keys` is 'full', 'call', 'none', or absent, and then no node gives a list.
+    case 'keys': {
+      const list = { full: [{ public_key: 'ed25519:made-up-full', access_key: { nonce: 1, permission: 'FullAccess' } }], call: [{ public_key: 'ed25519:made-up-call', access_key: { nonce: 1, permission: { FunctionCall: { allowance: null, receiver_id: 'c.testnet', method_names: ['execute'] } } } }], none: [] }[opts.keys];
+      return list && args.account === 'c.testnet' ? rpc({ keys: list, block_height: 1000, block_hash: '11111111111111111111111111111111' }) : new Response('not here', { status: 404 });
+    }
     default: return new Response('not here', { status: 404 });
   }
 };

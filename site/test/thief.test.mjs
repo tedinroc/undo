@@ -186,6 +186,22 @@ describe('rules with no page around them', () => {
     assert.ok(files.some((f) => f.endsWith('/_shell.css')));
     assert.equal(files.filter((f) => f.endsWith('.map')).length, 0);
   });
+
+  test('a tab opened with no link is not a dead end: its one sentence comes with a link to the phone page, and no other sentence does', () => {
+    const page = readFileSync(join(SITE, 'pages/t/index.html'), 'utf8');
+    const source = readFileSync(join(SITE, 'pages/t/thief.mjs'), 'utf8');
+    const css = readFileSync(join(SITE, 'pages/t/thief.css'), 'utf8');
+    // The link is in the HTML, hidden until the tab says it has no vault link.
+    assert.match(page, /<a id="plain-start" class="again" href="\/p\/">Start on the phone page<\/a>/);
+    assert.match(css, /\.again \{ display: none;/);
+    assert.match(css, /\.again\.on \{ display: inline-block; \}/);
+    assert.match(source, /\$\('plain-start'\)\.classList\.toggle\('on', start\);/);
+    assert.match(source, /function plain\(state, sentence, \{ verbatim = '', address = null, retry = null, start = false \} = \{\}\)/, 'off unless a caller asks');
+    // Only the sentence for a link that names no vault asks for it.
+    const asks = source.split('\n').filter((l) => /start: true/.test(l));
+    assert.equal(asks.length, 1);
+    assert.match(asks[0], /if \(!S\.vaultHex\) return plain\('no_vault', 'This tab needs a vault link\. There is no vault in this one\.', \{ start: true \}\);/);
+  });
 });
 
 // ---------------------------------------------------------------- the stand-in relay
@@ -632,20 +648,31 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal(await textOf('amount-text'), 'everything  3,000 sats');
   });
 
-  test('no vault in the link, and an unknown vault: a plain sentence and no controls', { timeout: 30_000 }, async () => {
+  test('no vault in the link, and an unknown vault: a plain sentence and no controls; a tab with no link points to the phone page', { timeout: 30_000 }, async () => {
+    // The one link on a tab opened bare: where a vault link comes from. [text, href, on the screen] or null when hidden.
+    const startLink = () => js(`(() => {
+      const a = document.getElementById('plain-start');
+      if (!a.checkVisibility()) return null;
+      const r = a.getBoundingClientRect();
+      return [a.textContent, a.getAttribute('href'), r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth];
+    })()`);
     await open('/t/', {});
     await waitState('no_vault');
     assert.match(await textOf('plain-text'), /no vault/i);
     assert.equal(await js('[...document.querySelectorAll("button, input, textarea")].filter((e) => e.checkVisibility()).length'), 0);
+    assert.deepEqual(await startLink(), ['Start on the phone page', '/p/', true], 'a bare tab is not a dead end');
+    assert.deepEqual(await js('[...document.querySelectorAll("a")].filter((e) => e.checkVisibility()).map((e) => e.id)'), ['plain-start'], 'and it is the only link');
     await assertFrame('no_vault');
     await shot('05-no-vault');
     await open('/t/', { k: 'ab'.repeat(32) });
     await waitState('no_vault');
     assert.equal(await js('location.hash'), '', 'a key in a link with no vault comes out of the address bar too');
+    assert.deepEqual(await startLink(), ['Start on the phone page', '/p/', true]);
     await open('/t/', { v: 'ab'.repeat(32) });
     await waitState('no_vault');
     assert.match(await textOf('plain-text'), /not on this contract/);
     assert.equal(await js('[...document.querySelectorAll("button, input, textarea")].filter((e) => e.checkVisibility()).length'), 0);
+    assert.equal(await startLink(), null, 'a link that names a vault this contract does not hold is not sent to make another');
   });
 
   test('the whole film, ending in CANCELLED: real refusal, proposal, fling, running digits, a stamp once, digits frozen', { timeout: 240_000 }, async () => {

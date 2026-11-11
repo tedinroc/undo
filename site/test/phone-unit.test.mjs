@@ -124,6 +124,23 @@ test('AUDIT-1: a cancel the relay will not send stays on the page as a file tool
   assert.match(page, /ownCancelNodes\(\),\n\s+h\('button', \{ id: 'cancel'/, 'the request screen shows it too, after a refused tap');
 });
 
+test('the recovery file: the page that made the vault says to save it before the first Cancel, inside the button, because its Cancel leaves only the cold key', () => {
+  const page = read('p/phone.mjs');
+  const css = read('p/phone.css');
+  // Why it matters, in the code: both keys come from one call in this tab, and the Cancel's new K_s has no secret here.
+  assert.match(readFileSync(join(PAGES, '../lib/intents.mjs'), 'utf8'), /export function newVaultKeys\(\{ seed = randomBytes\(32\), cold = randomBytes\(32\) \} = \{\}\)/);
+  assert.match(page, /const newKs = spendKeys\(randomBytes\(32\)\)\.ks\.pub;/, 'the page keeps only the public half of the key its Cancel installs');
+  assert.match(page, /P\.seed = prepared\.keys\.seed;\n\s+P\.cold = prepared\.keys\.cold;/, 'and holds the spend seed and the cold key while it is open');
+  // The line, where the button is, and only while the page still holds the cold key the file is built from.
+  assert.match(page, /const RECOVERY_WHY = 'Save it before your first Cancel';/);
+  assert.match(page, /if \(P\.seed\) \{\n[\s\S]{0,700}id: 'recovery', onclick: downloadRecovery \}, 'Recovery file', h\('span', \{ class: 'sub', id: 'recovery-why' \}, RECOVERY_WHY\)\)\);\n\s+\}/);
+  assert.equal(page.match(/RECOVERY_WHY/g).length, 2, 'said once');
+  // In the button's own room: two lines in the height of one, so no button on that screen moves.
+  assert.match(css, /\.go \{[^}]*font: 800 28px\/1\.1 var\(--sans\);[^}]*padding: 16px;/);
+  assert.match(css, /\.go\.two \{ --sub: calc\(13px \* 1\.2 \+ 3px\); padding-top: calc\(16px - var\(--sub\) \/ 2\); padding-bottom: calc\(16px - var\(--sub\) \/ 2\); \}/);
+  assert.match(css, /\.go \.sub \{ display: block; margin-top: 3px; font: 500 13px\/1\.2 var\(--sans\);/);
+});
+
 test('first paint: the HTML shows the chip and a loading line before any module, and the build preloads every module the page loads', () => {
   const html = read('p/index.html');
   assert.match(html, /<main id="screen"><p class="small" id="boot-line">Loading the page\. It reads the contract next\.<\/p>/, 'a line on screen before any script runs');

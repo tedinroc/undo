@@ -6,7 +6,7 @@ import {
   bitcoinReader, configWords, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, contractWords,
   credentialToFragment, advanceState, credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, passkeyErrorWords,
   passkeyWords, refusalOf, RelayClient, RelayRefused, relayWords, requestState, rotateArgs, rotateDigest, RpcDown, rpIdHashOf, SkewTracker, solvePow, spendKeys,
-  spkToAddress, StaleRead, ViewRefused,
+  spkToAddress, StaleRead, upgradeWords, ViewRefused,
 } from '/site/lib/index.mjs';
 import { addressPrefix, parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
@@ -40,6 +40,10 @@ const EARLY_READ_MS = 3000;
 // A node a few blocks behind answers null for a request it has not reached, and that is within what a reader lets
 // through. So a seen request reads as gone only when it stays gone. A stamp cannot be taken back.
 const NULL_READS_TO_BELIEVE = 3;
+// How long the first screen waits for the contract account's key list. Without it the footer says the cautious sentence.
+const CODE_KEYS_MS = 2500;
+// Under the Recovery file button's own words. The README's row for the owner's phone says why at length.
+const RECOVERY_WHY = 'Save it before your first Cancel';
 
 const P = {
   screen: null, v: null, r: null, fragment: {}, vault: null, vaultRead: false, lastKnown: null, rs: null, items: new Map(), hintR: null,
@@ -49,6 +53,8 @@ const P = {
   balance: null, fundedTxid: null, stopped: false, sheetNote: null, hang: false, tx: null, txSent: null, ksSeen: null, frozenBy: {}, pin: null,
   // A cancel this page signed and the relay did not send, for tools/cancel.mjs. And whether this relay refused this vault.
   signed: null, notOurs: false,
+  // The contract account's access keys, as public RPC listed them for the footer. Null: not read, or no node answered.
+  codeKeys: null,
   // The first tick's vault and request reads, sent with the boot reads.
   early: null,
 };
@@ -93,6 +99,9 @@ async function main() {
   // send it: the relay's status, the contract's instance and clock, and the vault the link names with its request.
   const status = operatorCheck ? null : relay.status();
   let reads = operatorCheck ? null : contractReads(views, reader);
+  // Only the screen with no vault says how an upgrade waits, so only a link with no vault asks for the account's keys.
+  const footer = !operatorCheck && !asked.v && !(asked.h7 && config.h7);
+  let codeKeys = footer ? started(reader.accessKeys(config.contract)) : null;
   P.early = operatorCheck || (asked.h7 && config.h7) ? null : earlyVaultReads(views, asked);
   ctx = {
     config, reader, views, relay,
@@ -124,6 +133,7 @@ async function main() {
       show(h('p', { class: 'say' }, 'Can\'t read the NEAR contract right now.'));
       await new Promise((r) => { setTimeout(r, 3000); });
       reads = contractReads(views, reader);
+      if (footer) codeKeys = started(reader.accessKeys(config.contract));
       P.early = null;
     }
   }
@@ -153,10 +163,16 @@ async function main() {
     return;
   }
   if (!P.fragment.v) {
+    P.codeKeys = codeKeys ? await answerWithin(codeKeys, CODE_KEYS_MS) : null;
     drawNoVault();
     return;
   }
   watchVault(P.fragment.v);
+}
+
+/** A read's answer, or null when it failed or is not here after `ms`. */
+function answerWithin(promise, ms) {
+  return Promise.race([promise.catch(() => null), new Promise((r) => { setTimeout(() => r(null), ms); })]);
 }
 
 /** "Undo for Bitcoin" where it fits beside the chip, as on the landing page; only "Undo" where the chip leaves no room. */
@@ -1093,7 +1109,10 @@ const drawers = {
     if (P.relay.funds?.up && !P.fundedTxid && P.balance === 0) out.push(h('button', { class: 'go', type: 'button', id: 'fund', onclick: onFund }, 'Get test coins'));
     if (P.seed) {
       out.push(h('button', { class: 'go quiet', type: 'button', id: 'thief-link', onclick: copyThiefLink }, 'Copy the thief link'));
-      out.push(h('button', { class: 'go quiet', type: 'button', id: 'recovery', onclick: downloadRecovery }, 'Recovery file'));
+      // This page's Cancel swaps in a K_s whose secret it drops (ensurePrep), so after it the coins leave only by the cold
+      // key, and that key is in this file and nowhere else once the page closes. Said inside the button, in the room it
+      // already has, so nothing on the screen moves.
+      out.push(h('button', { class: 'go quiet two', type: 'button', id: 'recovery', onclick: downloadRecovery }, 'Recovery file', h('span', { class: 'sub', id: 'recovery-why' }, RECOVERY_WHY)));
     }
     return out;
   },
@@ -1127,7 +1146,7 @@ function drawNoVault(words = null) {
     words ? h('p', { class: 'notice warn', id: 'made-why' }, words) : null,
     h('div', { class: 'grow' }),
     can ? h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault') : null,
-    h('p', { class: 'foot', id: 'foot', 'data-network': ctx.instance?.network ?? '' }, `Test coins only. The address starts with ${addressPrefix(ctx.instance?.network) ?? 'tb1'}. This page holds your spend key, so a changed page could take it. The operator can upgrade this test contract after 1 hour. The signing network can refuse, not take.`),
+    h('p', { class: 'foot', id: 'foot', 'data-network': ctx.instance?.network ?? '' }, `Test coins only. The address starts with ${addressPrefix(ctx.instance?.network) ?? 'tb1'}. This page makes your spend key and your cold key and holds them while it is open, so a changed page could take both. ${upgradeWords(P.codeKeys)} The signing network alone can refuse, not take.`),
   );
 }
 

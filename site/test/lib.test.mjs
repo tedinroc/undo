@@ -402,6 +402,25 @@ test('NearReader: reads do not go back in time. An old block tries the next node
   assert.equal(await r.view('c', 'x'), 'new');
 });
 
+test('NearReader: accessKeys asks for the account\'s key list at a final block, and anything that is not a list is an error, never an empty list', async () => {
+  const asked = [];
+  const answer = (body) => async (url, init) => {
+    asked.push(JSON.parse(init.body));
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const keys = [{ public_key: 'ed25519:4W7aoutQcmfkctj8PddfREwcySTQoyrM91F9Lh4M6RWq', access_key: { nonce: 7, permission: 'FullAccess' } }];
+  const read = await new NearReader({ urls: ['a'], fetchFn: answer({ jsonrpc: '2.0', id: 1, result: { keys, block_height: 9, block_hash: 'x' } }) }).accessKeys('c.testnet');
+  assert.deepEqual(read, keys);
+  assert.deepEqual(asked[0].params, { request_type: 'view_access_key_list', account_id: 'c.testnet', finality: 'final' });
+  assert.equal(asked[0].method, 'query');
+  assert.deepEqual(await new NearReader({ urls: ['a'], fetchFn: answer({ jsonrpc: '2.0', id: 1, result: { keys: [], block_height: 9 } }) }).accessKeys('c.testnet'), []);
+  // An account that does not exist, and an answer with no list: both throw, so a page cannot read them as "no key".
+  const unknown = { jsonrpc: '2.0', id: 1, error: { name: 'HANDLER_ERROR', cause: { name: 'UNKNOWN_ACCOUNT', info: { requested_account_id: 'c.testnet' } }, code: -32000 } };
+  await assert.rejects(new NearReader({ urls: ['a'], fetchFn: answer(unknown) }).accessKeys('c.testnet'), (err) => err instanceof ViewRefused && /UNKNOWN_ACCOUNT/.test(err.verbatim));
+  await assert.rejects(new NearReader({ urls: ['a'], fetchFn: answer({ jsonrpc: '2.0', id: 1, result: { block_height: 9 } }) }).accessKeys('c.testnet'), ViewRefused);
+  await assert.rejects(new NearReader({ urls: ['a', 'b'], fetchFn: async () => { throw new TypeError('fetch failed'); } }).accessKeys('c.testnet'), RpcDown);
+});
+
 test('NearReader: blockTime returns the block\'s own time and when it was heard', async () => {
   let t = 1000;
   const { fetchFn } = rpcFake({ a: () => {
