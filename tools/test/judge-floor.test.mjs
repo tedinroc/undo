@@ -134,11 +134,14 @@ function esplora({ outspend }) {
   return new Promise((r) => server.listen(0, '127.0.0.1', () => r({ url: `http://127.0.0.1:${server.address().port}/api`, close: () => server.close() })));
 }
 
-/** tier-a.mjs with no cargo on PATH, NEAR at a dead port, and Esplora at `esploraUrl`. Async: the stand-in answers from here. */
-function tierA({ esploraUrl, referee }) {
+/**
+ * tier-a.mjs with no cargo on PATH, NEAR at a dead port, and Esplora at `esploraUrl`. `archivalUrl` puts a stand-in
+ * where the archival RPC is. Async: the stand-ins answer from here.
+ */
+function tierA({ esploraUrl, referee, archivalUrl = DEAD }) {
   const config = JSON.parse(read('deploy/testnet.json'));
   config.rpc = [DEAD];
-  config.replay = { ...config.replay, near_rpc: [DEAD], near_archival_rpc: [DEAD], mutinynet_esplora: esploraUrl };
+  config.replay = { ...config.replay, near_rpc: [DEAD], near_archival_rpc: [archivalUrl], mutinynet_esplora: esploraUrl };
   const path = join(work, `tier-a-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(path, JSON.stringify(config));
   const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: work, TMPDIR: work };
@@ -187,6 +190,10 @@ test('tier A with every endpoint dead: no [replay] line passes, and the recorded
   // The consensus checks still run on the raw hex in proofs/.
   assert.ok(r.lines.some((l) => /^PASS C02 \[consensus-lib\]/.test(l)), r.out);
   assert.ok(r.lines.some((l) => /^SKIP C12 \[live-testnet\] signer arguments: SKIP \(network\)/.test(l)), r.out);
+  // The agent run: nothing fetched, so nothing passes; its first line and the count of the rest say SKIP.
+  assert.equal(r.lines.filter((l) => /^(PASS|FAIL) C14 /.test(l)).length, 0, r.out);
+  assert.ok(r.lines.some((l) => /^SKIP C14 \[replay\] the key's AddKey \S+: SKIP \(network\)/.test(l)), r.out);
+  assert.ok(r.lines.some((l) => /^SKIP C14 \[replay\] 11 more transactions of the agent run: SKIP \(network\)/.test(l)), r.out);
   // A placeholder deploy/testnet.json says so; once the deploy fills it, the dead RPC does.
   assert.ok(r.lines.some((l) => /^SKIP C06 \[live-testnet\] (the contract's status view: .* holds a placeholder|status view: SKIP \(network\))/.test(l)), r.out);
   assert.equal(r.code, 0, r.out);
@@ -211,6 +218,194 @@ test('tier A, C03: the coin\'s spender must be the cold-key return proofs/ recor
       api.close();
     }
   }
+});
+
+// ---------------------------------------------------------------- tier A, C14: the agent run against a stand-in archival node
+
+const c14 = JSON.parse(read('proofs/c14-agent.json'));
+const c14Chain = JSON.parse(read('tools/test/fixtures/c14-archival.json'));
+
+/**
+ * A stand-in for the archival RPC that knows the agent run's transactions and one block, as the real one answered
+ * them, after `change` has edited a copy. Anything else gets no answer, so the G1 and G2 lines say SKIP (network).
+ */
+function archival(change = () => {}) {
+  const chain = structuredClone(c14Chain);
+  change(chain);
+  const server = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      let call;
+      try {
+        call = JSON.parse(body);
+      } catch {
+        return req.socket.destroy();
+      }
+      const result = call.method === 'tx' ? chain.tx[call.params?.tx_hash] : call.method === 'block' ? chain.block[call.params?.block_id] : undefined;
+      if (result === undefined) return req.socket.destroy();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ jsonrpc: '2.0', id: call.id, result }));
+    });
+  });
+  return new Promise((r) => server.listen(0, '127.0.0.1', () => r({ url: `http://127.0.0.1:${server.address().port}`, close: () => { server.closeAllConnections(); server.close(); } })));
+}
+
+const c14Lines = (r) => r.lines.filter((l) => /^(PASS|FAIL|SKIP|INFO) C14 /.test(l));
+
+test('tier A, C14: every recorded transaction of the agent run is fetched again and passes; what NEAR refused is INFO, never PASS', { timeout: 150_000 }, async () => {
+  const node = await archival();
+  try {
+    const r = await tierA({ esploraUrl: `${DEAD}/api`, archivalUrl: node.url });
+    const lines = c14Lines(r);
+    const passed = lines.filter((l) => l.startsWith('PASS C14 [replay] NEAR testnet tx '));
+    assert.equal(lines.filter((l) => !l.startsWith('PASS') && !l.startsWith('INFO')).length, 0, r.out);
+    // One line for each transaction the fixture holds, and each names its hash.
+    assert.equal(passed.length, Object.keys(c14Chain.tx).length, r.out);
+    for (const hash of Object.keys(c14Chain.tx)) assert.equal(passed.filter((l) => l.includes(`NEAR testnet tx ${hash}:`)).length, 1, hash);
+    const agentKey = c14.agent.function_call_key.public_key;
+    assert.ok(passed.some((l) => l.includes(`was given ${agentKey} as a function-call key for ${c14.contract.account}, methods propose_btc and execute only`)), r.out);
+    assert.ok(passed.some((l) => l.includes(`${c14.propose.tx}: propose_btc on ${c14.contract.account}, signed by that function-call key, made request 0`) && l.includes('set its unlock 5:00 after the block it ran in')), r.out);
+    for (const a of c14.contract_refusals.attempts) assert.ok(passed.some((l) => l.includes(a.tx) && l.endsWith(`The contract refused it: ${a.refusal}`)), a.what);
+    assert.ok(passed.some((l) => l.includes(c14.owner_cancel.tx) && l.includes('log "undo:cancelled request=0"') && l.includes('software authenticator')), r.out);
+    assert.ok(passed.some((l) => l.includes(c14.rotation.after_rotation.direct_tx) && l.endsWith('Smart contract panicked: SpendKeySuspended')), r.out);
+    assert.ok(passed.some((l) => l.includes(c14.rotation.after_the_new_key_lands.propose_tx) && l.endsWith('Smart contract panicked: bad K_s signature')), r.out);
+    const info = lines.filter((l) => l.startsWith('INFO'));
+    assert.equal(info.length, 1, r.out);
+    assert.match(info[0], /^INFO C14 \[live-testnet, recorded 2026-11-11\] NEAR refused 7 calls signed by the agent's key before any contract ran.* Not fetched again: /);
+    for (const call of c14.near_refusals.calls) assert.ok(r.out.includes(`    ${call.what}: ${call.words}`), call.what);
+    assert.equal(lines.some((l) => /^PASS .*MethodNameMismatch/.test(l)), false, 'a refusal that left nothing on chain is not a PASS');
+    everyLineHasAClaim(r.lines);
+  } finally {
+    node.close();
+  }
+});
+
+test('tier A, C14: a wider key, another signer, a call the contract took, other words or a missing log each fail their line', { timeout: 300_000 }, async () => {
+  const p = c14;
+  const addKey = (chain) => chain.tx[p.agent.function_call_key.add_key_tx].transaction.actions[0].AddKey.access_key;
+  const succeed = (tx) => {
+    tx.status = { SuccessValue: '' };
+    for (const r of tx.receipts_outcome) r.outcome.status = { SuccessValue: '' };
+  };
+  const otherWords = (tx) => {
+    const text = JSON.stringify(tx).replaceAll('webauthn: bad signature', 'request not found').replaceAll('SpendKeySuspended', 'OutflowCap').replaceAll('bad K_s signature', 'expired');
+    Object.assign(tx, JSON.parse(text));
+  };
+  const attempt = (what) => p.contract_refusals.attempts.find((a) => a.what.startsWith(what));
+  const runs = [
+    [(chain) => {
+      addKey(chain).permission.FunctionCall.method_names.push('cancel');
+      chain.tx[p.propose.tx].transaction.public_key = p.agent.full_access_key;
+      succeed(chain.tx[attempt('cancel, with a passkey').tx]);
+      chain.tx[p.owner_cancel.tx].transaction.signer_id = p.agent.account;
+      otherWords(chain.tx[p.rotation.after_rotation.direct_tx]);
+      succeed(chain.tx[p.rotation.after_the_new_key_lands.propose_tx]);
+    }, [
+      [p.agent.function_call_key.add_key_tx, /the key may also call cancel$/],
+      [p.propose.tx, /signed by ed25519:\S+, not the agent's function-call key$/],
+      [attempt('cancel, with a passkey').tx, /the contract did not refuse it$/],
+      [p.owner_cancel.tx, new RegExp(`signed by ${p.agent.account}, not ${p.relay.account}$`)],
+      [p.rotation.after_rotation.direct_tx, /refused, but not with "SpendKeySuspended": Smart contract panicked: OutflowCap$/],
+      [p.rotation.after_the_new_key_lands.propose_tx, /the contract did not refuse it$/],
+    ]],
+    [(chain) => {
+      addKey(chain).permission.FunctionCall.method_names = [];
+      const block = Object.values(chain.block)[0];
+      block.header.timestamp_nanosec = String(BigInt(block.header.timestamp_nanosec) - 240_000_000_000n);
+      otherWords(chain.tx[attempt('set_policy').tx]);
+      for (const r of chain.tx[p.owner_cancel.tx].receipts_outcome) r.outcome.logs = [];
+      chain.tx[p.rotation.owner_rotate.tx].transaction.actions[0].FunctionCall.method_name = 'cancel';
+      chain.tx[attempt('clear_hold').tx].transaction.receiver_id = 'g1.s.undo-btc.testnet';
+    }, [
+      [p.agent.function_call_key.add_key_tx, /the key lists no method, which NEAR reads as every method$/],
+      [p.propose.tx, /the unlock is 540000 ms after its block, not one of the contract's new-destination waits \(300000, 600000\)$/],
+      [attempt('set_policy').tx, /refused, but not with "webauthn: bad signature": Smart contract panicked: request not found$/],
+      [p.owner_cancel.tx, /no log "undo:cancelled request=0" from /],
+      [p.rotation.owner_rotate.tx, /not one call of cancel_all_and_rotate$/],
+      [attempt('clear_hold').tx, /sent to g1\.s\.undo-btc\.testnet, not /],
+    ]],
+    [(chain) => {
+      addKey(chain).permission = 'FullAccess';
+      chain.tx[p.propose.tx].status = { SuccessValue: Buffer.from('7').toString('base64') };
+      const args = { ...JSON.parse(Buffer.from(chain.tx[attempt('add_destination').tx].transaction.actions[0].FunctionCall.args, 'base64').toString('utf8')), vault: 'ab'.repeat(32) };
+      chain.tx[attempt('add_destination').tx].transaction.actions[0].FunctionCall.args = Buffer.from(JSON.stringify(args)).toString('base64');
+    }, [
+      [p.agent.function_call_key.add_key_tx, /the key it added is not a function-call key \("FullAccess"\)$/],
+      [p.propose.tx, /it did not return request 0$/],
+      [attempt('add_destination').tx, /not about vault /],
+    ]],
+    [(chain) => {
+      addKey(chain).permission.FunctionCall.receiver_id = 'g1.s.undo-btc.testnet';
+      chain.tx[p.agent.function_call_key.add_key_tx].transaction.public_key = p.agent.function_call_key.public_key;
+    }, [[p.agent.function_call_key.add_key_tx, /signed by the agent's own key$/]]],
+    [(chain) => { addKey(chain).permission.FunctionCall.receiver_id = 'g1.s.undo-btc.testnet'; }, [[p.agent.function_call_key.add_key_tx, /the key is for g1\.s\.undo-btc\.testnet, not /]]],
+  ];
+  for (const [change, wants] of runs) {
+    const node = await archival(change);
+    try {
+      const r = await tierA({ esploraUrl: `${DEAD}/api`, archivalUrl: node.url });
+      const lines = c14Lines(r);
+      assert.equal(r.code, 1, r.out);
+      for (const [hash, want] of wants) {
+        const failed = lines.filter((l) => l.startsWith(`FAIL C14 [replay] NEAR testnet tx ${hash}: `));
+        assert.equal(failed.length, 1, `${hash}\n${r.out}`);
+        assert.match(failed[0], want);
+        assert.equal(lines.some((l) => l.startsWith('PASS') && l.includes(hash)), false, `${hash} must not also pass`);
+      }
+      // Only the edited transactions fail: the rest still pass.
+      assert.equal(lines.filter((l) => l.startsWith('FAIL')).length, wants.length, r.out);
+      assert.equal(lines.filter((l) => l.startsWith('PASS')).length, Object.keys(c14Chain.tx).length - wants.length, r.out);
+      everyLineHasAClaim(r.lines);
+    } finally {
+      node.close();
+    }
+  }
+});
+
+test('tier A, C14: an archival node that stops answering part way gives SKIP (network) for that line and counts the rest, never PASS or FAIL', { timeout: 150_000 }, async () => {
+  const gone = c14.contract_refusals.attempts[1].tx;
+  const node = await archival((chain) => { delete chain.tx[gone]; });
+  try {
+    const r = await tierA({ esploraUrl: `${DEAD}/api`, archivalUrl: node.url });
+    const lines = c14Lines(r).filter((l) => !l.startsWith('INFO'));
+    const passed = lines.filter((l) => l.startsWith('PASS')).length;
+    assert.equal(lines.filter((l) => l.startsWith('FAIL')).length, 0, r.out);
+    assert.equal(lines.filter((l) => l.includes(gone)).length, 1, r.out);
+    assert.ok(lines.some((l) => l.startsWith(`SKIP C14 [replay] cancel ${gone}: SKIP (network)`)), r.out);
+    // Three run at a time, so how many had started when the answer stopped varies. Every one is a line or is counted.
+    assert.ok(passed >= 3 && passed <= 11, r.out);
+    const more = lines.map((l) => /^SKIP C14 \[replay\] (\d+) more transactions of the agent run: SKIP \(network\)/.exec(l)).find(Boolean);
+    assert.equal(passed + 1 + (more ? Number(more[1]) : 0), Object.keys(c14Chain.tx).length, r.out);
+  } finally {
+    node.close();
+  }
+});
+
+test('proofs/c14-agent.json: nothing NEAR refused is recorded as on chain, the key is the narrow one, and it holds no secret', () => {
+  const text = read('proofs/c14-agent.json');
+  assert.equal(c14.schema, 'undo-c14-agent-v1');
+  assert.deepEqual(c14.agent.function_call_key.permission.FunctionCall.method_names, ['propose_btc', 'execute']);
+  assert.equal(c14.agent.function_call_key.permission.FunctionCall.receiver_id, c14.contract.account);
+  assert.notEqual(c14.agent.function_call_key.public_key, c14.agent.full_access_key);
+  assert.equal(c14.near_refusals.calls.length, 7);
+  for (const call of c14.near_refusals.calls) {
+    assert.equal(call.chain_knows_it, false, call.what);
+    assert.equal(call.error.cause.name, 'INVALID_TRANSACTION', call.what);
+    assert.ok(call.error.data.TxExecutionError.InvalidTxError.InvalidAccessKeyError, call.what);
+    assert.equal('tx' in call, false, 'a refused call has a signed hash, not a transaction');
+  }
+  assert.deepEqual(c14.near_refusals.calls.slice(0, 5).map((c) => c.method), ['cancel', 'cancel_all_and_rotate', 'set_policy', 'clear_hold', 'add_destination']);
+  for (const call of c14.near_refusals.calls.slice(0, 5)) assert.deepEqual(call.error.data.TxExecutionError.InvalidTxError.InvalidAccessKeyError, { MethodNameMismatch: { method_name: call.method } });
+  assert.equal(c14.near_refusals.key_nonce_before, c14.near_refusals.key_nonce_after);
+  assert.equal(c14.near_refusals.key_allowance_before, c14.near_refusals.key_allowance_after);
+  assert.equal(c14.propose.wait_ms, c14.contract.policy.t_new_ms);
+  assert.ok(c14.owner_cancel.ms_before_unlock > 0, 'the owner cancelled before the wait ended');
+  assert.equal(c14.contract_refusals.after.request_unlock, c14.propose.unlock);
+  assert.equal(c14.coin_after.spent, false);
+  // The agent file's fields are named; its seed and key are not here, and no field holds 64 hex but public ids.
+  assert.doesNotMatch(text, /"(seed|private_key|secret_key|cold|passkey_secret)": "/);
+  assert.doesNotMatch(text, /ed25519:[1-9A-HJ-NP-Za-km-z]{60,}/);
 });
 
 // ---------------------------------------------------------------- tier B: totals are INFO, claims need their tests
@@ -361,7 +556,7 @@ test('watcher: init, a loose config and a second init print the file name, never
 
 // ---------------------------------------------------------------- what the README and CLAIMS.md say
 
-test('README and CLAIMS: no TODO, the agent and watcher are reachable, C14 claims no testnet run, C13 claims only the hash', () => {
+test('README and CLAIMS: no TODO, the agent and watcher are reachable, every hash C14 cites is in proofs/c14-agent.json, C13 claims only the hash', () => {
   const readme = read('README.md');
   const claims = read('CLAIMS.md');
   assert.doesNotMatch(readme, /TODO/);
@@ -369,8 +564,29 @@ test('README and CLAIMS: no TODO, the agent and watcher are reachable, C14 claim
   assert.match(readme, /\[docs\/watch\.md\]\(docs\/watch\.md\)/);
   assert.match(readme, /written in the window, except the vendored libraries/);
   const row = (id) => claims.split('\n').find((l) => l.startsWith(`| ${id} |`)).split(' | ');
-  assert.equal(row('C14')[4], '`[mock-signer]`', 'C14 ran on a local sandbox only');
-  assert.match(row('C14')[2], /agent\/test\/run-sandbox\.sh 86 88/);
+  const c14Row = row('C14');
+  assert.equal(c14Row[4], '`[mock-signer]`; `[live-testnet]`, re-fetched `[replay]`', 'C14 ran on a local sandbox and once on NEAR testnet');
+  assert.match(c14Row[2], /agent\/test\/run-sandbox\.sh 86 88/);
+  assert.match(c14Row[2], /agent\/test\/testnet-c14\.mjs --live/);
+  // What the testnet run rests on is its record. A hash in the row, in the paragraph on that run or in the agent's
+  // README that the record does not hold would be a claim with nothing under it.
+  const record = read('proofs/c14-agent.json');
+  const live = claims.split('\n').find((l) => l.startsWith('The agent CLI, live, '));
+  assert.ok(live, 'CLAIMS.md has a paragraph on the live agent run');
+  const agentReadme = read('agent/README.md');
+  const onTestnet = agentReadme.slice(agentReadme.indexOf('**On NEAR testnet.**'), agentReadme.indexOf('**If a command hangs'));
+  for (const [where, text] of [['the C14 row', c14Row.join(' | ')], ['the live paragraph', live], ['agent/README.md', onTestnet]]) {
+    const hashes = [...text.matchAll(/`([1-9A-HJ-NP-Za-km-z]{43,44}|[0-9a-f]{64})`/g)].map((m) => m[1]);
+    assert.ok(hashes.length >= 7, `${where} names its transactions`);
+    for (const h of hashes) assert.ok(record.includes(`"${h}"`), `${where} cites ${h}, which proofs/c14-agent.json does not hold`);
+  }
+  // What NEAR refused never landed, and neither text may say a phone's passkey or the near-cli command ran there.
+  assert.match(c14Row[6], /with no transaction, because NEAR does not broadcast one it refuses/);
+  assert.match(c14Row[6], /With a phone's passkey as the owner: \*\*not yet run\*\*/);
+  assert.match(c14Row[6], /The near-cli command `undo keys` prints, on testnet: \*\*not yet run\*\*/);
+  assert.match(onTestnet, /with a phone's passkey this has \*\*not yet run\*\*/);
+  assert.match(onTestnet, /that near-cli command itself has \*\*not yet run\*\* on testnet/);
+  assert.doesNotMatch(agentReadme, /None of it has run against testnet/);
   assert.match(row('C13')[1], /The deployed code hash equals the wasm this machine built/);
   assert.doesNotMatch(claims, /current build/, 'every build is named by what it was built from');
   for (const f of ['agent/README.md', 'docs/watch.md']) assert.ok(existsSync(join(REPO, f)), f);

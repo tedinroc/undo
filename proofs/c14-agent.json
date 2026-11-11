@@ -1,0 +1,583 @@
+{
+  "schema": "undo-c14-agent-v1",
+  "what": "CLAIMS C14 on NEAR testnet: an agent holding a vault's spend seed and one NEAR function-call key proposes a spend, and cannot cancel, rotate or shorten the wait. Written by agent/test/testnet-c14.mjs from one live run",
+  "labels": [
+    "live-testnet",
+    "live-mutinynet"
+  ],
+  "notes": [
+    "The owner's passkey in this run is a software authenticator in the driver's process, not a phone.",
+    "A transaction NEAR refuses for its access key is never broadcast, so near_refusals holds no transaction on chain: each entry keeps the hash it was signed with, the RPC's error as it came, and the nodes' answer that they do not know that hash.",
+    "Every other hash here is a NEAR testnet transaction or a Mutinynet txid, and ./verify.sh A fetches the NEAR ones again from archival RPC."
+  ],
+  "ran_utc": {
+    "started": "2026-11-11T16:59:56Z",
+    "finished": "2026-11-11T17:04:32Z"
+  },
+  "contract": {
+    "account": "v1.s.undo-btc.testnet",
+    "code_hash": "4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1",
+    "wasm_sha256": "358c63bf9ff637ceea25c1ba4cc8454022768aeb7cab932829fd7e800ebb1290",
+    "signer": "v1.signer-prod.testnet",
+    "policy": {
+      "t_known_ms": 60000,
+      "t_new_ms": 300000,
+      "t_new_unguarded_ms": 600000,
+      "hold_ms": 300000,
+      "t_stuck_ms": 600000,
+      "fee_cap_tx": 1000,
+      "fee_budget_24h": 5000,
+      "outflow_cap_24h": 1000000
+    }
+  },
+  "relay": {
+    "url": "https://undo-btc.pages.dev/api/relay",
+    "account": "s.undo-relay.testnet"
+  },
+  "agent": {
+    "account": "agent1.s.undo-btc.testnet",
+    "created_tx": "3C9xKTcrcRCotqM4Z7bNHCSrTRBdHpjUMkmjzmW77Gax",
+    "created_by": "s.undo-btc.testnet",
+    "funded_near": "0.5",
+    "full_access_key": "ed25519:4W7aoutQcmfkctj8PddfREwcySTQoyrM91F9Lh4M6RWq",
+    "file": {
+      "agent_file_fields": [
+        "account_id",
+        "contract",
+        "near_network",
+        "private_key",
+        "rpc",
+        "seed",
+        "undo_agent",
+        "vault"
+      ],
+      "holds": "the vault's spend seed and one NEAR key: no passkey, no cold key, no full-access key"
+    },
+    "function_call_key": {
+      "public_key": "ed25519:Anva5xK7ZRtcJS2PPT7Dj3Fv23s3SkZLk8v6kZzGZXjq",
+      "add_key_tx": "Ftv9m76YCKwm1AfyxNrJAx78sv66qcrS9sHP6GVjvPNN",
+      "added_by": "the agent account's full-access key, which is the payer's and is not in the agent file",
+      "permission": {
+        "FunctionCall": {
+          "allowance": "250000000000000000000000",
+          "method_names": [
+            "propose_btc",
+            "execute"
+          ],
+          "receiver_id": "v1.s.undo-btc.testnet"
+        }
+      },
+      "undo_keys_reads": "function-call key, contract v1.s.undo-btc.testnet, methods propose_btc, execute, allowance 0.2500 NEAR",
+      "near_cli_command_printed": [
+        "account",
+        "add-key",
+        "agent1.s.undo-btc.testnet",
+        "grant-function-call-access",
+        "--allowance",
+        "0.25 NEAR",
+        "--contract-account-id",
+        "v1.s.undo-btc.testnet",
+        "--function-names",
+        "propose_btc,execute",
+        "use-manually-provided-public-key",
+        "ed25519:Anva5xK7ZRtcJS2PPT7Dj3Fv23s3SkZLk8v6kZzGZXjq",
+        "network-config",
+        "testnet",
+        "sign-with-legacy-keychain",
+        "send"
+      ],
+      "near_cli_command_note": "undo keys prints this near-cli-rs command for the owner. This run added the same key with the same contract, methods and allowance through tools/lib/near.mjs; the near-cli command itself has not run on testnet"
+    }
+  },
+  "vault": {
+    "id": "846fdf9c4e77829ba1777874f16e577328f7e0f667921cb163f5fcf9af4de262",
+    "address": "tb1qq7sutpgmqfppwz38mj3sun83msprksxmy7tx07uh7tqf6344ha9qmh9ag3",
+    "script_pubkey": "002007a1c5851b0242170a27dca30e4cf1dc023b40db279667fb97f2c09d46b5bf4a",
+    "created_tx": "CtppAEeuJ5HoRVaZdAr7dHSBdX9ag37yfPSy5241mB9v",
+    "created_through": "https://undo-btc.pages.dev/api/relay",
+    "guard": "s.undo-relay.testnet",
+    "created_utc": "2026-11-11T17:00:12Z",
+    "coin": {
+      "mutinynet_txid": "e3e082e443ce6f9b72d5cd1ed107dbacaa59c499a550e06beee28d2f66a60946",
+      "vout": 0,
+      "value_sats": 2000,
+      "height": 3581769,
+      "from": "the relay's dispenser"
+    }
+  },
+  "propose": {
+    "tx": "9dVdMDnhjk6ufuiQR6NPmKMdSNtHQo7FqRPVB1jGTTua",
+    "request": 0,
+    "to": "tb1qnw5z5t6wssq80k8hmsfj6zjdh4u00x00ccmqpn",
+    "amount_sats": 1000,
+    "tier": "New",
+    "proposed_at": 1794416525647,
+    "unlock": 1794416825647,
+    "wait_ms": 300000,
+    "spend_nonce_before": 0,
+    "signed_by": "ed25519:Anva5xK7ZRtcJS2PPT7Dj3Fv23s3SkZLk8v6kZzGZXjq",
+    "undo_check": [
+      "check only: nothing signed, nothing sent  [free view, NEAR testnet, Mutinynet signet test coins]",
+      "would propose 1,000 sats to tb1qnw5z5t6wssq80k8hmsfj6zjdh4u00x00ccmqpn",
+      "from          1 coin (2,000 sats), fee 384 sats, change 616 sats back to the vault",
+      "tier          New: a destination the owner has not approved",
+      "wait          5:00 after propose",
+      "spend key     this agent's, active"
+    ],
+    "undo_propose": [
+      "Undo for Bitcoin  ·  agent spend key  ·  NEAR testnet  ·  Mutinynet signet test coins",
+      "proposed   1,000 sats to tb1qnw5z5t6wssq80k8hmsfj6zjdh4u00x00ccmqpn",
+      "request    #0",
+      "tier       New: a destination the owner has not approved",
+      "wait       5:00, set by the contract",
+      "unlocks in 5:00",
+      "The owner's phone can cancel it until then. This key cannot.",
+      "NEAR testnet tx 9dVdMDnhjk6ufuiQR6NPmKMdSNtHQo7FqRPVB1jGTTua",
+      "Public now: the amount and destination, in the contract's queue."
+    ],
+    "undo_status": [
+      "Undo for Bitcoin  ·  vault 846fdf9c…e262  ·  NEAR testnet contract v1.s.undo-btc.testnet  ·  Mutinynet signet test coins",
+      "the contract says:",
+      "  guard online, last heartbeat 2026-11-11 17:00 UTC",
+      "  1 pending, next unlock 2026-11-11 17:07 UTC",
+      "  cold-key exit: a coin 6 blocks old can leave with the recovery file and no NEAR",
+      "  storage credit 0.009 NEAR: a one-input proposal takes about 0.006 and a 16-input one about 0.057, and one the credit cannot pay for is refused until anyone tops it up. Cancel, rotate, freeze and execute do not need it",
+      "  no upgrade pending. New code would wait 60 min in public",
+      "  no signer registered for Qwen/Qwen3.8-27B: no new holds, and every other rule still holds",
+      "  27892 bytes free beyond what vaults have paid in, which is all that new code may add",
+      "  passkeys work from https://undo-btc.pages.dev. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit",
+      "requests:",
+      "  #0  New  1,000 sats to tb1qnw5z5t6wssq80k8hmsfj6zjdh4u00x00ccmqpn  waiting, unlocks in 4:54",
+      "spend key: this agent's, active",
+      "Anyone can read this queue: amounts and destinations are public."
+    ],
+    "at_utc": "2026-11-11T17:02:13Z"
+  },
+  "near_refusals": {
+    "at_utc": "2026-11-11T17:02:33Z",
+    "key_nonce_before": 277243309000001,
+    "key_nonce_after": 277243309000001,
+    "key_allowance_before": "249660484191625000000000",
+    "key_allowance_after": "249660484191625000000000",
+    "calls": [
+      {
+        "method": "cancel",
+        "receiver": "v1.s.undo-btc.testnet",
+        "deposit": "0",
+        "signed_hash": "FL9MY4xiPH2QvuwAB3we4XHpf2MLNDCDzZxw3GfdFUZ",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": {
+                  "MethodNameMismatch": {
+                    "method_name": "cancel"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":{\"MethodNameMismatch\":{\"method_name\":\"cancel\"}}}",
+        "what": "cancel, signed by the agent's NEAR key",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      },
+      {
+        "method": "cancel_all_and_rotate",
+        "receiver": "v1.s.undo-btc.testnet",
+        "deposit": "0",
+        "signed_hash": "9WJaScPbGgVvY6CwSxzzoB42Gqseq73qqjbC75mhWA5w",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": {
+                  "MethodNameMismatch": {
+                    "method_name": "cancel_all_and_rotate"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":{\"MethodNameMismatch\":{\"method_name\":\"cancel_all_and_rotate\"}}}",
+        "what": "cancel_all_and_rotate, signed by the agent's NEAR key",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      },
+      {
+        "method": "set_policy",
+        "receiver": "v1.s.undo-btc.testnet",
+        "deposit": "0",
+        "signed_hash": "EUKemSJUagmWMnVu9BnxqPz4hZ9VTStCCrFNEBLuHGjj",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": {
+                  "MethodNameMismatch": {
+                    "method_name": "set_policy"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":{\"MethodNameMismatch\":{\"method_name\":\"set_policy\"}}}",
+        "what": "set_policy, signed by the agent's NEAR key",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      },
+      {
+        "method": "clear_hold",
+        "receiver": "v1.s.undo-btc.testnet",
+        "deposit": "0",
+        "signed_hash": "Gy5PAjt5RUYD9C5C2uBShduScpwKrn3BcpWeAzdvdpYL",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": {
+                  "MethodNameMismatch": {
+                    "method_name": "clear_hold"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":{\"MethodNameMismatch\":{\"method_name\":\"clear_hold\"}}}",
+        "what": "clear_hold, signed by the agent's NEAR key",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      },
+      {
+        "method": "add_destination",
+        "receiver": "v1.s.undo-btc.testnet",
+        "deposit": "0",
+        "signed_hash": "eLeGAzSyCppjDhfwD8DYwbErqDixYGwPdqaXvRoFxQg",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": {
+                  "MethodNameMismatch": {
+                    "method_name": "add_destination"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":{\"MethodNameMismatch\":{\"method_name\":\"add_destination\"}}}",
+        "what": "add_destination, signed by the agent's NEAR key",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      },
+      {
+        "method": "propose_btc",
+        "receiver": "v1.s.undo-btc.testnet",
+        "deposit": "1",
+        "signed_hash": "63hKNFjD9d9iSHP3A8GNiQEufyFJM3qCQqL7G36ns2CD",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": "DepositWithFunctionCall"
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":\"DepositWithFunctionCall\"}",
+        "what": "propose_btc with 1 yoctoNEAR attached",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      },
+      {
+        "method": "propose_btc",
+        "receiver": "s.undo-btc.testnet",
+        "deposit": "0",
+        "signed_hash": "HYFyGq6aqS8XNMAEG1hJMZNWQdDyM3nxPEg7rmhkummi",
+        "rpc": "test.rpc.fastnear.com",
+        "error": {
+          "name": "HANDLER_ERROR",
+          "cause": {
+            "info": {},
+            "name": "INVALID_TRANSACTION"
+          },
+          "code": -32000,
+          "message": "Server error",
+          "data": {
+            "TxExecutionError": {
+              "InvalidTxError": {
+                "InvalidAccessKeyError": {
+                  "ReceiverMismatch": {
+                    "ak_receiver": "v1.s.undo-btc.testnet",
+                    "tx_receiver": "s.undo-btc.testnet"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "words": "{\"InvalidAccessKeyError\":{\"ReceiverMismatch\":{\"ak_receiver\":\"v1.s.undo-btc.testnet\",\"tx_receiver\":\"s.undo-btc.testnet\"}}}",
+        "what": "a call to another account",
+        "chain_knows_it": false,
+        "asked": "test.rpc.fastnear.com: UNKNOWN_TRANSACTION"
+      }
+    ]
+  },
+  "contract_refusals": {
+    "at_utc": "2026-11-11T17:02:50Z",
+    "attempts": [
+      {
+        "what": "cancel, with a passkey assertion from a P-256 key the agent made",
+        "method": "cancel",
+        "tx": "BXsQJVSMCjnMtj6HvKHHFe3xt5zci4ANzMDDe7MA625A",
+        "sent_by": "s.undo-btc.testnet",
+        "refusal": "Smart contract panicked: webauthn: bad signature",
+        "needle": "webauthn: bad signature"
+      },
+      {
+        "what": "cancel, as the cold key, signed with the agent's K_u",
+        "method": "cancel",
+        "tx": "2opkAh3PjHA57sTEuPGoSa8dET3FXmrxXdvj5ELhjQws",
+        "sent_by": "s.undo-btc.testnet",
+        "refusal": "Smart contract panicked: bad K_e signature",
+        "needle": "bad K_e signature"
+      },
+      {
+        "what": "cancel_all_and_rotate to a spend key the agent chose",
+        "method": "cancel_all_and_rotate",
+        "tx": "H7eof5koQqRJEef87fdLa94pKYkmttFJFS442MdNAGyr",
+        "sent_by": "s.undo-btc.testnet",
+        "refusal": "Smart contract panicked: webauthn: bad signature",
+        "needle": "webauthn: bad signature"
+      },
+      {
+        "what": "set_policy to shorten every wait",
+        "method": "set_policy",
+        "tx": "6j35PXY3Wz1925YGfnMCA6YirnRTqiUNywWxZcsf8WQA",
+        "sent_by": "s.undo-btc.testnet",
+        "refusal": "Smart contract panicked: webauthn: bad signature",
+        "needle": "webauthn: bad signature"
+      },
+      {
+        "what": "add_destination, to make its own destination fast",
+        "method": "add_destination",
+        "tx": "ADQLwGoXdj78DMtKomhEtzaoYvtMc53LrmoLJb6P33GX",
+        "sent_by": "s.undo-btc.testnet",
+        "refusal": "Smart contract panicked: webauthn: bad signature",
+        "needle": "webauthn: bad signature"
+      },
+      {
+        "what": "clear_hold",
+        "method": "clear_hold",
+        "tx": "H2bcb8uAYQEQ3VEhPqpGsm2SDS79PWSLihbvEYHULhi7",
+        "sent_by": "s.undo-btc.testnet",
+        "refusal": "Smart contract panicked: webauthn: bad signature",
+        "needle": "webauthn: bad signature"
+      }
+    ],
+    "after": {
+      "request_status": "Pending",
+      "request_unlock": 1794416825647,
+      "policy": {
+        "t_known_ms": 60000,
+        "t_new_ms": 300000,
+        "t_new_unguarded_ms": 600000,
+        "hold_ms": 300000,
+        "t_stuck_ms": 600000,
+        "fee_cap_tx": 1000,
+        "fee_budget_24h": 5000,
+        "outflow_cap_24h": 1000000
+      },
+      "spend_key_unchanged": true,
+      "spend_key_suspended": false,
+      "known_destinations": 0
+    }
+  },
+  "owner_cancel": {
+    "tx": "9719jZ7UB1MrVBj9djosokrwqJHQUHqNgCDzXLBjyJpt",
+    "through": "https://undo-btc.pages.dev/api/relay",
+    "relay_account": "s.undo-relay.testnet",
+    "request": 0,
+    "ms_before_unlock": 251198,
+    "passkey": "software authenticator",
+    "undo_status": [
+      "Undo for Bitcoin  ·  vault 846fdf9c…e262  ·  NEAR testnet contract v1.s.undo-btc.testnet  ·  Mutinynet signet test coins",
+      "the contract says:",
+      "  guard online, last heartbeat 2026-11-11 17:00 UTC",
+      "  cold-key exit: a coin 6 blocks old can leave with the recovery file and no NEAR",
+      "  storage credit 0.017 NEAR: a one-input proposal takes about 0.006 and a 16-input one about 0.057, and one the credit cannot pay for is refused until anyone tops it up. Cancel, rotate, freeze and execute do not need it",
+      "  no upgrade pending. New code would wait 60 min in public",
+      "  no signer registered for Qwen/Qwen3.8-27B: no new holds, and every other rule still holds",
+      "  27892 bytes free beyond what vaults have paid in, which is all that new code may add",
+      "  passkeys work from https://undo-btc.pages.dev. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit",
+      "requests:",
+      "  #0  not in the queue: cancelled (passkey, cold key or rotation), or signed and pruned",
+      "spend key: this agent's, active",
+      "Anyone can read this queue: amounts and destinations are public."
+    ],
+    "at_utc": "2026-11-11T17:02:59Z"
+  },
+  "rotation": {
+    "propose_again": {
+      "tx": "9qJnwM94mYxJrEJrk845rALoFtmAKz6L5RYCnSfD1Ar6",
+      "request": 1,
+      "to": "tb1qwc08ndlykr8qf7778tww260q9e843tm7kk05j9",
+      "amount_sats": 1702,
+      "fee_sats": 298,
+      "tier": "New",
+      "wait_ms": 300000,
+      "unlock": 1794416886176,
+      "undo_propose": [
+        "Undo for Bitcoin  ·  agent spend key  ·  NEAR testnet  ·  Mutinynet signet test coins",
+        "proposed   1,702 sats to tb1qwc08ndlykr8qf7778tww260q9e843tm7kk05j9",
+        "request    #1",
+        "tier       New: a destination the owner has not approved",
+        "wait       5:00, set by the contract",
+        "unlocks in 5:00",
+        "The owner's phone can cancel it until then. This key cannot.",
+        "NEAR testnet tx 9qJnwM94mYxJrEJrk845rALoFtmAKz6L5RYCnSfD1Ar6",
+        "Public now: the amount and destination, in the contract's queue."
+      ],
+      "at_utc": "2026-11-11T17:03:10Z"
+    },
+    "owner_rotate": {
+      "tx": "8kECrgxaJiwZhosUMvLfgAjiJbicyyfEzzFPuAfHQwsK",
+      "through": "https://undo-btc.pages.dev/api/relay",
+      "relay_account": "s.undo-relay.testnet",
+      "grant": 0,
+      "grant_ready_at": 1794416654047,
+      "new_k_s": "272a4ee208359f54ea10aa32153254c82ae2b6c8b6cd5d396d280b01d366d2e5",
+      "passkey": "software authenticator",
+      "undo_status": [
+        "Undo for Bitcoin  ·  vault 846fdf9c…e262  ·  NEAR testnet contract v1.s.undo-btc.testnet  ·  Mutinynet signet test coins",
+        "the contract says (needs attention):",
+        "  spend key suspended: requests not yet executed are dead. One already executed can still ask the signer for its missing signatures, a self-spend with no time limit and one that pays out for at most 24 h after its first execute, after which its coins come back by reclaim with a new key: a new key lands after its wait unless the cold key vetoes it",
+        "  passkey grant 0 waiting until 2026-11-11 17:04 UTC: install a new spend key. The cold key can veto it",
+        "  guard online, last heartbeat 2026-11-11 17:00 UTC",
+        "  cold-key exit: a coin 6 blocks old can leave with the recovery file and no NEAR",
+        "  storage credit 0.010 NEAR: a one-input proposal takes about 0.006 and a 16-input one about 0.057, and one the credit cannot pay for is refused until anyone tops it up. Cancel, rotate, freeze and execute do not need it",
+        "  no upgrade pending. New code would wait 60 min in public",
+        "  no signer registered for Qwen/Qwen3.8-27B: no new holds, and every other rule still holds",
+        "  27892 bytes free beyond what vaults have paid in, which is all that new code may add",
+        "  passkeys work from https://undo-btc.pages.dev. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit",
+        "requests:",
+        "  #1  New  1,702 sats to tb1qwc08ndlykr8qf7778tww260q9e843tm7kk05j9  dead: the owner's rotation cancelled every older request",
+        "spend key: suspended by the owner's rotation: the contract refuses every proposal from it",
+        "Anyone can read this queue: amounts and destinations are public."
+      ],
+      "undo_status_request": [
+        "Undo for Bitcoin  ·  vault 846fdf9c…e262  ·  NEAR testnet contract v1.s.undo-btc.testnet  ·  Mutinynet signet test coins",
+        "the contract says (needs attention):",
+        "  spend key suspended: requests not yet executed are dead. One already executed can still ask the signer for its missing signatures, a self-spend with no time limit and one that pays out for at most 24 h after its first execute, after which its coins come back by reclaim with a new key: a new key lands after its wait unless the cold key vetoes it",
+        "  passkey grant 0 waiting until 2026-11-11 17:04 UTC: install a new spend key. The cold key can veto it",
+        "  guard online, last heartbeat 2026-11-11 17:00 UTC",
+        "  cold-key exit: a coin 6 blocks old can leave with the recovery file and no NEAR",
+        "  storage credit 0.010 NEAR: a one-input proposal takes about 0.006 and a 16-input one about 0.057, and one the credit cannot pay for is refused until anyone tops it up. Cancel, rotate, freeze and execute do not need it",
+        "  no upgrade pending. New code would wait 60 min in public",
+        "  no signer registered for Qwen/Qwen3.8-27B: no new holds, and every other rule still holds",
+        "  27892 bytes free beyond what vaults have paid in, which is all that new code may add",
+        "  passkeys work from https://undo-btc.pages.dev. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit",
+        "requests:",
+        "  #1  New  1,702 sats to tb1qwc08ndlykr8qf7778tww260q9e843tm7kk05j9  dead: the owner's rotation cancelled every older request",
+        "spend key: suspended by the owner's rotation: the contract refuses every proposal from it",
+        "Anyone can read this queue: amounts and destinations are public."
+      ],
+      "at_utc": "2026-11-11T17:03:23Z"
+    },
+    "after_rotation": {
+      "undo_propose": [
+        "refused by the contract: SpendKeySuspended",
+        "its free check_propose view said so: nothing signed, nothing sent"
+      ],
+      "direct_tx": "29Na2rXYyWTpEESerUSUzjb4V26zmNcf6CCS8f95ty9m",
+      "direct_refusal": "Smart contract panicked: SpendKeySuspended",
+      "signed_by": "ed25519:Anva5xK7ZRtcJS2PPT7Dj3Fv23s3SkZLk8v6kZzGZXjq",
+      "at_utc": "2026-11-11T17:03:34Z"
+    },
+    "after_the_new_key_lands": {
+      "apply_grant_tx": "7weWDAMYJQpuHAKvvEoKwAkfgjw4gVjLzFGjyMyZAdUd",
+      "apply_grant_sent_by": "s.undo-btc.testnet",
+      "vault_spend_key_is_the_new_one": true,
+      "propose_tx": "Hpj7W2d13qsr8ibqccTLkYoW96N1mU4ebjxGDLkQXrMD",
+      "propose_refusal": "Smart contract panicked: bad K_s signature",
+      "undo_propose": [
+        "refused by the contract: Smart contract panicked: bad K_s signature",
+        "NEAR testnet tx Hpj7W2d13qsr8ibqccTLkYoW96N1mU4ebjxGDLkQXrMD"
+      ],
+      "undo_status": [
+        "Undo for Bitcoin  ·  vault 846fdf9c…e262  ·  NEAR testnet contract v1.s.undo-btc.testnet  ·  Mutinynet signet test coins",
+        "the contract says:",
+        "  guard online, last heartbeat 2026-11-11 17:00 UTC",
+        "  cold-key exit: a coin 6 blocks old can leave with the recovery file and no NEAR",
+        "  storage credit 0.017 NEAR: a one-input proposal takes about 0.006 and a 16-input one about 0.057, and one the credit cannot pay for is refused until anyone tops it up. Cancel, rotate, freeze and execute do not need it",
+        "  no upgrade pending. New code would wait 60 min in public",
+        "  no signer registered for Qwen/Qwen3.8-27B: no new holds, and every other rule still holds",
+        "  27892 bytes free beyond what vaults have paid in, which is all that new code may add",
+        "  passkeys work from https://undo-btc.pages.dev. A passkey on any other domain needs an upgrade first, and until then the cold key can cancel, freeze and exit",
+        "requests: none pending",
+        "spend key: not this agent's: the owner installed another spend key, and the contract refuses this one",
+        "Anyone can read this queue: amounts and destinations are public."
+      ],
+      "at_utc": "2026-11-11T17:04:31Z"
+    }
+  },
+  "coin_after": {
+    "mutinynet_txid": "e3e082e443ce6f9b72d5cd1ed107dbacaa59c499a550e06beee28d2f66a60946",
+    "vout": 0,
+    "spent": false,
+    "read_utc": "2026-11-11T17:04:32Z"
+  }
+}

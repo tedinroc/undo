@@ -57,7 +57,7 @@ An agent vault is an ordinary vault whose spend seed sits with the agent. The se
 
 4. **What the contract does with it.** It sets the wait from the tier, and nothing the agent signs can change it. The test-coin preset (`crates/undo-core/src/policy.rs`) sets 60 s back to the vault itself, 5:00 to a destination the owner has not approved while the guard is online, and 10:00 while the guard is offline. A destination becomes known only by the owner's passkey. During the wait the owner's phone can cancel the one request, or rotate the spend key, which kills every pending request at once. After a rotation the contract refuses this agent's proposals: `SpendKeySuspended` until the new key lands, then `bad K_s signature`.
 
-**Why the agent cannot cancel, rotate or shorten.** There are two separate walls. NEAR refuses the agent's key for any method but `propose_btc` and `execute`, before the contract runs: `cancel` comes back as `MethodNameMismatch`. Behind that, every method that cancels, rotates, adds a destination, clears a hold or changes the policy needs the owner's passkey or cold key, and the contract checks that signature itself. `propose_btc` takes no delay argument. The sandbox test sends each of these from a full-access account with what an agent could sign, and the contract refuses them all: `webauthn: bad signature`, `bad K_e signature`.
+**Why the agent cannot cancel, rotate or shorten.** There are two separate walls. NEAR refuses the agent's key for any method but `propose_btc` and `execute`, before the contract runs: `cancel` comes back as `MethodNameMismatch`. Behind that, every method that cancels, rotates, adds a destination, clears a hold or changes the policy needs the owner's passkey or cold key, and the contract checks that signature itself. `propose_btc` takes no delay argument. The sandbox test and the testnet run below send each of these from a full-access account with what an agent could sign, and the contract refuses them all: `webauthn: bad signature`, `bad K_e signature`.
 
 **What the CLI refuses before signing.**
 - An agent file with any field it does not know. A field that looks like owner material, such as `cold_key` or `passkey`, is named in the refusal.
@@ -75,21 +75,36 @@ An agent vault is an ordinary vault whose spend seed sits with the agent. The se
 |---|---|---|
 | `node --test agent/test/offline.test.mjs`: the agent file's rules, coin choice, the printed words, and the near-cli command checked against near-cli-rs 0.30.1's `--help` with the network denied | none | `[static]` |
 | `agent/test/run-sandbox.sh`: the whole flow above on the built wasm and a local NEAR node, protocols 86 and 88. Init, keys, check, propose, status, the agent's key refused by NEAR and by the contract, a passkey cancel, a rotation, and proposals refused after it | NEAR sandbox | `[mock-signer]` |
+| `agent/test/testnet-c14.mjs --live`: the same flow once on the live contract `v1.s.undo-btc.testnet`, through its relay, with one Mutinynet test coin, 2026-11-11. Its record is `proofs/c14-agent.json`, and `./verify.sh A` fetches its twelve transactions again | NEAR testnet, Mutinynet | `[live-testnet]` `[live-mutinynet]` |
 
-The mock signer stands in for MPC there, the coins are made up and served by a local Esplora stand-in, and the passkey is a software authenticator. None of it has run against testnet or Mutinynet yet. The output of one sandbox `undo propose`:
+In the sandbox the mock signer stands in for MPC, the coins are made up and served by a local Esplora stand-in, and the passkey is a software authenticator.
+
+**On NEAR testnet.** One run, with real transactions; [CLAIMS.md](../CLAIMS.md) C14 has every hash.
+
+| Step | What the chain shows |
+|---|---|
+| The owner adds the agent's key | NEAR testnet tx `Ftv9m76YCKwm1AfyxNrJAx78sv66qcrS9sHP6GVjvPNN`: a function-call key on `agent1.s.undo-btc.testnet` for `v1.s.undo-btc.testnet`, methods `propose_btc` and `execute`, allowance 0.25 NEAR |
+| `undo propose` | Tx `9dVdMDnhjk6ufuiQR6NPmKMdSNtHQo7FqRPVB1jGTTua`, signed by that key: request 0, tier New, unlock 5:00 later |
+| The agent's key signs `cancel`, `cancel_all_and_rotate`, `set_policy`, `clear_hold`, `add_destination` | No transaction: the RPC refuses each before it is broadcast, for example `{"InvalidAccessKeyError":{"MethodNameMismatch":{"method_name":"cancel"}}}`. The key's nonce and allowance read the same before and after |
+| The same key attaches 1 yoctoNEAR, or calls another account | No transaction: `{"InvalidAccessKeyError":"DepositWithFunctionCall"}`, and `ReceiverMismatch` |
+| A full-access account sends what the agent can sign for those methods | Six transactions that landed and failed in the contract, for example tx `BXsQJVSMCjnMtj6HvKHHFe3xt5zci4ANzMDDe7MA625A` (`webauthn: bad signature`) and tx `2opkAh3PjHA57sTEuPGoSa8dET3FXmrxXdvj5ELhjQws` (`bad K_e signature`). The request, its unlock, the policy and the spend key read unchanged |
+| The owner's passkey cancels through the relay | Tx `9719jZ7UB1MrVBj9djosokrwqJHQUHqNgCDzXLBjyJpt`, log `undo:cancelled request=0`, more than 4 minutes before the unlock |
+| The owner's passkey rotates the spend key | Tx `8kECrgxaJiwZhosUMvLfgAjiJbicyyfEzzFPuAfHQwsK`. The agent's next `propose_btc` fails with `SpendKeySuspended` (tx `29Na2rXYyWTpEESerUSUzjb4V26zmNcf6CCS8f95ty9m`), and with `bad K_s signature` once the new key has landed (tx `Hpj7W2d13qsr8ibqccTLkYoW96N1mU4ebjxGDLkQXrMD`) |
+
+What that run did not do. The owner's passkey was a software authenticator in the driver's process, not a phone: with a phone's passkey this has **not yet run**. The owner's step used `tools/lib/near.mjs` to add the same key, contract, methods and allowance that the printed near-cli command names; that near-cli command itself has **not yet run** on testnet, and is checked only against near-cli-rs 0.30.1's `--help`. No request was executed, so the signer was not asked for a Bitcoin signature, and the test coin stayed where it was. `undo propose` there printed:
 
 ```
-Undo for Bitcoin  ·  agent spend key  ·  NEAR sandbox  ·  made-up coins, mock signer
-proposed   50,000 sats to tb1q…
+Undo for Bitcoin  ·  agent spend key  ·  NEAR testnet  ·  Mutinynet signet test coins
+proposed   1,000 sats to tb1qnw5z5t6wssq80k8hmsfj6zjdh4u00x00ccmqpn
 request    #0
 tier       New: a destination the owner has not approved
 wait       5:00, set by the contract
 unlocks in 5:00
 The owner's phone can cancel it until then. This key cannot.
-NEAR sandbox tx <hash>
+NEAR testnet tx 9dVdMDnhjk6ufuiQR6NPmKMdSNtHQo7FqRPVB1jGTTua
 Public now: the amount and destination, in the contract's queue.
 ```
 
-On testnet the labels read `NEAR testnet` and `Mutinynet signet test coins`.
+On a sandbox the labels read `NEAR sandbox` and `made-up coins, mock signer`.
 
 **If a command hangs on macOS.** With `NODE_USE_SYSTEM_CA=1` set, Node can hang on its first HTTPS call while it reads the keychain. The testnet hosts use public certificates, so `env -u NODE_USE_SYSTEM_CA node agent/undo.mjs status` works around it.

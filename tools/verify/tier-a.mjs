@@ -13,8 +13,11 @@
 //    live signer derives for that vault. Every Mutinynet txid is fetched again and compared byte for
 //    byte with proofs/, and judged by libbitcoinconsensus. With no network, the raw hex in proofs/ is
 //    judged instead, and the fetch line says SKIP (network).
-// 4. A recovery file built the way the page builds it, then the crate's dry-run escape over it.
-// 5. Static: the contract calls nothing outside itself but the signer's `sign` and
+// 4. The agent run in proofs/c14-agent.json: the transaction that gave the agent its function-call key,
+//    its proposal, the calls the contract refused, the owner's cancel and rotation, each fetched again
+//    from archival RPC. What NEAR itself refused was never on chain, so that part is INFO.
+// 5. A recovery file built the way the page builds it, then the crate's dry-run escape over it.
+// 6. Static: the contract calls nothing outside itself but the signer's `sign` and
 //    `derived_public_key`, so it never reads Bitcoin through MPC.
 //
 // A network failure is SKIP (network), never PASS and never FAIL. A line about something this run did not fetch or
@@ -346,6 +349,178 @@ async function replayNear(config) {
   }
 }
 
+// ------------------------------------------------------------------ 4. the agent run (C14)
+
+/** The methods an agent's NEAR key may call. A key with any other, or with none listed (which means all), fails. */
+const AGENT_KEY_METHODS = ['propose_btc', 'execute'];
+
+/** The one function call a transaction makes, with its JSON arguments, or null if it is anything else. */
+function onlyCall(tx) {
+  const actions = tx.transaction?.actions ?? [];
+  const call = actions.length === 1 ? actions[0].FunctionCall : null;
+  if (!call) return null;
+  let args = null;
+  try {
+    args = JSON.parse(Buffer.from(fromBase64(call.args)).toString('utf8'));
+  } catch {
+    // Arguments that are not JSON: the caller's checks on them fail.
+  }
+  return { method: call.method_name, deposit: call.deposit, args };
+}
+
+/** How a transaction ended. ok: it succeeded, with the value it returned. Else the first failure in it, as JSON text, or null if it has no end yet. */
+function outcomeOf(tx) {
+  const failures = [tx.status?.Failure, ...(tx.receipts_outcome ?? []).map((r) => r.outcome.status?.Failure)].filter(Boolean);
+  if (failures.length) return { ok: false, failure: JSON.stringify(failures[0]) };
+  if (typeof tx.status?.SuccessValue !== 'string') return { ok: false, failure: null };
+  let value = null;
+  try {
+    value = tx.status.SuccessValue === '' ? null : JSON.parse(Buffer.from(fromBase64(tx.status.SuccessValue)).toString('utf8'));
+  } catch {
+    // A return value that is not JSON stays null.
+  }
+  return { ok: true, value, failure: null };
+}
+
+const logsIn = (tx, executor) => (tx.receipts_outcome ?? []).filter((r) => r.outcome.executor_id === executor).flatMap((r) => r.outcome.logs);
+
+/**
+ * proofs/c14-agent.json against the chain. Every line fetches one recorded transaction again and reads
+ * what the chain says of it: who signed, with which key, which method, and how it ended.
+ */
+async function replayAgent(config) {
+  const c14 = proof('c14-agent.json');
+  console.log('\n== tier A: replay of the agent run in proofs/c14-agent.json, fetched again from archival RPC');
+  if (!c14) return line('SKIP', 'C14', 'replay', 'proofs/c14-agent.json is not in this tree');
+  const archival = config.replay.near_archival_rpc;
+  const contract = c14.contract.account;
+  const agent = c14.agent.account;
+  const key = c14.agent.function_call_key.public_key;
+  const vault = c14.vault.id;
+  const relay = c14.relay.account;
+  const fetchTx = (hash, sender) => rpc(archival, 'tx', { tx_hash: hash, sender_account_id: sender, wait_until: 'NONE' });
+  const said = (text) => {
+    try {
+      return JSON.parse(text)?.ActionError?.kind?.FunctionCallError?.ExecutionError ?? text;
+    } catch {
+      return text;
+    }
+  };
+  /** A call to the contract about this run's vault, by this signer and method. Returns the call and how it ended. */
+  const callTo = async (hash, signer, method) => {
+    const tx = await fetchTx(hash, signer);
+    const t = tx.transaction ?? {};
+    if (t.hash !== hash) throw new Error(`NEAR testnet tx ${hash}: the node answered about another transaction`);
+    if (t.signer_id !== signer) throw new Error(`NEAR testnet tx ${hash}: signed by ${t.signer_id}, not ${signer}`);
+    if (t.receiver_id !== contract) throw new Error(`NEAR testnet tx ${hash}: sent to ${t.receiver_id}, not ${contract}`);
+    const call = onlyCall(tx);
+    if (!call || call.method !== method) throw new Error(`NEAR testnet tx ${hash}: not one call of ${method}`);
+    if (call.args?.vault !== vault) throw new Error(`NEAR testnet tx ${hash}: not about vault ${short(vault)}`);
+    return { tx, call, signedBy: t.public_key, ...outcomeOf(tx) };
+  };
+  const refusedWith = (out, hash, needle) => {
+    if (!out.failure) throw new Error(`NEAR testnet tx ${hash}: the contract did not refuse it`);
+    if (!out.failure.includes(needle)) throw new Error(`NEAR testnet tx ${hash}: refused, but not with "${needle}": ${said(out.failure)}`);
+    return said(out.failure);
+  };
+
+  const add = c14.agent.function_call_key.add_key_tx;
+  const propose = c14.propose;
+  const cancel = c14.owner_cancel;
+  const rot = c14.rotation;
+  const checks = [
+    [`the key's AddKey ${add}`, async () => {
+      const tx = await fetchTx(add, agent);
+      const t = tx.transaction ?? {};
+      const added = (t.actions ?? []).length === 1 ? t.actions[0].AddKey : null;
+      if (t.hash !== add || t.signer_id !== agent || t.receiver_id !== agent || !added) throw new Error(`NEAR testnet tx ${add}: not one AddKey on ${agent}`);
+      if (!outcomeOf(tx).ok) throw new Error(`NEAR testnet tx ${add}: it did not succeed`);
+      if (added.public_key !== key) throw new Error(`NEAR testnet tx ${add}: it added ${added.public_key}, not the agent's key ${key}`);
+      if (t.public_key === key) throw new Error(`NEAR testnet tx ${add}: signed by the agent's own key`);
+      const perm = added.access_key?.permission?.FunctionCall;
+      if (!perm) throw new Error(`NEAR testnet tx ${add}: the key it added is not a function-call key (${JSON.stringify(added.access_key?.permission)})`);
+      const methods = perm.method_names ?? [];
+      if (perm.receiver_id !== contract) throw new Error(`NEAR testnet tx ${add}: the key is for ${perm.receiver_id}, not ${contract}`);
+      if (methods.length === 0) throw new Error(`NEAR testnet tx ${add}: the key lists no method, which NEAR reads as every method`);
+      const extra = methods.filter((m) => !AGENT_KEY_METHODS.includes(m));
+      if (extra.length) throw new Error(`NEAR testnet tx ${add}: the key may also call ${extra.join(', ')}`);
+      return `NEAR testnet tx ${add}: ${agent} was given ${key} as a function-call key for ${contract}, methods ${methods.join(' and ')} only. NEAR refuses a transaction that key signs for any other method or account, or with a deposit, before a contract runs`;
+    }],
+    [`the agent's propose_btc ${propose.tx}`, async () => {
+      const out = await callTo(propose.tx, agent, 'propose_btc');
+      if (out.signedBy !== key) throw new Error(`NEAR testnet tx ${propose.tx}: signed by ${out.signedBy}, not the agent's function-call key`);
+      if (!out.ok || out.value !== propose.request) throw new Error(`NEAR testnet tx ${propose.tx}: it did not return request ${propose.request}`);
+      const want = `undo:proposed request=${propose.request} unlock=${propose.unlock}`;
+      const receipt = (out.tx.receipts_outcome ?? []).find((r) => r.outcome.executor_id === contract && r.outcome.logs.includes(want));
+      if (!receipt) throw new Error(`NEAR testnet tx ${propose.tx}: no log "${want}" from ${contract}`);
+      // The contract's clock is the block the call ran in. The wait is its unlock less that block's time.
+      const block = await rpc(archival, 'block', { block_id: receipt.block_hash });
+      const wait = propose.unlock - Number(BigInt(block.header.timestamp_nanosec) / 1_000_000n);
+      const waits = [c14.contract.policy.t_new_ms, c14.contract.policy.t_new_unguarded_ms];
+      if (!waits.includes(wait)) throw new Error(`NEAR testnet tx ${propose.tx}: the unlock is ${wait} ms after its block, not one of the contract's new-destination waits (${waits.join(', ')})`);
+      return `NEAR testnet tx ${propose.tx}: propose_btc on ${contract}, signed by that function-call key, made request ${propose.request} of vault ${short(vault)}, and the contract set its unlock ${wait / 60_000}:00 after the block it ran in`;
+    }],
+    ...c14.contract_refusals.attempts.map((r) => [`${r.method} ${r.tx}`, async () => {
+      const out = await callTo(r.tx, r.sent_by, r.method);
+      const words = refusedWith(out, r.tx, r.needle);
+      return `NEAR testnet tx ${r.tx}: ${r.what}, sent by the full-access account ${r.sent_by}. The contract refused it: ${words}`;
+    }]),
+    [`the owner's cancel ${cancel.tx}`, async () => {
+      const out = await callTo(cancel.tx, relay, 'cancel');
+      if (out.call.args.request !== propose.request || !out.call.args.auth?.Passkey) throw new Error(`NEAR testnet tx ${cancel.tx}: not a passkey cancel of request ${propose.request}`);
+      const want = `undo:cancelled request=${propose.request}`;
+      if (!out.ok || !logsIn(out.tx, contract).includes(want)) throw new Error(`NEAR testnet tx ${cancel.tx}: no log "${want}" from ${contract}`);
+      return `NEAR testnet tx ${cancel.tx}: the owner's passkey cancel of request ${propose.request}, sent by the relay ${relay}, log "${want}". The passkey was a software authenticator`;
+    }],
+    [`the owner's rotation ${rot.owner_rotate.tx}`, async () => {
+      const out = await callTo(rot.owner_rotate.tx, relay, 'cancel_all_and_rotate');
+      const want = `undo:rotating grant=${rot.owner_rotate.grant}`;
+      if (!out.ok || !logsIn(out.tx, contract).includes(want)) throw new Error(`NEAR testnet tx ${rot.owner_rotate.tx}: no log "${want}" from ${contract}`);
+      return `NEAR testnet tx ${rot.owner_rotate.tx}: the owner's passkey cancel_all_and_rotate, sent by the relay ${relay}, log "${want}". The passkey was a software authenticator`;
+    }],
+    [`the agent's propose_btc after the rotation ${rot.after_rotation.direct_tx}`, async () => {
+      const out = await callTo(rot.after_rotation.direct_tx, agent, 'propose_btc');
+      if (out.signedBy !== key) throw new Error(`NEAR testnet tx ${rot.after_rotation.direct_tx}: signed by ${out.signedBy}, not the agent's function-call key`);
+      const words = refusedWith(out, rot.after_rotation.direct_tx, 'SpendKeySuspended');
+      return `NEAR testnet tx ${rot.after_rotation.direct_tx}: propose_btc signed by the agent's function-call key after the rotation. The contract refused it: ${words}`;
+    }],
+    [`the agent's propose_btc after the new key landed ${rot.after_the_new_key_lands.propose_tx}`, async () => {
+      const out = await callTo(rot.after_the_new_key_lands.propose_tx, agent, 'propose_btc');
+      if (out.signedBy !== key) throw new Error(`NEAR testnet tx ${rot.after_the_new_key_lands.propose_tx}: signed by ${out.signedBy}, not the agent's function-call key`);
+      const words = refusedWith(out, rot.after_the_new_key_lands.propose_tx, 'bad K_s signature');
+      return `NEAR testnet tx ${rot.after_the_new_key_lands.propose_tx}: the agent CLI's propose once the owner's new spend key had landed. The contract refused it: ${words}`;
+    }],
+  ];
+  const settle = async ([what, check]) => {
+    try {
+      return { status: 'PASS', text: await check() };
+    } catch (err) {
+      if (err instanceof NetworkDown) return { status: 'SKIP', text: `${what}: SKIP (network): ${err.message}`, down: true };
+      return { status: 'FAIL', text: err instanceof ChainAnswer ? `${what}: the node answered ${err.message}` : err.message };
+    }
+  };
+  // The first alone: with no archival RPC it says so once, and the rest are counted, not waited for. Then three at
+  // a time, printed in the order above. A check that finds the network gone stops new ones from starting.
+  const results = [await settle(checks[0])];
+  let down = results[0].down === true;
+  let next = 1;
+  await Promise.all(Array.from({ length: 3 }, async () => {
+    while (!down && next < checks.length) {
+      const i = next;
+      next += 1;
+      results[i] = await settle(checks[i]);
+      if (results[i].down) down = true;
+    }
+  }));
+  for (const r of results) if (r) line(r.status, 'C14', 'replay', r.text);
+  const unasked = checks.length - results.filter(Boolean).length;
+  if (unasked > 0) line('SKIP', 'C14', 'replay', `${unasked} more transactions of the agent run: SKIP (network), the archival RPC did not answer`);
+  // Read from proofs/ only. NEAR never broadcasts a transaction it refuses for its access key.
+  const refused = c14.near_refusals.calls.map((r) => `${r.what}: ${r.words}`);
+  line('INFO', 'C14', `live-testnet, recorded ${c14.near_refusals.at_utc.slice(0, 10)}`, `NEAR refused ${refused.length} calls signed by the agent's key before any contract ran, and the key's nonce did not move (${c14.near_refusals.key_nonce_before} before and after). Not fetched again: a transaction NEAR refuses for its access key is never broadcast, so nothing is on chain to fetch. As recorded:`);
+  for (const l of refused) console.log(`    ${l}`);
+}
+
 /** One Mutinynet transaction: fetched and compared with proofs/, or the raw hex from proofs/ on its own. */
 async function replayBitcoin({ id, what, txid, raw, spk, values, esplora, expectHeight, coin }) {
   let fetched = false;
@@ -423,7 +598,7 @@ async function replayMutinynet(config) {
   }
 }
 
-// ------------------------------------------------------------------ 4. recovery file, 5. static
+// ------------------------------------------------------------------ 5. recovery file, 6. static
 
 function recoveryDryRun() {
   console.log('\n== tier A: recovery file dry run (C18), on throwaway keys made here and thrown away');
@@ -497,6 +672,7 @@ const started = Date.now();
 await deployed(config);
 await signerArgs(config);
 await replayNear(config);
+await replayAgent(config);
 await replayMutinynet(config);
 recoveryDryRun();
 staticChecks();

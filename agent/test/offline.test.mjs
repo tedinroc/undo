@@ -2,7 +2,7 @@
 // and the near-cli command `undo keys` prints, checked against near-cli's own --help when it is here.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -168,4 +168,35 @@ test('the CLI prints usage and exits 2 on a bad command, and refuses a missing a
   const missing = spawnSync(process.execPath, [join(AGENT, 'undo.mjs'), 'status', '--file', join(tmpdir(), `none-${toHex(randomBytes(4))}.json`)], { encoding: 'utf8' });
   assert.equal(missing.status, 2);
   assert.match(missing.stderr, /no agent file/);
+});
+
+test('the testnet driver sends nothing without --live, and with it refuses a work folder in the repository or an agent account that is not the payer\'s', () => {
+  const driver = join(AGENT, 'test/testnet-c14.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'undo-agent-driver-'));
+  // No network is reachable from these runs' arguments, and no key: the home is an empty folder.
+  const run = (...args) => spawnSync(process.execPath, [driver, ...args], { encoding: 'utf8', timeout: 30_000, env: { PATH: process.env.PATH, HOME: dir, TMPDIR: dir, NEAR_CREDENTIALS_DIR: join(dir, 'no-keys') } });
+  try {
+    const plan = run();
+    assert.equal(plan.status, 0, plan.stderr);
+    assert.match(plan.stdout, /--live --payer ACCOUNT --agent-account ID --work DIR/);
+    assert.match(plan.stdout, /NEAR refuses each before any contract runs, so\n\s+none of them is ever on chain/);
+    assert.match(plan.stdout, /Nothing was sent: this run had no --live\.\n$/);
+    const half = run('--payer', 'a.testnet', '--agent-account', 'agent.a.testnet', '--work', join(dir, 'w'));
+    assert.equal(half.status, 0);
+    assert.match(half.stdout, /Nothing was sent/);
+    const inside = join(AGENT, 'test', `never-${toHex(randomBytes(4))}`);
+    const inRepo = run('--live', '--payer', 'a.testnet', '--agent-account', 'agent.a.testnet', '--work', inside);
+    assert.equal(inRepo.status, 2);
+    assert.match(inRepo.stderr, /--work must be outside the repository: it holds this run's secrets/);
+    assert.equal(existsSync(inside), false);
+    const stranger = run('--live', '--payer', 'a.testnet', '--agent-account', 'agent.b.testnet', '--work', join(dir, 'w'));
+    assert.equal(stranger.status, 2);
+    assert.match(stranger.stderr, /--agent-account must be a sub-account of --payer/);
+    const typo = run('--liev');
+    assert.equal(typo.status, 2);
+    assert.match(typo.stderr, /unknown argument --liev/);
+    assert.deepEqual(readdirSync(dir), [], 'none of these runs wrote a file');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
