@@ -1,0 +1,338 @@
+{
+ "what": "What NEAR testnet and Mutinynet answered for the calls ./verify.sh A makes about proofs/phone-take.json: the vault's create_vault, the proposal and the phone page's cancel_all_and_rotate, the two blocks the last two ran in (header times only), and the contract's account at the block of the cancel, all from archival RPC; and the coin from the Mutinynet API: its bytes, its status and whether it was spent. Captured 2026-11-12 UTC from archival-rpc.testnet.fastnear.com and mutinynet.com. Left out, as in film-take-archival.json: each answer's receipts list and its Merkle proof and metadata fields; every block field but four of its header; every account field but its code hash and block; and each transaction's signature, which the secret scan would read as a key by its length. It holds no secret: a transaction's arguments are public. tools/test/judge-floor.test.mjs serves these from stand-in nodes",
+ "tx": {
+  "3ek9TdcxB588YzswGM9YPgHgYBfrWHxD8K2jJs38j7B5": {
+   "final_execution_status": "FINAL",
+   "receipts_outcome": [
+    {
+     "block_hash": "7bvoPv1jvNXJfeZfNMiuSeijjHhkRoaRYvTQVTzU5Ju3",
+     "id": "DCU6dnTa72GaDU8nuTCtAZLFaMwjdYWDvFPBGMNacsrb",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 7337742864296,
+      "logs": [
+       "undo:created vault=6a024594bda1e278fe41c84913917bd0322c37aebbe2782c1bd3df3fbfff1a09"
+      ],
+      "receipt_ids": [
+       "2QZZmWyS9RQ1y2B47a3eRzRZKceRf62djD8vPVL8WpzD",
+       "8zmRYxqhnRonfu93WkHFNYASBPB3E12UZ7tB8noC6RK2",
+       "Dq8d1nGdeU4zGzvMLwCBZkfC8bZcwcc2wPnV8oJUiGWx"
+      ],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "733774286429600000000"
+     }
+    },
+    {
+     "block_hash": "H2PX3eZu7LoFcNj3ZyU6EAXR1kDrLYL6VUBSVmJcrJg6",
+     "id": "2QZZmWyS9RQ1y2B47a3eRzRZKceRf62djD8vPVL8WpzD",
+     "outcome": {
+      "executor_id": "v1.signer-prod.testnet",
+      "gas_burnt": 5551421800822,
+      "logs": [],
+      "receipt_ids": [
+       "Htw8xCgQb1XxbPUdpPTGiPSk3V48t4JJAktn1UcZATAS"
+      ],
+      "status": {
+       "SuccessValue": "InNlY3AyNTZrMTp0UnlteGRIYWFVblRiQ0VBWVkyOXNXZzVLY2M1ZEVlOWFHM2h1M0pOcENkd1lobUxObUxENVRCVnBhblBjeWtzN21Fc1dSeEdKejZLcGdXZ2JtSmV3WXEi"
+      },
+      "tokens_burnt": "555142180082200000000"
+     }
+    },
+    {
+     "block_hash": "AA8tXMfSezbw5E3onWiqHEFfGH9sCjL3QeT1ayz63Wi7",
+     "id": "Htw8xCgQb1XxbPUdpPTGiPSk3V48t4JJAktn1UcZATAS",
+     "outcome": {
+      "executor_id": "s.undo-relay.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    },
+    {
+     "block_hash": "AA8tXMfSezbw5E3onWiqHEFfGH9sCjL3QeT1ayz63Wi7",
+     "id": "8zmRYxqhnRonfu93WkHFNYASBPB3E12UZ7tB8noC6RK2",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 2045821787265,
+      "logs": [
+       "undo:active vault=6a024594bda1e278fe41c84913917bd0322c37aebbe2782c1bd3df3fbfff1a09"
+      ],
+      "receipt_ids": [
+       "4EDir128LE5gPPhwD44WG4EsBrqq9Ps68WqVR6vBR135"
+      ],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "204582178726500000000"
+     }
+    },
+    {
+     "block_hash": "HuTg2jLmVXH28csKFi1ABR4hAhFg8W9gj3A7FmRH7Pp9",
+     "id": "4EDir128LE5gPPhwD44WG4EsBrqq9Ps68WqVR6vBR135",
+     "outcome": {
+      "executor_id": "s.undo-relay.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    },
+    {
+     "block_hash": "H2PX3eZu7LoFcNj3ZyU6EAXR1kDrLYL6VUBSVmJcrJg6",
+     "id": "Dq8d1nGdeU4zGzvMLwCBZkfC8bZcwcc2wPnV8oJUiGWx",
+     "outcome": {
+      "executor_id": "s.undo-relay.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    }
+   ],
+   "status": {
+    "SuccessValue": ""
+   },
+   "transaction": {
+    "actions": [
+     {
+      "FunctionCall": {
+       "args": "eyJhcmdzIjp7ImtfcyI6ImRiYzZkNTYyN2UxMjdiMmQzOTllZGViYzdiODdhOWJlOWU5NTE0NDU5M2MwNjJmNzFkMTcxOTEwMzBhNDJhNDYiLCJrX3UiOiIwMzY4OTJlYjQ1YTY0NTUxMDJkMTU1NjAxOWVjYjRhYmY3M2E5NTlmOTRlZjlkZjk0MzFlM2ViODNlZDUwN2IzZDQiLCJrX20iOiIwMjJjNWExMzViYjYxNjBhYjA2N2Y5NjlmNjgxMjI4YzRkMWY4NmU5NGE2MTUzYjA2MzA3NDk0OWMyNjY5YjkxZmYiLCJrX2VfbGVhZiI6IjAzMzA5MzU0NTE2MGQwYzdiYzk3ZDNkOTU4N2FmNDc5ZWJkNWUxNTk2ZmJlNjBkOTY5N2NlMWJiMjk5Y2MwMWE3MSIsImtfZV9pbnRlbnQiOiIwM2U2NWEwMWQwNzBiMGUwNDNmZjA1ZTQwOTdlYWY1ZDY3NGI3ZjdjNmI1NWYyMzI5ZWE3ZWFhMThiMzJmYzgzMmUiLCJwYXNza2V5Ijp7InB1YmtleSI6IjAyZmUxMDkwZGI5YjU4NjQ3NjM0MDBhMzQ4Y2Q2MjI5N2Q1ZTcwNGE1MjQyYTE1NGY2ODk0MjU3OGQzNzk3ZWZmZiIsInJwX2lkX2hhc2giOiI4YjQxNGIwNGVkODBjZWRlYTcyYzM2ZDQzN2I4ZTI0NWFiNzJhNjM4NjMxMDM1NTVjOWM5YWMxMDRmODNlZDJjIn0sImd1YXJkIjoicy51bmRvLXJlbGF5LnRlc3RuZXQiLCJjc3YiOjYsInBvbGljeSI6bnVsbCwiZXhwaXJlc19hdCI6MTc5NDQ5NDkwOTkxNiwicG9wX3MiOiI5NGQwY2JiMjIxYzQ4Zjk3MGRjZTYzNzVkMjAyYTcxMzQzZWI1ZjllZTFlZDg3ZmRiOTFmNTJjYmUzOWFjZjJiOTFkMDY1ZGIyNGFmZjJjYzlkZDcwOTQ2YmFkNjY4NWMxYmFmODc3ODc4Njc0Mzc1NTNlNTEzMmEwMmFhNzkwOSIsInBvcF91IjoiNzIyZGYwNTRhNTY0YTg2MTBlNjY5ZjdmY2Q2ZGU2MWI4NDk5OTQ1ZGY4MmFhMTZkZWM1MDUxYTYxN2RlOGVkODJmMzIzNTM1NWYwZDE3OThhM2VlZWFiNzFjMTQyZWNlMzJhMGYwMDYyMGYzMzcyYmIwODMxYTFhMzMwYTU5ODkwMSIsInBvcF9lIjoiNTYwMTg5NTBhODAyMTVkODk0YTBhNDkzYjIzYjQ1ZjhjODg4ODU3YTUyNTJiYTgyZDA1YzU0MTg5N2JhZjEzNzExYTFjZGUyN2I0YzQ4ZmM5MzA2M2I1ZjcyM2E5ZTdlMTE3ODM0MjA4ZTkwOWM2YjkwNzMzNTkxZjlkYjJhMjEwMCIsInBvcF9sZWFmIjoiZjMwNjM3ODI0M2EzM2ExNmE4NTUzZDU4OGM0YWI3NDUxMGI4NWYwMTExOTBiZDUwOTg5NDM2NzkyNThjY2M0NTNjZWM4ZWFlMTllOWQ2NjY2MjU4NDI0NTZjYTcwNjU5OGIyOTcwNTQ0NTZkMjExOTUyMWRlNGIyMjljNWQyZGYwMSIsInBvcF9wIjp7ImF1dGhlbnRpY2F0b3JfZGF0YSI6IjhiNDE0YjA0ZWQ4MGNlZGVhNzJjMzZkNDM3YjhlMjQ1YWI3MmE2Mzg2MzEwMzU1NWM5YzlhYzEwNGY4M2VkMmMxZDAwMDAwMDAwIiwiY2xpZW50X2RhdGFfanNvbiI6IjdiMjI3NDc5NzA2NTIyM2EyMjc3NjU2MjYxNzU3NDY4NmUyZTY3NjU3NDIyMmMyMjYzNjg2MTZjNmM2NTZlNjc2NTIyM2EyMjc3NTQ2ODQ1Nzg1MTU1NzAyZDQyNTQ1MTU1NGI3MjQzMzY0NzcwNmQ2YzdhNTk2YjQzNmM0Zjc4NTQ2MzVhNGQ0MjQxMzA3YTZmMzE0MjdhMzU1MDc3MjIyYzIyNmY3MjY5Njc2OTZlMjIzYTIyNjg3NDc0NzA3MzNhMmYyZjc1NmU2NDZmMmQ2Mjc0NjMyZTcwNjE2NzY1NzMyZTY0NjU3NjIyMmMyMjYzNzI2ZjczNzM0ZjcyNjk2NzY5NmUyMjNhNjY2MTZjNzM2NTdkIiwic2lnbmF0dXJlIjoiOTM4MDdkODhjYmRhMWQ1MmIwNzBmNzYzYzVlYTdlNThjNTM1MGE4ZTcxNDY1Y2E5MjRjYmJlMjJiYjUwZjliOTAyMGFmYmViNmJmMjdjOTdjYzU3MTNjYjM1YTBiNDBhZGY1ODE4M2NmZmU2MDE0NDk1YmE4NTJjZmFlYjg4MTkifX19",
+       "deposit": "30000000000000000000000",
+       "gas": 120000000000000,
+       "method_name": "create_vault"
+      }
+     },
+     {
+      "FunctionCall": {
+       "args": "eyJ2YXVsdCI6IjZhMDI0NTk0YmRhMWUyNzhmZTQxYzg0OTEzOTE3YmQwMzIyYzM3YWViYmUyNzgyYzFiZDNkZjNmYmZmZjFhMDkifQ==",
+       "deposit": "0",
+       "gas": 10000000000000,
+       "method_name": "heartbeat"
+      }
+     }
+    ],
+    "hash": "3ek9TdcxB588YzswGM9YPgHgYBfrWHxD8K2jJs38j7B5",
+    "nonce": 277105915000028,
+    "priority_fee": 0,
+    "public_key": "ed25519:6opJaggimUDEziVW41eze1A1BDpGi8S4xP4ABgqiXJji",
+    "receiver_id": "v1.s.undo-btc.testnet",
+    "signer_id": "s.undo-relay.testnet"
+   },
+   "transaction_outcome": {
+    "block_hash": "K15fhhXyR8PxjGPYxwYb5N5jZVuvMt7qdU7pu7Wax3L",
+    "id": "3ek9TdcxB588YzswGM9YPgHgYBfrWHxD8K2jJs38j7B5",
+    "outcome": {
+     "executor_id": "s.undo-relay.testnet",
+     "gas_burnt": 596655842470,
+     "logs": [],
+     "receipt_ids": [
+      "DCU6dnTa72GaDU8nuTCtAZLFaMwjdYWDvFPBGMNacsrb"
+     ],
+     "status": {
+      "SuccessReceiptId": "DCU6dnTa72GaDU8nuTCtAZLFaMwjdYWDvFPBGMNacsrb"
+     },
+     "tokens_burnt": "59665584247000000000"
+    }
+   }
+  },
+  "9xgJmaGCaYVH5URhXUg27cXWu7StoGZSH72WRXvhsGFb": {
+   "final_execution_status": "FINAL",
+   "receipts_outcome": [
+    {
+     "block_hash": "5TJFm4aZtzfzGgGQ5gTUUZFB9kqqPW5N2H1Nu8rDPUy",
+     "id": "GvJVKuKL2MYFonz6DGKW8pQoVt1z2SNNWnvuuYojHUjo",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 3040252770018,
+      "logs": [
+       "undo:proposed request=0 unlock=1794493524084"
+      ],
+      "receipt_ids": [
+       "8z2xWuDDmWDwwJSY3jYU3MCoUnUxTYLq5hcQukAHyLcx"
+      ],
+      "status": {
+       "SuccessValue": "MA=="
+      },
+      "tokens_burnt": "304025277001800000000"
+     }
+    },
+    {
+     "block_hash": "7eyNhDiB5YzKPzpY7nSaEiexT524UE7a9u3LC78CPMqM",
+     "id": "8z2xWuDDmWDwwJSY3jYU3MCoUnUxTYLq5hcQukAHyLcx",
+     "outcome": {
+      "executor_id": "s.undo-relay.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    }
+   ],
+   "status": {
+    "SuccessValue": "MA=="
+   },
+   "transaction": {
+    "actions": [
+     {
+      "FunctionCall": {
+       "args": "eyJ2YXVsdCI6IjZhMDI0NTk0YmRhMWUyNzhmZTQxYzg0OTEzOTE3YmQwMzIyYzM3YWViYmUyNzgyYzFiZDNkZjNmYmZmZjFhMDkiLCJpbnB1dHMiOlt7InR4aWQiOiI3YTgwNzFkMWI4NmEyODk5NGEwNGQzNDBjZTAwODAzZjQ3OWM4YTMzZTAyNWQxYmRiYmY2YWY0MDg1NmYzYjBhIiwidm91dCI6MCwidmFsdWUiOjIwMDB9XSwidG8iOiIwMDE0MDc1ZDM4NGYzYzdkMzAxOTU3Y2IwOWQzMzMyMDdkNzQwY2QyNmNjYSIsImFtb3VudCI6MTcwMiwiY2hhbmdlIjpudWxsLCJoYWxmX3NpZ3MiOlsiMTZmNzQ4ZGJhMGQ4NGQyMTBkM2I2NzU1MDMxODBlZWIyOTJlY2I0ODJhMzYxZDNjZDM0NGE5MTFiYjE2NWU5MjBjMGEzMGU3Nzk1OGZlZjJjYWJiZmQxMmE3YjhmZjIyZDg1ODZiOGFjMmJhOTkwZWUxZjllODhjODZiZDJiYWQwMCJdLCJub25jZSI6MCwiZXhwaXJlc19hdCI6MTc5NDQ5NTAxOTE1OCwic3BlbmRfc2lnIjoiOGFmN2Y1OGMxZGY5YjEzNDg1YzI5MDk2MmU5NDVmZDY5NmI1MjBmMGJiYzkzOWYxOWU0Y2ZlMDgxMzVmYjhhMmFmZjBjZWE4YmJlNDUzMGYyMGMxZTAxYjYzYTc3NmM5NDdjOTUzZWY4OWE3MDdlYzI3Nzc4OTE5YWQ4ZTExMGIiLCJtZW1vIjpudWxsfQ==",
+       "deposit": "0",
+       "gas": 40000000000000,
+       "method_name": "propose_btc"
+      }
+     }
+    ],
+    "hash": "9xgJmaGCaYVH5URhXUg27cXWu7StoGZSH72WRXvhsGFb",
+    "nonce": 277105915000029,
+    "priority_fee": 0,
+    "public_key": "ed25519:6opJaggimUDEziVW41eze1A1BDpGi8S4xP4ABgqiXJji",
+    "receiver_id": "v1.s.undo-btc.testnet",
+    "signer_id": "s.undo-relay.testnet"
+   },
+   "transaction_outcome": {
+    "block_hash": "2qGJtiyQgUYP11krVF8qMuQ5wUUDLvSN28FYsxEC6zdW",
+    "id": "9xgJmaGCaYVH5URhXUg27cXWu7StoGZSH72WRXvhsGFb",
+    "outcome": {
+     "executor_id": "s.undo-relay.testnet",
+     "gas_burnt": 337384984725,
+     "logs": [],
+     "receipt_ids": [
+      "GvJVKuKL2MYFonz6DGKW8pQoVt1z2SNNWnvuuYojHUjo"
+     ],
+     "status": {
+      "SuccessReceiptId": "GvJVKuKL2MYFonz6DGKW8pQoVt1z2SNNWnvuuYojHUjo"
+     },
+     "tokens_burnt": "33738498472500000000"
+    }
+   }
+  },
+  "HHzwhu5f3GxY7B3Y8abdtuKJirZsHVAdRoyGG6UXBSE9": {
+   "final_execution_status": "FINAL",
+   "receipts_outcome": [
+    {
+     "block_hash": "Gofe41TRNx8v2PagjtEqPuXZRmR73936itMiCws3ZtKJ",
+     "id": "2Yza8SrSA3pRhkVMja3dsWXEYD7VzC9CT66y6peSLVNv",
+     "outcome": {
+      "executor_id": "v1.s.undo-btc.testnet",
+      "gas_burnt": 3737918036927,
+      "logs": [
+       "undo:rotating grant=0"
+      ],
+      "receipt_ids": [
+       "4y21NbLFCCKscz7RwB9Cxox2HRda29guprtFecvVfedB"
+      ],
+      "status": {
+       "SuccessValue": "MA=="
+      },
+      "tokens_burnt": "373791803692700000000"
+     }
+    },
+    {
+     "block_hash": "C1CEyC8LP1TJFFn1ta1f2wWcK1wqyEvdkWNiQ2bmLPes",
+     "id": "4y21NbLFCCKscz7RwB9Cxox2HRda29guprtFecvVfedB",
+     "outcome": {
+      "executor_id": "s.undo-relay.testnet",
+      "gas_burnt": 223182562500,
+      "logs": [],
+      "receipt_ids": [],
+      "status": {
+       "SuccessValue": ""
+      },
+      "tokens_burnt": "0"
+     }
+    }
+   ],
+   "status": {
+    "SuccessValue": "MA=="
+   },
+   "transaction": {
+    "actions": [
+     {
+      "FunctionCall": {
+       "args": "eyJ2YXVsdCI6IjZhMDI0NTk0YmRhMWUyNzhmZTQxYzg0OTEzOTE3YmQwMzIyYzM3YWViYmUyNzgyYzFiZDNkZjNmYmZmZjFhMDkiLCJuZXdfa19zIjoiNTk1MGQ3NGUyMmQyNjRhNTRhM2Q5ODcxZjVkYWNhNGRjN2RjYzRiMGRhZTc5YTEyOTRmZjBkYTZkMDE0YjMwMCIsIm5vbmNlIjowLCJleHBpcmVzX2F0IjoxNzk0NDkzODI1MDY3LCJhc3NlcnRpb24iOnsiYXV0aGVudGljYXRvcl9kYXRhIjoiOGI0MTRiMDRlZDgwY2VkZWE3MmMzNmQ0MzdiOGUyNDVhYjcyYTYzODYzMTAzNTU1YzljOWFjMTA0ZjgzZWQyYzFkMDAwMDAwMDAiLCJjbGllbnRfZGF0YV9qc29uIjoiN2IyMjc0Nzk3MDY1MjIzYTIyNzc2NTYyNjE3NTc0Njg2ZTJlNjc2NTc0MjIyYzIyNjM2ODYxNmM2YzY1NmU2NzY1MjIzYTIyNzU1OTUwNmYyZDMxNDE2YTMxNTA0MTU5NWE2ZTY3NzQ2OTM5MzAzNzU2MzQ3MDQ5NmI2YTUwNDUzODUzNTI2NTY4NjM1MTMwMzEzNzc0NzY1NjRkNzMyMjJjMjI2ZjcyNjk2NzY5NmUyMjNhMjI2ODc0NzQ3MDczM2EyZjJmNzU2ZTY0NmYyZDYyNzQ2MzJlNzA2MTY3NjU3MzJlNjQ2NTc2MjIyYzIyNjM3MjZmNzM3MzRmNzI2OTY3Njk2ZTIyM2E2NjYxNmM3MzY1N2QiLCJzaWduYXR1cmUiOiI3ZjVhNTcxOWQ5MzI3NDQ4NzQ1YzVkOWQ3MTdjMDNhYjFhMDhlYjBjNmE2YTU1MzVkNGRkZTAwOGYzZmFjOWNjMGFlYzgyODliM2I2MDcwNWRiYjkxYjIxM2Y1MmYyZDZmNzEzZmM5ZjFiMTUxNzg4MTE0MmU4YzMwZTA1NzMzMCJ9fQ==",
+       "deposit": "0",
+       "gas": 30000000000000,
+       "method_name": "cancel_all_and_rotate"
+      }
+     }
+    ],
+    "hash": "HHzwhu5f3GxY7B3Y8abdtuKJirZsHVAdRoyGG6UXBSE9",
+    "nonce": 277105915000011,
+    "priority_fee": 0,
+    "public_key": "ed25519:8rDXFjeYW2Z6vPpRKdA2Wpte4Hk2vJPGP3VvAcvojRM7",
+    "receiver_id": "v1.s.undo-btc.testnet",
+    "signer_id": "s.undo-relay.testnet"
+   },
+   "transaction_outcome": {
+    "block_hash": "9oxTdHDYj7svLR6pxDnk7w8aUXFidMPGE7a2Hu2Zqav2",
+    "id": "HHzwhu5f3GxY7B3Y8abdtuKJirZsHVAdRoyGG6UXBSE9",
+    "outcome": {
+     "executor_id": "s.undo-relay.testnet",
+     "gas_burnt": 344585225690,
+     "logs": [],
+     "receipt_ids": [
+      "2Yza8SrSA3pRhkVMja3dsWXEYD7VzC9CT66y6peSLVNv"
+     ],
+     "status": {
+      "SuccessReceiptId": "2Yza8SrSA3pRhkVMja3dsWXEYD7VzC9CT66y6peSLVNv"
+     },
+     "tokens_burnt": "34458522569000000000"
+    }
+   }
+  }
+ },
+ "block": {
+  "5TJFm4aZtzfzGgGQ5gTUUZFB9kqqPW5N2H1Nu8rDPUy": {
+   "header": {
+    "hash": "5TJFm4aZtzfzGgGQ5gTUUZFB9kqqPW5N2H1Nu8rDPUy",
+    "height": 277374390,
+    "timestamp": 1794493224084755500,
+    "timestamp_nanosec": "1794493224084755361"
+   }
+  },
+  "Gofe41TRNx8v2PagjtEqPuXZRmR73936itMiCws3ZtKJ": {
+   "header": {
+    "hash": "Gofe41TRNx8v2PagjtEqPuXZRmR73936itMiCws3ZtKJ",
+    "height": 277374425,
+    "timestamp": 1794493244727203000,
+    "timestamp_nanosec": "1794493244727203148"
+   }
+  }
+ },
+ "query": {
+  "view_account v1.s.undo-btc.testnet @Gofe41TRNx8v2PagjtEqPuXZRmR73936itMiCws3ZtKJ": {
+   "block_hash": "Gofe41TRNx8v2PagjtEqPuXZRmR73936itMiCws3ZtKJ",
+   "block_height": 277374425,
+   "code_hash": "4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1"
+  }
+ },
+ "bitcoin": {
+  "7a8071d1b86a28994a04d340ce00803f479c8a33e025d1bdbbf6af40856f3b0a": {
+   "hex": "020000000001011417da756947de893511761ebd92759317b4ce605e44ea5eddadd753109963aa0000000000fdffffff02d007000000000000220020f4e7d3b4431557f788af572957496f83116a5161644bb487fc6d5a3b6584b2820225000000000000160014aa6be4422b35bef02b3fc771899ec9b18f29189b0247304402201e189cf8668e3726c8244a440a3ca864aaae5f5e99a033950bf735bc16df0cb8022040af396e8ccef3eb233057d5e40db184f8c6fb124da86b6660eac986783de63d012103507c342de0f377290e1d8e5e10bc1868c5c4ae2cc7d8f79787bc53230928acae00000000",
+   "status": {
+    "confirmed": true,
+    "block_height": 3584237,
+    "block_hash": "000002368be181df08543483e74890ec59be20e82643fbae8c750663c6661836",
+    "block_time": 1794493170
+   },
+   "outspend": {
+    "spent": false
+   }
+  }
+ }
+}

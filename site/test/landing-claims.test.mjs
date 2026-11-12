@@ -16,6 +16,7 @@ const PAGES = join(REPO, 'site', 'pages');
 const landing = readFileSync(join(PAGES, 'index.html'), 'utf8');
 const landingJs = readFileSync(join(PAGES, 'landing', 'landing.mjs'), 'utf8');
 const run = buildRun();
+const readme0 = () => readFileSync(join(REPO, 'README.md'), 'utf8');
 const unescape = (html) => html.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
 
 test('the film is published with its own capture record: the file that record names, a "From the film" list that is the record\'s, and a label and a note that say what it is', () => {
@@ -42,7 +43,14 @@ test('the film is published with its own capture record: the file that record na
   const note = /<p id="film-note" class="small">([^<]+)<\/p>/.exec(landing)[1];
   assert.ok(note.includes(`one take of these pages, ${run.film.date}, on NEAR testnet and Mutinynet`));
   assert.ok(note.includes(run.film.note), 'the note says a virtual authenticator stood in for the phone');
-  assert.match(note, /from a real phone that path has not yet run/);
+  // A real phone has since run the Cancel, on another vault: the note says so, with the device and the browser as the
+  // author's report, never as what the film shows; the film itself is still the virtual authenticator's take.
+  const phone = JSON.parse(readFileSync(join(REPO, 'proofs', 'phone-take.json'), 'utf8'));
+  assert.ok(note.includes(`${run.film.note}. A Cancel from a real phone ran once, ${phone.vault_made_block_utc.slice(0, 10)}, on another vault: one iPhone, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it; the README links its hash.`), note);
+  assert.equal(phone.device_as_reported.browser, 'Safari');
+  assert.notEqual(phone.vault.id, take.vault.id);
+  assert.doesNotMatch(note, /not yet run/);
+  assert.match(readme0(), new RegExp(`\\[\`${phone.cancel.tx}\`\\]\\(https://testnet\\.near\\.rocks/tx/${phone.cancel.tx}\\)`), 'the README links that hash');
   assert.match(note, /Where the recording was cut for time, the film says so on that shot\./);
   assert.match(note, /The narration is a synthetic voice \(AI text-to-speech\)\./);
   // The slot's label says what plays, and that it starts muted with its words on screen; no script has to correct it.

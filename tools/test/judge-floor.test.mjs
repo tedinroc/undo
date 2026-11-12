@@ -31,6 +31,9 @@ const g2v1Chain = JSON.parse(read('tools/test/fixtures/g2-v1-archival.json'));
 // The take of the live pages: its record, and what NEAR testnet and Mutinynet answered about it.
 const take = JSON.parse(read('proofs/film-take.json'));
 const takeChain = JSON.parse(read('tools/test/fixtures/film-take-archival.json'));
+// The run of the same pages with a real phone's passkey: its record, and what the chains answered about it.
+const phone = JSON.parse(read('proofs/phone-take.json'));
+const phoneChain = JSON.parse(read('tools/test/fixtures/phone-take-archival.json'));
 const REFEREE = process.env.UNDO_TOOLS_CHECK_BIN && existsSync(process.env.UNDO_TOOLS_CHECK_BIN) ? process.env.UNDO_TOOLS_CHECK_BIN : null;
 const noReferee = REFEREE ? false : 'set UNDO_TOOLS_CHECK_BIN to the built tools/rust-check referee';
 
@@ -127,16 +130,17 @@ const DEAD = 'http://127.0.0.1:9';
 /**
  * A stand-in for mutinynet.com/api that knows both runs' transactions and the take's coin, with the S2 coin's spender
  * chosen per test. `outspendV1` is the same for the later run's key-alone coin: as recorded unless a test says
- * otherwise. `outspendTake` is the take's coin: unspent, as it was captured, unless a test says otherwise. `change`
- * edits what it knows.
+ * otherwise. `outspendTake` is the take's coin: unspent, as it was captured, unless a test says otherwise, and
+ * `outspendPhone` the same for the real phone's run. `change` edits what it knows.
  */
-function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.mutinynet_txid, vin: 0 }, outspendTake = { spent: false }, change = () => {} }) {
+function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.mutinynet_txid, vin: 0 }, outspendTake = { spent: false }, outspendPhone = { spent: false }, change = () => {} }) {
   const known = new Map([g2, g2v1].flatMap((p) => [
     [p.cosigned.txid, { hex: p.cosigned.raw, height: p.cosigned.mined_height }],
     [p.escape.txid, { hex: p.escape.raw, height: p.escape.mined_height }],
     [p.escape.coin.split(':')[0], { hex: null, height: p.escape.coin_height }],
   ]));
   known.set(take.coin.mutinynet_txid, { hex: takeChain.bitcoin[take.coin.mutinynet_txid].hex, height: takeChain.bitcoin[take.coin.mutinynet_txid].status.block_height });
+  known.set(phone.coin.mutinynet_txid, { hex: phoneChain.bitcoin[phone.coin.mutinynet_txid].hex, height: phoneChain.bitcoin[phone.coin.mutinynet_txid].status.block_height });
   change(known);
   const server = createServer((req, res) => {
     const m = /^\/api\/tx\/([0-9a-f]{64})\/(hex|status|outspend\/\d+)$/.exec(req.url);
@@ -146,7 +150,7 @@ function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.
     };
     if (!m) return send(404, 'not found');
     const [, txid, what] = m;
-    if (what.startsWith('outspend')) return txid === s2.funding_coin.mutinynet_txid ? send(200, outspend) : txid === s2v1.funding_coin.mutinynet_txid ? send(200, outspendV1) : txid === take.coin.mutinynet_txid ? send(200, outspendTake) : send(404, 'not found');
+    if (what.startsWith('outspend')) return txid === s2.funding_coin.mutinynet_txid ? send(200, outspend) : txid === s2v1.funding_coin.mutinynet_txid ? send(200, outspendV1) : txid === take.coin.mutinynet_txid ? send(200, outspendTake) : txid === phone.coin.mutinynet_txid ? send(200, outspendPhone) : send(404, 'not found');
     const tx = known.get(txid);
     if (!tx) return send(404, 'Transaction not found');
     if (what === 'hex') return tx.hex ? send(200, tx.hex) : send(404, 'no hex here');
@@ -157,9 +161,10 @@ function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.
 
 /**
  * tier-a.mjs with no cargo on PATH, NEAR at a dead port, and Esplora at `esploraUrl`. `archivalUrl` puts a stand-in
- * where the archival RPC is, and `rpcUrl` one where the replay's views go. Async: the stand-ins answer from here.
+ * where the archival RPC is, and `rpcUrl` one where the replay's views go. `repo` runs a copy of this tree's tier A
+ * instead, with the records that copy holds. Async: the stand-ins answer from here.
  */
-function tierA({ esploraUrl, referee, archivalUrl = DEAD, rpcUrl = DEAD }) {
+function tierA({ esploraUrl, referee, archivalUrl = DEAD, rpcUrl = DEAD, repo = REPO }) {
   const config = JSON.parse(read('deploy/testnet.json'));
   config.rpc = [DEAD];
   config.replay = { ...config.replay, near_rpc: [rpcUrl], near_archival_rpc: [archivalUrl], mutinynet_esplora: esploraUrl };
@@ -168,7 +173,7 @@ function tierA({ esploraUrl, referee, archivalUrl = DEAD, rpcUrl = DEAD }) {
   const env = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: work, TMPDIR: work };
   if (referee) env.UNDO_TOOLS_CHECK_BIN = referee;
   return new Promise((done) => {
-    const child = spawn(process.execPath, [join(REPO, 'tools/verify/tier-a.mjs'), '--config', path], { env });
+    const child = spawn(process.execPath, [join(repo, 'tools/verify/tier-a.mjs'), '--config', path], { env });
     let out = '';
     child.stdout.on('data', (c) => { out += c; });
     child.stderr.on('data', (c) => { out += c; });
@@ -216,6 +221,12 @@ test('tier A with every endpoint dead: no [replay] line passes, and the recorded
   assert.ok(r.lines.some((l) => l.startsWith(`SKIP C17 [replay] proofs/film-take.json proposal ${take.thief.propose_tx}: SKIP (network)`)), r.out);
   assert.ok(r.lines.some((l) => l.startsWith('SKIP C17 [replay] 3 more NEAR testnet lines of the live take: SKIP (network)')), r.out);
   assert.ok(r.lines.some((l) => l.startsWith(`SKIP C17 [replay] Mutinynet coin ${take.coin.mutinynet_txid}:${take.coin.vout}: SKIP (network)`)), r.out);
+  // And the real phone's run: it has no execute after the wait, so two lines are left after the first, not three.
+  const phoneSection = phoneLines(r);
+  assert.ok(phoneSection.some((l) => l.startsWith(`SKIP C17 [replay] proofs/phone-take.json proposal ${phone.thief.propose_tx}: SKIP (network)`)), r.out);
+  assert.ok(phoneSection.includes('SKIP C17 [replay] 2 more NEAR testnet lines of the live take: SKIP (network), the archival RPC did not answer'), r.out);
+  assert.ok(phoneSection.some((l) => l.startsWith(`SKIP C17 [replay] Mutinynet coin ${phone.coin.mutinynet_txid}:${phone.coin.vout}: SKIP (network)`)), r.out);
+  assert.equal(phoneSection.length, 3, r.out);
   assert.equal(r.lines.filter((l) => /^PASS (C05|C17) /.test(l)).length, 0, r.out);
   // The consensus checks still run on the raw hex in proofs/.
   assert.ok(r.lines.some((l) => /^PASS C02 \[consensus-lib\]/.test(l)), r.out);
@@ -620,13 +631,32 @@ const tk = {
   execute: take.after.execute_after_the_wait_tx,
   coin: `${take.coin.mutinynet_txid}:${take.coin.vout}`,
 };
-const takeLines = (r) => r.lines.filter((l) => [tk.propose, tk.cancel, tk.execute, take.coin.mutinynet_txid, 'proofs/film-take.json', 'at the block of that cancel', 'of the live take'].some((w) => l.includes(w)));
-/** The stand-ins for one run of tier A over the take: Esplora, and one node for archival RPC that knows the take alone. */
-async function takeRun({ chain = () => {}, bitcoin = () => {}, outspendTake } = {}) {
-  const api = await esplora({ outspend: { spent: true, txid: s2.coin_return.mutinynet_txid, vin: 0 }, outspendTake, change: bitcoin });
-  const node = await archival(chain, takeChain);
+/** The result lines tier A printed under one heading: each take record has its own, so its lines are its own. */
+function sectionLines(r, heading) {
+  const part = r.out.split('\n== tier A: ').find((s) => s.startsWith(heading));
+  return part ? part.split('\n').filter((l) => /^(PASS|FAIL|SKIP|INFO) /.test(l)) : [];
+}
+function takeLines(r) {
+  return sectionLines(r, 'replay of the live take in proofs/film-take.json: ');
+}
+function phoneLines(r) {
+  return sectionLines(r, 'replay of the live take in proofs/phone-take.json: ');
+}
+/** Both takes' answers in one fixture, as one archival node would hold them. */
+const bothTakes = {
+  tx: { ...takeChain.tx, ...phoneChain.tx },
+  block: { ...takeChain.block, ...phoneChain.block },
+  query: { ...takeChain.query, ...phoneChain.query },
+};
+/**
+ * The stand-ins for one run of tier A over the takes: Esplora, and one node for archival RPC that knows the two takes
+ * alone. `repo` runs a copy of this tree that holds other records.
+ */
+async function takeRun({ chain = () => {}, bitcoin = () => {}, outspendTake, outspendPhone, repo } = {}) {
+  const api = await esplora({ outspend: { spent: true, txid: s2.coin_return.mutinynet_txid, vin: 0 }, outspendTake, outspendPhone, change: bitcoin });
+  const node = await archival(chain, bothTakes);
   try {
-    return await tierA({ esploraUrl: api.url, archivalUrl: node.url, referee: null });
+    return await tierA({ esploraUrl: api.url, archivalUrl: node.url, referee: null, repo });
   } finally {
     api.close();
     node.close();
@@ -905,6 +935,188 @@ test('tier A, the live take: with no archival answer its NEAR lines say SKIP (ne
   assert.equal(part.lines.filter((l) => l.startsWith('FAIL')).length, 0, part.out);
   everyLineHasAClaim(none.lines);
   everyLineHasAClaim(part.lines);
+});
+
+// ---------------------------------------------------------------- tier A: the real phone's run, a take with no execute after its wait
+
+const pk = {
+  contract: phone.contract,
+  create: phone.vault.create_tx,
+  propose: phone.thief.propose_tx,
+  cancel: phone.cancel.tx,
+  coin: `${phone.coin.mutinynet_txid}:${phone.coin.vout}`,
+};
+/** The flags and the count in a WebAuthn assertion's authenticator data, read here apart from tier A's own reading. */
+const flagsOf = (hex) => {
+  const ad = Buffer.from(hex, 'hex');
+  return { authenticator_data_bytes: ad.length, user_present: Boolean(ad[32] & 1), user_verified: Boolean(ad[32] & 4), backup_eligible: Boolean(ad[32] & 8), backed_up: Boolean(ad[32] & 16), sign_count: ad.readUInt32BE(33) };
+};
+const phoneCancelArgs = () => JSON.parse(Buffer.from(phoneChain.tx[pk.cancel].transaction.actions[0].FunctionCall.args, 'base64').toString('utf8'));
+const phoneBlockMs = (hash, test) => Number(BigInt(phoneChain.block[phoneChain.tx[hash].receipts_outcome.find((x) => x.outcome.executor_id === phone.contract && test(x.outcome)).block_hash].header.timestamp_nanosec) / 1_000_000n);
+const PHONE_WHO = 'Which authenticator held the passkey, no chain says: proofs/phone-take.json reports a real device, iPhone 13 Pro Max on iOS 27.2.1 in Safari, as its author reported it, not as any chain shows it. Its authenticator data, as read here: user present, user verified, backup eligible, backed up, sign count 0. A backed-up passkey can be synced to other devices, so these flags do not name one device either';
+
+/** A copy of what tier A reads from this tree, with one record in proofs/ changed. */
+function treeWith(file, change) {
+  const copy = mkdtempSync(join(work, 'tree-'));
+  for (const dir of ['tools/verify', 'tools/lib', 'tools/vendor', 'site/lib', 'contracts/undo/src', 'proofs']) cpSync(join(REPO, dir), join(copy, dir), { recursive: true });
+  const path = join(copy, 'proofs', file);
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  change(record);
+  writeFileSync(path, JSON.stringify(record, null, 2));
+  return copy;
+}
+
+test('proofs/phone-take.json and its fixture: a real device\'s take on the contract deploy/testnet.json names, with no execute after its wait, the assertion\'s flags as the chain has them, and no key', () => {
+  const config = JSON.parse(read('deploy/testnet.json'));
+  assert.equal(phone.schema, 'undo-phone-take-v1');
+  assert.equal(phone.contract, config.contract);
+  assert.equal(phone.origin, config.site_origin);
+  assert.deepEqual(phone.labels, ['live-testnet', 'live-mutinynet', 'real device']);
+  assert.notEqual(phone.vault.id, take.vault.id, 'another vault than the film\'s take');
+  // No execute after the wait: none was sent in this run, so the record names none.
+  assert.equal(phone.after, undefined);
+  assert.equal(JSON.stringify(phone).includes('execute_after_the_wait_tx'), false);
+  // The fixture: the three transactions, the two blocks tier A reads, the account at the cancel, the coin; no signature.
+  assert.deepEqual(Object.keys(phoneChain.tx).sort(), [pk.create, pk.propose, pk.cancel].sort());
+  assert.equal(Object.keys(phoneChain.block).length, 2);
+  for (const tx of Object.values(phoneChain.tx)) assert.equal('signature' in tx.transaction, false);
+  assert.deepEqual(Object.keys(phoneChain.bitcoin), [phone.coin.mutinynet_txid]);
+  assert.equal(phoneChain.bitcoin[phone.coin.mutinynet_txid].status.block_height, phone.coin.height);
+  // The record's numbers are the chain's: the wait, and the cancel's block against the proposal's and the unlock.
+  assert.equal(phone.thief.unlock_ms - phone.thief.proposed_at_ms, phone.thief.wait_ms);
+  const proposed = phoneBlockMs(pk.propose, (o) => o.logs.some((l) => l.startsWith('undo:proposed ')));
+  const cancelled = phoneBlockMs(pk.cancel, (o) => o.logs.includes(phone.cancel.log));
+  assert.equal(proposed, phone.thief.proposed_at_ms);
+  assert.equal(cancelled - proposed, phone.cancel.block_after_the_proposal_ms);
+  assert.equal(phone.thief.unlock_ms - cancelled, phone.cancel.block_before_the_unlock_ms);
+  assert.equal(phone.cancel.method, 'cancel_all_and_rotate');
+  // The flags the record says were read are the ones in the cancel's own authenticator data.
+  const args = phoneCancelArgs();
+  const flags = flagsOf(args.assertion.authenticator_data);
+  for (const [k, v] of Object.entries(flags)) assert.equal(phone.assertion_as_read[k], v, k);
+  const client = JSON.parse(Buffer.from(args.assertion.client_data_json, 'hex').toString('utf8'));
+  assert.deepEqual([client.type, client.origin, client.crossOrigin], [phone.assertion_as_read.type, phone.assertion_as_read.origin, phone.assertion_as_read.cross_origin]);
+  // What no chain holds is the author's report, and the record says so: the device, and the browser, as reported.
+  for (const k of ['device', 'os', 'by', 'browser', 'browser_by', 'tabs']) assert.equal(typeof phone.device_as_reported[k], 'string', k);
+  // How the phone verified its user, the author did not say: the assertion's flags say only that the authenticator did
+  // (user verified), not how, and the record names no way of its own.
+  assert.equal('user_verification' in phone.device_as_reported, false);
+  assert.doesNotMatch(JSON.stringify(phone), /Face ID|face_id|Touch ID/);
+  assert.match(phone.device_as_reported.what_the_chain_says_of_it, /user verified says the authenticator verified the user, not how/);
+  assert.match(phone.what, /device_as_reported is the author's report, not the chain's/);
+  assert.match(phone.what, /The passkey's credential id is left out: no chain holds it\./);
+  // The browser is the author's report too: Safari, with the phone page and the thief tab as two tabs on the one iPhone,
+  // the README's one-device path. No chain says which browser it was, and the record names no other.
+  assert.equal(phone.device_as_reported.browser, 'Safari');
+  assert.match(phone.device_as_reported.browser_by, /^the author, in chat on 2026-11-12, /);
+  assert.match(phone.device_as_reported.tabs, /^the phone page \/p\/ and the thief tab \/t\/ both ran on that one iPhone, as two Safari tabs, not on a Mac: the README's "On one device" path$/);
+  assert.match(phone.what, /Which device and browser held the passkey, and where the thief tab ran, no chain shows: device_as_reported is the author's report, not the chain's: one iPhone, with the phone page and the thief tab as two Safari tabs on it\./);
+  assert.doesNotMatch(JSON.stringify(phone.device_as_reported), /Chrome/);
+  assert.doesNotMatch(JSON.stringify(phone.device_as_reported), /not recorded/);
+  // No key: every long hex string in the record is the vault id or the coin's txid.
+  const long = [...JSON.stringify(phone).matchAll(/[0-9a-f]{40,}/g)].map((m) => m[0]);
+  assert.deepEqual([...new Set(long)].sort(), [phone.vault.id, phone.coin.mutinynet_txid].sort());
+});
+
+test('tier A, the real phone\'s run: the proposal and its wait, the cancel with its passkey assertion verified here and its flags as read, the code at its block and the coin pass; there is no execute line, and the film\'s take is unchanged', { timeout: 150_000 }, async () => {
+  const r = await takeRun();
+  const lines = phoneLines(r);
+  assert.equal(lines.filter((l) => !l.startsWith('PASS')).length, 0, r.out);
+  assert.equal(lines.length, 4, r.out);
+  assert.ok(r.out.includes('\n== tier A: replay of the live take in proofs/phone-take.json: the phone page\'s Cancel, fetched again from archival RPC\n'), r.out);
+  assert.ok(r.out.indexOf('proofs/film-take.json: the phone page') < r.out.indexOf('proofs/phone-take.json: the phone page'), 'the film\'s take first');
+  const one = (re) => {
+    const hits = lines.filter((l) => re.test(l));
+    assert.equal(hits.length, 1, `${re}\n${r.out}`);
+    return hits[0];
+  };
+  one(new RegExp(`^PASS C17 \\[replay\\] NEAR testnet tx ${pk.propose}: propose_btc on ${esc(pk.contract)} made request 0 of vault ${phone.vault.id.slice(0, 10)}…, a spend of Mutinynet coin ${phone.coin.mutinynet_txid.slice(0, 10)}…:0 to ${phone.thief.sent_to}, with its unlock 5:00 after the block it ran in$`));
+  const cancelled = one(new RegExp(`^PASS C05 \\[replay\\] NEAR testnet tx ${pk.cancel}: cancel_all_and_rotate on ${esc(pk.contract)} for vault ${phone.vault.id.slice(0, 10)}…, sent by \\S+, the relay's account, which made the vault and is the guard it names, in a block \\d+ s after the proposal's and \\d+ s before request 0's unlock, log "undo:rotating grant=0"\\. `));
+  assert.ok(cancelled.includes(' in a block 20 s after the proposal\'s and 279 s before request 0\'s unlock'), cancelled);
+  assert.ok(cancelled.includes(`Its WebAuthn assertion passes here the checks the contract makes: the origin is ${phone.origin}, the challenge is the digest of this call's own arguments, user present and verified, and the P-256 signature verifies under the passkey in that vault's create_vault, tx ${pk.create}, whose keys hash to the vault id.`), cancelled);
+  // Which device it was is the record's report, said as such; the flags are the chain's, read here.
+  assert.ok(cancelled.endsWith(` ${PHONE_WHO}`), cancelled);
+  assert.doesNotMatch(cancelled, /virtual authenticator/);
+  one(new RegExp(`^PASS C05 \\[replay\\] NEAR testnet account ${esc(pk.contract)} ran code hash ${g2v1.contract.code_hash} at the block of that cancel, read from archival RPC: `));
+  one(new RegExp(`^PASS C17 \\[replay\\] Mutinynet coin ${pk.coin}: 2,000 sats at ${phone.vault.address}, the take's vault, mined at height ${phone.coin.height}\\. Still unspent, read now: the cancelled request moved nothing$`));
+  // No execute after the wait in this record, so no line about one.
+  assert.equal(lines.filter((l) => /execute/i.test(l)).length, 0, r.out);
+  // The film's take prints what it printed before, five lines, all PASS, and its cancel line ends as before.
+  const film = takeLines(r);
+  assert.equal(film.length, 5, r.out);
+  assert.equal(film.filter((l) => !l.startsWith('PASS')).length, 0, r.out);
+  assert.ok(film.some((l) => l.endsWith('As proofs/film-take.json records, the passkey was Chrome\'s virtual authenticator, not a phone\'s')), r.out);
+  assert.equal(r.lines.filter((l) => l.startsWith('FAIL')).length, 0, r.out);
+  everyLineHasAClaim(r.lines);
+});
+
+test('tier A, the real phone\'s run: another signature, a cancel after the unlock, other code or a co-signed spend to the request\'s address each fail their line', { timeout: 300_000 }, async () => {
+  const cancelIn = (chain) => chain.tx[pk.cancel].receipts_outcome.find((x) => x.outcome.executor_id === pk.contract && x.outcome.logs.includes(phone.cancel.log)).block_hash;
+  const accountKey = Object.keys(phoneChain.query).find((k) => k.startsWith('view_account '));
+  const runs = [
+    [{ chain: (chain) => editArgs(chain.tx[pk.cancel], (a) => { a.assertion.signature = `${a.assertion.signature.slice(0, -1)}${a.assertion.signature.endsWith('8') ? '9' : '8'}`; }) }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${pk.cancel}: its WebAuthn assertion does not pass here the checks the contract makes: webauthn: bad signature$`)],
+    [{ chain: (chain) => shiftBlock(chain, cancelIn(chain), phone.cancel.block_before_the_unlock_ms + 1000) }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${pk.cancel}: it ran 1000 ms after request 0's unlock, not before it$`)],
+    [{ chain: (chain) => { chain.query[accountKey].code_hash = g2.contract.code_hash; } }, new RegExp(`^FAIL C05 \\[replay\\] ${esc(pk.contract)} ran code ${g2.contract.code_hash} at the block of NEAR testnet tx ${pk.cancel}, not ${g2v1.contract.code_hash}, `)],
+  ];
+  // A spend of the coin to the request's address, with a co-signed witness: only its shape is read, so its signatures are filler.
+  const tx = makeTx([{ txid: phone.coin.mutinynet_txid, vout: phone.coin.vout }], 0xfffffffd, [{ value: 1702, spk: addressToSpk('mutinynet', phone.thief.sent_to) }]);
+  tx.inputs[0].witness = [new Uint8Array(72).fill(9), new Uint8Array(72).fill(9), Uint8Array.of(1), new Uint8Array(111).fill(7)];
+  const thief = { txid: bitcoinTxid(tx), hex: toHex(serialize(tx)) };
+  runs.push([{ outspendPhone: { spent: true, txid: thief.txid, vin: 0 }, bitcoin: (known) => known.set(thief.txid, { hex: thief.hex, height: phone.coin.height + 10 }) }, new RegExp(`^FAIL C17 \\[replay\\] Mutinynet coin ${pk.coin}: 2,000 sats at ${phone.vault.address}, the take's vault, mined at height ${phone.coin.height}\\. Spent by Mutinynet txid ${thief.txid}, a co-signed spend that pays ${phone.thief.sent_to}, the address of the cancelled request$`)]);
+  for (const [how, want] of runs) {
+    const r = await takeRun(how);
+    const failed = r.lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(failed.length, 1, `${want}\n${r.out}`);
+    assert.match(failed[0], want);
+    assert.ok(phoneLines(r).includes(failed[0]), 'the line is in the real phone\'s section');
+    assert.equal(r.code, 1, r.out);
+    assert.equal(takeLines(r).filter((l) => !l.startsWith('PASS')).length, 0, 'the film\'s take still passes');
+    everyLineHasAClaim(r.lines);
+  }
+});
+
+test('tier A, a broken take record fails, never passes: the real phone\'s record with another schema, no device, a virtual authenticator too, half an execute, another unlock, wait, cancel, address or height, other flags, or an execute that is not one; the film\'s record with no execute', { timeout: 900_000 }, async () => {
+  const notARecord = (name) => new RegExp(`^FAIL C17 \\[replay\\] ${esc(name)} is not the record of a take of the live pages$`);
+  const unlock = phone.thief.unlock_ms;
+  const cases = [
+    ['phone-take.json', (p) => { p.schema = 'undo-phone-take-v2'; }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { delete p.device_as_reported; }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { delete p.assertion_as_read; }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { p.labels.push('virtual authenticator'); }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { p.labels = p.labels.filter((l) => l !== 'real device'); }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { p.after = { execute_refusal: 'RequestNotFound' }; }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { p.after = 'none'; }, notARecord('proofs/phone-take.json')],
+    ['phone-take.json', (p) => { p.thief.unlock_ms = unlock + 1000; }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${pk.propose}: no log "undo:proposed request=0 unlock=${unlock + 1000}" from ${esc(pk.contract)}$`)],
+    ['phone-take.json', (p) => { p.thief.wait_ms = 240_000; }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${pk.propose}: the unlock is 300000 ms after its block, and proofs/phone-take\\.json records a wait of 240000 ms$`)],
+    ['phone-take.json', (p) => { p.cancel.tx = tk.cancel; }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: not one cancel_all_and_rotate for vault ${phone.vault.id.slice(0, 10)}…$`)],
+    // Another address fails twice: the vault's keys do not make it, and the coin is not at it.
+    ['phone-take.json', (p) => { p.vault.address = take.vault.address; }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${pk.create}: the script of its keys is not the address ${take.vault.address} that proofs/phone-take\\.json records$`),
+      `FAIL C17 [replay] Mutinynet coin ${pk.coin}: it is not 2000 sats at ${take.vault.address}, the take's vault`],
+    ['phone-take.json', (p) => { p.coin.height += 1; }, new RegExp(`^FAIL C17 \\[replay\\] Mutinynet coin ${pk.coin}: mined at ${phone.coin.height}, proofs/phone-take\\.json says ${phone.coin.height + 1}$`)],
+    ['phone-take.json', (p) => { p.assertion_as_read.backed_up = false; }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${pk.cancel}: its authenticator data reads backed_up true, and proofs/phone-take\\.json records backed_up false$`)],
+    ['phone-take.json', (p) => { p.assertion_as_read.sign_count = 1; }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${pk.cancel}: its authenticator data reads sign_count 0, and proofs/phone-take\\.json records sign_count 1$`)],
+    // An execute the record names is checked like the film's: the cancel is not an execute.
+    ['phone-take.json', (p) => { p.after = { execute_after_the_wait_tx: pk.cancel, execute_refusal: 'RequestNotFound' }; }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${pk.cancel}: not one execute of request 0 of vault ${phone.vault.id.slice(0, 10)}…$`)],
+    // The film's take must hold its execute after the wait: without one it is not that record.
+    ['film-take.json', (p) => { delete p.after; }, notARecord('proofs/film-take.json')],
+  ];
+  for (const [file, change, want, also] of cases) {
+    const r = await takeRun({ repo: treeWith(file, change) });
+    const failed = r.lines.filter((l) => l.startsWith('FAIL'));
+    assert.deepEqual(failed.slice(1), also ? [also] : [], `${want}\n${r.out}`);
+    assert.match(failed[0], want);
+    assert.equal(r.code, 1, r.out);
+    const own = file === 'film-take.json' ? takeLines(r) : phoneLines(r);
+    const other = file === 'film-take.json' ? phoneLines(r) : takeLines(r);
+    assert.ok(own.includes(failed[0]), `the line is in ${file}'s section\n${r.out}`);
+    // The other record still passes whole.
+    assert.equal(other.filter((l) => !l.startsWith('PASS')).length, 0, r.out);
+    // A cancel or a proposal that did not pass leaves the coin's tie to a cancelled request unpassed.
+    if (/NEAR testnet tx \S+: (no log|the unlock is|not one cancel|the script of its keys|its authenticator data)/.test(failed[0])) {
+      assert.equal(own.filter((l) => l.startsWith('PASS C17 [replay] Mutinynet coin ')).length, 0, r.out);
+    }
+    everyLineHasAClaim(r.lines);
+  }
 });
 
 test('the outward gate reads a named run\'s record too: a verdict past its contents in proofs/g2-NAME.json stops it', { timeout: 120_000 }, () => {
@@ -1257,7 +1469,9 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.match(read('CLAIMS.md'), new RegExp(`\\(${earlier + final} of ${earlier + final} executes\\)`), 'and C12 says the same number');
   assert.match(bullets[0], /The contract asks them to sign only after a request's public wait has run out \(C01\)/);
   // What has not run is said where the feature is claimed.
-  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; from a real phone: \*\*not yet run\*\*\./);
+  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; and once from a real phone on the live pages, 2026-11-12: /);
+  // The real phone's run: the device is the author's report, said as such, and the hash is the record's, checked by tier A.
+  assert.ok(bullets[1].includes(`a cancel from an iPhone, as the author reported it (${phone.device_as_reported.device}, ${phone.device_as_reported.os}, ${phone.device_as_reported.browser}, with the thief tab a second Safari tab on the same phone; no chain says which device held a passkey, and its assertion reads user verified, not how), NEAR testnet tx \`${phone.cancel.tx}\`, in a block ${(phone.cancel.block_after_the_proposal_ms / 1000).toFixed(1)} s after the proposal's, which \`./verify.sh A\` checks again.`), bullets[1]);
   assert.match(read('CLAIMS.md'), /Several pending requests killed by one call, on testnet: \*\*not yet run\*\*/, 'C17 says the same of testnet');
   assert.match(bullets[2], /`propose_btc` and `execute` only/);
   // The agent is a command-line tool, and a script drove the recorded run: no model is in this repository.
@@ -1275,7 +1489,7 @@ test('README: the lead says what only this entry has, with the contract as the o
   // said again where it belongs, in the same words where a test already holds them.
   const notDone = readmeBetween('## Not done yet', '## Run it').split('\n').filter((l) => l.startsWith('- '));
   assert.deepEqual(notDone, [
-    '- A Cancel from a real phone: **not yet run**. It ran with software passkeys and with Chrome\'s virtual authenticator.',
+    '- A Cancel from a real phone: one run, on one iPhone with the phone page and the thief tab as two Safari tabs, as the author reported it, 2026-11-12 (C05). From any other phone, and from a laptop or desktop with its own passkey: **not yet run**.',
     '- The lock: the deploy\'s full-access key is still on the test contract, so its holder could replace the code at once, and C11 fails in `./verify.sh A`.',
     '- Mainnet: not deployed and not run (C19). Test networks only.',
     '- An audit: the code is unaudited.',
@@ -1285,12 +1499,44 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.match(claimsText, /\| C11 \|.*`\.\/verify\.sh A` prints FAIL on `v1\.s\.undo-btc\.testnet`, the instance of the final build, which keeps its deployer's full-access key/);
   assert.match(claimsText, /\| C19 \| On mainnet: .*\*\*not run\*\*: this build has no mainnet deploy/);
   assert.match(claimsText, /\| C08 \|.*A real NEAR AI signature checked on testnet: \*\*not yet run\*\*/);
-  assert.match(claimsText, /\| C05 \|.*From a real phone: \*\*not yet run\*\*/);
+  // C05 names the real phone's cancel, its flags as read, and the device as the author's report, not the chain's.
+  assert.match(claimsText, new RegExp(`\\| C05 \\|.*From a real phone: tx \`${phone.cancel.tx}\`, 2026-11-12, .*its authenticator data reads user present, user verified, backup eligible and backed up, sign count 0\\. The device, an iPhone 13 Pro Max on iOS 27\\.2\\.1 in Safari, with the thief tab a second Safari tab on it, is the author's report: no chain says which device held a passkey, and user verified does not say how \\(Real phone below\\) \\|`));
+  // C17 names the real phone's request and its cancel, and says in the same cell that the phone is the author's report.
+  assert.match(claimsText, new RegExp(`\\| C17 \\|.*From a real phone, an iPhone as the author reported it \\(no chain says which device\\): tx \`${phone.thief.propose_tx}\` made request 0 with a 5:00 wait, and tx \`${phone.cancel.tx}\` cancelled it 279 s before its unlock; its coin read unspent after the unlock \\(Real phone below\\)\\.`));
+  assert.doesNotMatch(claimsText, /From a real phone: \*\*not yet run\*\*/);
+  assert.doesNotMatch(read('README.md'), /real phone[^.]*\*\*not yet run\*\* end to end|from a real phone: \*\*not yet run\*\*/i);
+  assert.equal(claimsText.split('\n').filter((l) => l.startsWith('**Real phone.** The pages, live, 2026-11-12, ')).length, 1);
+  assert.equal(claimsText.match(/\(Real phone below\)/g).length, 3, 'C05, C17 and the live take point to it');
   assert.match(read('README.md'), /Nothing here runs on NEAR mainnet or holds real bitcoin\. The code is unaudited\./);
   assert.match(read('tools/verify/tier-a.mjs'), /Its owner could replace the code at once, without the upgrade wait/, 'C11\'s own words when it fails');
 });
 
-test('README, See it on chain: five links, each to a hash its record holds, each saying its build and what signed, and all five fetched again by ./verify.sh A', () => {
+test('the real phone\'s device and browser: every sentence that names them says they are the author\'s report, and none names a way the phone verified its user', () => {
+  // No chain names a device or a browser, so a sentence that does says whose report it is. The one exception is how-to:
+  // the step that tells a reader which browser to open the page in.
+  const names = /iPhone|Safari|iOS \d|13 Pro Max/;
+  const label = /as the author reported it|the author's report|what the author reported/i;
+  const howTo = /^(1\. )?On the phone, open https:\/\/undo-btc\.pages\.dev\/p\/ in Safari or Chrome itself, not inside X or Telegram, /;
+  const sentences = (text) => text.split(/\n+| \| |(?<=\.)\s+(?=[A-Z*(`[])/).map((s) => s.trim()).filter(Boolean);
+  const hits = [];
+  for (const f of ['README.md', 'CLAIMS.md', 'tests/REGRESSION-MAP.md']) {
+    for (const s of sentences(read(f))) {
+      if (!names.test(s) || howTo.test(s)) continue;
+      hits.push(s);
+      assert.match(s, label, `${f}: a sentence names the device or browser without saying it is the author's report: ${s}`);
+    }
+  }
+  assert.ok(hits.length >= 8, `the sentences that name it were found: ${hits.length}`);
+  // The regression map's WebAuthn row no longer lists a real phone's assertion as not covered: it names the record's cancel.
+  const row17 = read('tests/REGRESSION-MAP.md').split('\n').find((l) => l.startsWith('| 17 |'));
+  assert.ok(row17.includes(`one real phone's assertion, from its NEAR testnet cancel \`${phone.cancel.tx}\` (\`proofs/phone-take.json\`; which phone it was is the author's report)`), row17);
+  assert.ok(row17.endsWith('| Assertions from other phones and authenticators. The sandbox tests here use a software authenticator only. |'), row17);
+  // The author named no way the phone verified its user; the assertion says only that it did (user verified).
+  for (const f of ['README.md', 'CLAIMS.md', 'proofs/phone-take.json', 'site/pages/index.html', 'site/pages/replay/run.json']) assert.doesNotMatch(read(f), /Face ID|Touch ID/, f);
+  assert.doesNotMatch(PHONE_WHO, /Face ID/);
+});
+
+test('README, See it on chain: six links, each to a hash its record holds, each saying its build and what signed, and all six fetched again by ./verify.sh A', () => {
   const section = readmeBetween('### See it on chain', '## Try it');
   const execute = g2v1.cosigned.attempts.find((a) => a.signer_answer).execute_tx;
   const links = [...section.matchAll(/\[`([^`]+)`\]\((https:\/\/[^)]+)\)/g)].map((m) => [m[1], m[2]]);
@@ -1300,6 +1546,7 @@ test('README, See it on chain: five links, each to a hash its record holds, each
     [g2v1.escape.txid, `https://mutinynet.com/tx/${g2v1.escape.txid}`],
     [take.cancel.tx, `https://testnet.near.rocks/tx/${take.cancel.tx}`],
     [take.after.execute_after_the_wait_tx, `https://testnet.near.rocks/tx/${take.after.execute_after_the_wait_tx}`],
+    [phone.cancel.tx, `https://testnet.near.rocks/tx/${phone.cancel.tx}`],
   ]);
   // The site links NEAR transactions on the same explorer the README does.
   assert.equal(JSON.parse(read('site/config/testnet.json')).nearTxUrl, 'https://testnet.near.rocks/tx/{}');
@@ -1310,11 +1557,12 @@ test('README, See it on chain: five links, each to a hash its record holds, each
   assert.deepEqual([...new Set(long)], links.map((l) => l[0]));
   assert.doesNotMatch(section.replace('`358c63bf…`', ''), /…/);
   const items = section.split('\n').filter((l) => l.startsWith('- '));
-  assert.equal(items.length, 5);
+  assert.equal(items.length, 6);
   // Its build, from the records: the wasm, the contract, the day.
   assert.ok(g2v1.wasm.sha256.startsWith('358c63bf'));
-  assert.ok(section.includes(`Five transactions of the final build (wasm \`358c63bf…\`, contract \`${g2v1.contract.account}\`), ${take.started_utc.slice(0, 10)}`));
+  assert.ok(section.includes(`Six transactions of the final build (wasm \`358c63bf…\`, contract \`${g2v1.contract.account}\`), ${take.started_utc.slice(0, 10)} and ${phone.vault_made_block_utc.slice(0, 10)}`));
   assert.equal(take.contract, g2v1.contract.account);
+  assert.equal(phone.contract, g2v1.contract.account);
   assert.equal(g2v1.cosigned.attempts.find((a) => a.signer_answer).tx_status, 'success');
   // What signed each one.
   assert.ok(items[0].includes(`mined on Mutinynet at height ${g2v1.cosigned.mined_height} with two signatures, the spend key's and the one Chain Signatures gave`));
@@ -1336,8 +1584,21 @@ test('README, See it on chain: five links, each to a hash its record holds, each
   assert.ok(items[4].includes(`in a block ${after} s after its 5:00 wait had run out. The contract refused it, \`${take.after.execute_refusal}\`, and asked the signer for nothing`), `${after} s`);
   assert.equal(take.thief.wait_ms, 300_000);
   assert.match(items[4], /the vault's coin read unspent again on \d{4}-\d\d-\d\d: /);
-  // All five are fetched again, and the section says where each record is.
-  assert.match(section, /`\.\/verify\.sh A` fetches all five again: the first three are in `proofs\/g2-v1\.json`, the last two in `proofs\/film-take\.json`\./);
+  // The real phone's cancel: the chain's numbers, the device and browser as the author's report, and no claim that a
+  // chain names the device. The code at its block is the final build's: tier A reads it there (C05).
+  const phoneBefore = Math.floor(phone.cancel.block_before_the_unlock_ms / 1000);
+  assert.equal(phoneBefore, 279);
+  assert.ok(items[5].startsWith(`- A passkey Cancel from a real phone, \`${phone.cancel.method}\`, on the live pages, ${phone.vault_made_block_utc.slice(0, 10)}, another vault of the same contract, in a block ${phoneBefore} s before the thief's request would have unlocked. `), items[5]);
+  assert.ok(items[5].includes('As the author reported it, the passkey was an iPhone\'s, in Safari, and the thief tab was a second Safari tab on that iPhone; no chain says which device held a passkey, and its assertion reads user verified, not how.'), items[5]);
+  assert.ok(items[5].includes('The relay\'s NEAR account sent it; `./verify.sh A` verifies its WebAuthn signature again, under the passkey that vault was made with: '), items[5]);
+  assert.equal(phone.device_as_reported.browser, 'Safari');
+  assert.equal(phone.assertion_as_read.user_verified, true);
+  assert.ok(phone.labels.includes('real device') && !phone.labels.includes('virtual authenticator'));
+  assert.notEqual(phone.vault.id, take.vault.id);
+  assert.match(phone.read_again, /the contract's code hash at the cancel's block 4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1/);
+  assert.equal(g2v1.contract.code_hash, '4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1');
+  // All six are fetched again, and the section says where each record is.
+  assert.match(section, /`\.\/verify\.sh A` fetches all six again: the first three are in `proofs\/g2-v1\.json`, the next two in `proofs\/film-take\.json`, the last in `proofs\/phone-take\.json`\./);
   const tierA = read('tools/verify/tier-a.mjs');
   for (const field of ['take.cancel.tx', 'take.vault.create_tx', 't.propose_tx']) assert.ok(tierA.includes(`fetchTx(${field})`), `tier A fetches ${field}`);
   assert.ok(tierA.includes('const hash = take.after.execute_after_the_wait_tx;\n      const tx = await fetchTx(hash);'), 'and the refused execute');
@@ -1370,11 +1631,12 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   // The same total is the last one in the row of what was built, so the two cannot drift apart.
   const total = /Expected today: `TIER A: (\d+) PASS/.exec(rowA)[1];
   const builtRow = readme.split('\n').find((l) => l.startsWith('| `verify.sh`, `demo.sh`, `CLAIMS.md` |'));
-  assert.ok(builtRow.endsWith(`with the lines for the live phone page's Cancel, ${total} PASS and the same FAIL |`), `the last run named there has ${total} PASS`);
+  assert.ok(builtRow.endsWith(`with the lines for the Cancel from a real phone (an iPhone, as the author reported it), ${total} PASS and the same FAIL |`), `the last run named there has ${total} PASS`);
+  assert.ok(rowA.includes('for the film\'s take and for the run from a real phone (an iPhone, as the author reported it)'), 'both takes are fetched again');
   const tryIt = readmeBetween('## Try it', '### Try a cancel yourself');
   const doCells = tryIt.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Do |')).map((l) => /^\| ([^|]+) \|/.exec(l)[1]);
   assert.equal(doCells[0], 'Open https://undo-btc.pages.dev', 'the site comes first');
-  // Each row says what you will see: the film, the replay's six steps, and your own cancel, which a device's passkey has not run.
+  // Each row says what you will see: the film, the replay's six steps, and your own cancel, which a real phone has run once, on one device.
   const seeCells = Object.fromEntries(tryIt.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Do |')).map((l) => l.split(' | ')).map((c) => [c[0].slice(2), c.slice(1).join(' | ')]));
   assert.deepEqual(doCells.slice(0, 3), ['Open https://undo-btc.pages.dev', 'Press **Watch a recorded run** (`/replay/`)', 'Open `/p/` in a browser that has a passkey, then follow the four steps below']);
   assert.match(seeCells['Open https://undo-btc.pages.dev'], /^The film, about a minute, muted until you unmute it: /);
@@ -1387,7 +1649,23 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   assert.ok(replayRow.includes('the phone page\'s Cancel (from the film\'s take, another vault of the same contract)') && replay.steps[3].run === 'take');
   assert.ok(replayRow.includes('a request made to wait 10:00') && replayRow.endsWith('Nothing on that page is live |'));
   assert.doesNotMatch(tryIt, /\bG2\b/, 'no term before Terms');
-  assert.match(seeCells['Open `/p/` in a browser that has a passkey, then follow the four steps below'], /With a device's own passkey this is \*\*not yet run\*\* \|$/);
+  assert.match(seeCells['Open `/p/` in a browser that has a passkey, then follow the four steps below'], /From a real phone this ran once, 2026-11-12: on one iPhone with both pages as Safari tabs, as the author reported it \(below\) \|$/);
+  // The steps' paragraph says what ran from a real phone, with the chain's hashes and the device as the author's report.
+  const steps = readmeBetween('### Try a cancel yourself', '1. On the phone, open https://undo-btc.pages.dev/p/ in Safari or Chrome itself, not inside X or Telegram, and tap **Make a test vault**, then **Confirm with your passkey**: two passkey prompts. This makes a passkey for undo-btc.pages.dev and a vault on NEAR testnet.');
+  for (const h of [phone.vault.create_tx, phone.thief.propose_tx, phone.cancel.tx]) assert.ok(steps.includes(`\`${h}\``), h);
+  assert.ok(steps.includes('From a real phone this ran once, 2026-11-12, on these live pages, on one device: one iPhone, with the phone page and the thief tab as two Safari tabs on it, as the author reported it (iPhone 13 Pro Max, iOS 27.2.1, Safari; see "On one device" below). What the chains show, which `./verify.sh A` reads again (`proofs/phone-take.json`'), steps);
+  assert.ok(steps.includes('Which device held the passkey, no chain says.'), steps);
+  // The four steps' path, a phone and the thief tab on a second device, has not run from a real phone, and the paragraph
+  // says so where it describes that path.
+  assert.ok(steps.includes('Which device held the passkey, no chain says. With the thief tab on a second device, as in the four steps below, a real phone has **not yet run** it.'), steps);
+  // The one-device path ran from a real phone: one iPhone, two Safari tabs, the author's report, and the chain's cancel.
+  // From a laptop or desktop with its own passkey it still has not.
+  const oneDevice = readme.split('\n').find((l) => l.startsWith('**On one device.** '));
+  assert.ok(oneDevice.includes(`It ran this way from a real phone, 2026-11-12: one iPhone, with the two pages as two Safari tabs, as the author reported it; the Cancel is NEAR testnet tx \`${phone.cancel.tx}\`, and no chain says which device held its passkey.`), oneDevice);
+  assert.ok(oneDevice.includes('It also ran in one headless Chrome with two windows and Chrome\'s virtual authenticator, 2026-11-11 (NEAR testnet tx `GAMM2dVDA7aqiqer2utr1LXoYZEm9ccM8vbHYzZpovPk`, the Cancel).'), oneDevice);
+  assert.ok(oneDevice.endsWith('From a laptop or desktop with its own passkey it has **not yet run**.'), oneDevice);
+  assert.doesNotMatch(readme, /with a device's own passkey it has \*\*not yet run\*\*/);
+  assert.equal(phone.device_as_reported.browser, 'Safari');
   for (const cell of doCells) assert.doesNotMatch(cell, /^`\.\/(verify|demo)\.sh/, 'a command of the Run it table is not listed a second time');
   assert.match(readme, /\n- The agent on a local node: `agent\/test\/run-sandbox\.sh 86 88` /, 'the agent\'s sandbox run is under More');
   // The relay: the paragraph before the steps stops at "So it can be full." and the rest is in the doc it links.
@@ -1395,7 +1673,7 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   assert.match(before, /So it can be full\. \[docs\/relay\.md\]\(docs\/relay\.md\) has the rest of the relay's accounting\.\n/);
   // Where to open it, and on what: an app's own browser may give no passkey sheet, and the thief tab is laid out for a laptop.
   assert.match(readme, /\n1\. On the phone, open https:\/\/undo-btc\.pages\.dev\/p\/ in Safari or Chrome itself, not inside X or Telegram, and tap /);
-  assert.match(readme, /\n\*\*On one device\.\*\* One laptop or desktop browser with a passkey is enough: /);
+  assert.match(readme, /\n\*\*On one device\.\*\* One browser with a passkey is enough, on a phone, a laptop or a desktop: /);
   assert.match(readme, /Copy it before you leave or reload the page: the page holds the spend key only while it is open\./, 'still true: the page stores neither key');
   const relay = read('docs/relay.md');
   for (const moved of ['The coin count can run one over for each relay fault of one kind:', 'a request that stalls for over two minutes before its coin goes out can also end with two coins', 'counts on the earlier day, the day it was charged.']) {
@@ -1407,7 +1685,7 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
     assert.ok(relay.includes(kept), `docs/relay.md says: ${kept}`);
     assert.equal(readme.includes(kept), false, `the README leaves it to docs/relay.md: ${kept}`);
   }
-  assert.match(before, /^\nYou need a phone that can make passkeys, and a laptop; or one laptop or desktop browser with a passkey and two tabs \(see "On one device" below\)\. The relay pays the NEAR gas, and its daily limits are shared by everyone who tries this, `\.\/demo\.sh` runs included\. So it can be full\. /);
+  assert.match(before, /^\nYou need a phone that can make passkeys, and a laptop; or one browser with a passkey and two tabs, on a phone, a laptop or a desktop \(see "On one device" below\)\. The relay pays the NEAR gas, and its daily limits are shared by everyone who tries this, `\.\/demo\.sh` runs included\. So it can be full\. /);
   // The cold key, said without "always": what it needs, and when it can move a coin.
   assert.ok(readme.includes('The cold key in the recovery file needs no relay and, for its exit, no NEAR: it moves a coin only once the coin is older than the timelock.'));
   assert.doesNotMatch(readme, /always works/);

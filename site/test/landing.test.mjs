@@ -60,7 +60,7 @@ test('replay: run.json is exactly what tools/replay-run.mjs builds from proofs/,
   for (const s of run.steps) for (const h of hashesOf(s)) assert.equal([earlier.cosigned.txid, earlier.escape.txid, earlier.cosigned.propose_tx, earlier.vault.address].includes(h), false, `${s.id} holds a hash of the earlier build's run`);
 });
 
-test('replay: the cancel step is the take of the live pages, with that take\'s hashes, and says it is another vault, that Chrome\'s authenticator stood in, and that a real phone has not run', () => {
+test('replay: the cancel step is the take of the live pages, with that take\'s hashes, and says it is another vault, that Chrome\'s authenticator stood in, and that a real phone\'s Cancel, on another vault, is the author\'s report', () => {
   const take = proof('film-take.json');
   const cancel = run.steps.find((s) => s.id === 'cancel');
   assert.notEqual(cancel.recorded, false, 'the step is a recorded one now');
@@ -76,7 +76,14 @@ test('replay: the cancel step is the take of the live pages, with that take\'s h
   assert.equal(run.steps.indexOf(cancel), 3, 'the note calls it step 4');
   const said = cancel.lines.filter((l) => l.kind === 'text').map((l) => l.text).join(' ');
   assert.match(said, /^From the live pages, in the take the film is cut from: /);
-  assert.match(said, /Chrome's virtual authenticator stood in for a phone's passkey; from a real phone that path has not yet run\.$/);
+  // The take's cancel was Chrome's virtual authenticator; a real phone's ran later, on another vault, and the device and
+  // the browser are what its author reported, from proofs/phone-take.json. Its hash is not a line of this step.
+  const phone = proof('phone-take.json');
+  assert.ok(said.endsWith(`Chrome's virtual authenticator stood in for a phone's passkey. A Cancel from a real phone ran once, ${phone.vault_made_block_utc.slice(0, 10)}, on another vault of the same contract: one ${phone.device_as_reported.device}, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it.`), said);
+  assert.deepEqual([phone.device_as_reported.device, phone.device_as_reported.browser], ['iPhone 13 Pro Max', 'Safari']);
+  assert.ok(![take.vault.id, run.vault.id].includes(phone.vault.id) && phone.contract === run.vault.contract);
+  assert.doesNotMatch(said, /not yet run/);
+  assert.equal(JSON.stringify(run).includes(phone.cancel.tx), false, 'the real phone\'s cancel is not a hash line of the replay');
   const whats = cancel.lines.filter((l) => l.kind === 'hash').map((l) => l.what);
   assert.equal(whats[0], 'the thief tab\'s request, made to wait 5:00');
   assert.equal(whats[1], `the phone page's Cancel (${take.cancel.method})`);
@@ -126,7 +133,7 @@ test('landing: "From the film:", "From the final build\'s run" and "From an earl
   assert.notEqual(run.earlier.contract, run.final.contract);
   // The words under the replay button and beside the try link say what each is.
   assert.match(landing, /<p class="small">A replay of the final build's recorded runs, with their real hashes\. Test coins only, on Mutinynet and NEAR testnet\.<\/p>/);
-  assert.match(landing, /<a id="try-link" class="link" href="\/p\/">Try a cancel yourself<\/a>: one laptop or desktop browser with a passkey and two tabs, or a phone and a laptop\. A relay pays the NEAR gas, and its daily limit is shared, so it can be full\.<\/p>/);
+  assert.match(landing, /<a id="try-link" class="link" href="\/p\/">Try a cancel yourself<\/a>: one browser with a passkey and two tabs, on a phone or a computer, or a phone and a laptop\. A relay pays the NEAR gas, and its daily limit is shared, so it can be full\.<\/p>/);
 });
 
 test('every hash on both pages is in proofs/, and every long hex or base58 string on them is one of those hashes', () => {
@@ -396,7 +403,7 @@ test('Chrome replay: labelled REPLAY, one step at a time on request, every hash 
   assert.equal(await cdp.page('return document.querySelector("#step-cancel").dataset.run;'), 'take');
   assert.equal(await cdp.page('return document.querySelector("#step-cancel .when").textContent;'), `replay · the live pages, another vault · ${run.runs.take.date} UTC ${run.steps[3].at.slice(11, 19)}`);
   assert.equal(await cdp.page('return document.querySelectorAll("#step-cancel .hash-line").length;'), 4);
-  assert.match(await cdp.page('return document.querySelector("#step-cancel").textContent;'), /Chrome's virtual authenticator stood in for a phone's passkey; from a real phone that path has not yet run\./);
+  assert.match(await cdp.page('return document.querySelector("#step-cancel").textContent;'), /Chrome's virtual authenticator stood in for a phone's passkey\. A Cancel from a real phone ran once, \d{4}-\d\d-\d\d, on another vault of the same contract: one iPhone 13 Pro Max, with the phone page and the thief tab as two Safari tabs on it, as the author reported it\./);
   assert.equal(await cdp.page('return document.querySelectorAll(".step .when").length;'), run.steps.length);
   assert.match(await cdp.page('return document.querySelector("#step-refused .when").textContent;'), new RegExp(`^replay · final build · ${run.runs.s2.date} UTC ${run.steps[1].at.slice(11, 19)}$`));
   assert.equal(await cdp.page('return document.querySelector("#step-signed .when").textContent.startsWith("replay · final build · ");'), true);
@@ -411,7 +418,7 @@ test('Chrome replay: labelled REPLAY, one step at a time on request, every hash 
   assert.deepEqual(problems, []);
 });
 
-test('build of the replay record refuses records that are not the final build\'s live run, a script refusal on its vault, a take on the same contract and an earlier build\'s run', () => {
+test('build of the replay record refuses records that are not the final build\'s live run, a script refusal on its vault, a take on the same contract, a real phone\'s take on yet another vault, and an earlier build\'s run', () => {
   const g2 = proof('g2-v1.json');
   const s2 = proof('s2-refusal-v1.json');
   const take = proof('film-take.json');
@@ -432,6 +439,13 @@ test('build of the replay record refuses records that are not the final build\'s
   assert.throws(() => buildRun({ take: { ...take, vault: { ...take.vault, id: g2.vault.id } } }), /not another vault of the same contract/);
   assert.throws(() => buildRun({ take: { ...take, after: { ...take.after, execute_refusal: 'TooEarly' } } }), /not the film's take/);
   assert.throws(() => buildRun({ earlier: g2 }), /not an earlier build's run/);
+  // The real phone's record: a real device's take, on another vault of the same contract, with its author's report.
+  const phone = proof('phone-take.json');
+  assert.throws(() => buildRun({ phone: { ...phone, labels: [...phone.labels, 'virtual authenticator'] } }), /not a real device's take/);
+  assert.throws(() => buildRun({ phone: { ...phone, schema: 'undo-film-take-v1' } }), /not a real device's take/);
+  assert.throws(() => buildRun({ phone: { ...phone, vault: { ...phone.vault, id: take.vault.id } } }), /phone-take\.json is not another vault of the same contract/);
+  assert.throws(() => buildRun({ phone: { ...phone, contract: earlier.contract.account } }), /phone-take\.json is not another vault of the same contract/);
+  assert.throws(() => buildRun({ phone: { ...phone, device_as_reported: { ...phone.device_as_reported, browser: undefined } } }), /does not say what its author reported/);
   // A mined spend whose record does not say both signatures verified is not shown as one with two.
   const oneSig = structuredClone(g2);
   oneSig.cosigned.readback.signatures[1].verified = false;

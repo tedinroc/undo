@@ -1,0 +1,66 @@
+{
+  "schema": "undo-phone-take-v1",
+  "what": "A run of the live pages of https://undo-btc.pages.dev with a real phone's passkey, against the NEAR testnet contract below and Mutinynet: the phone page made a vault, the vault's coin was asked through the contract to go to a new address, and the phone page's Cancel, cancel_all_and_rotate, ran before that request's unlock. Every hash and number below was read from the chains: the NEAR testnet transactions from archival RPC and the coin from the Mutinynet API. Which device and browser held the passkey, and where the thief tab ran, no chain shows: device_as_reported is the author's report, not the chain's: one iPhone, with the phone page and the thief tab as two Safari tabs on it. No execute after the wait is recorded for this run. The passkey's credential id is left out: no chain holds it. This record never held the vault's spend key or any secret.",
+  "labels": [
+    "live-testnet",
+    "live-mutinynet",
+    "real device"
+  ],
+  "vault_made_block_utc": "2026-11-12T14:18:38.619Z",
+  "origin": "https://undo-btc.pages.dev",
+  "contract": "v1.s.undo-btc.testnet",
+  "near_chain": "NEAR testnet",
+  "bitcoin_chain": "Mutinynet (a Bitcoin signet)",
+  "vault": {
+    "id": "6a024594bda1e278fe41c84913917bd0322c37aebbe2782c1bd3df3fbfff1a09",
+    "address": "tb1q7nna8dzrz4tl0z902u54wjt0svgk55tpv39mfplud4drkevyk2pqssp2jw",
+    "create_tx": "3ek9TdcxB588YzswGM9YPgHgYBfrWHxD8K2jJs38j7B5"
+  },
+  "coin": {
+    "mutinynet_txid": "7a8071d1b86a28994a04d340ce00803f479c8a33e025d1bdbbf6af40856f3b0a",
+    "vout": 0,
+    "value_sats": 2000,
+    "height": 3584237
+  },
+  "thief": {
+    "sent_to": "tb1qqawnsneu05cpj47tp8fnxgrawsxdymx29pfpyg",
+    "amount_sats": 1702,
+    "propose_tx": "9xgJmaGCaYVH5URhXUg27cXWu7StoGZSH72WRXvhsGFb",
+    "request_id": 0,
+    "proposed_at_ms": 1794493224084,
+    "unlock_ms": 1794493524084,
+    "wait_ms": 300000
+  },
+  "cancel": {
+    "method": "cancel_all_and_rotate",
+    "tx": "HHzwhu5f3GxY7B3Y8abdtuKJirZsHVAdRoyGG6UXBSE9",
+    "log": "undo:rotating grant=0",
+    "block_after_the_proposal_ms": 20643,
+    "block_before_the_unlock_ms": 279357
+  },
+  "assertion_as_read": {
+    "type": "webauthn.get",
+    "origin": "https://undo-btc.pages.dev",
+    "cross_origin": false,
+    "authenticator_data_bytes": 37,
+    "user_present": true,
+    "user_verified": true,
+    "backup_eligible": true,
+    "backed_up": true,
+    "sign_count": 0
+  },
+  "device_as_reported": {
+    "by": "the author, in chat on 2026-11-12, after the run",
+    "device": "iPhone 13 Pro Max",
+    "os": "iOS 27.2.1",
+    "network": "Wi-Fi",
+    "time_to_cancelled": "about 2 s, the author's estimate, up to CANCELLED on screen",
+    "cancel_button": "whole on screen, with no scrolling; no screenshot was kept",
+    "browser": "Safari",
+    "tabs": "the phone page /p/ and the thief tab /t/ both ran on that one iPhone, as two Safari tabs, not on a Mac: the README's \"On one device\" path",
+    "browser_by": "the author, in chat on 2026-11-12, after the run, in a later message than the rest",
+    "what_the_chain_says_of_it": "nothing: the assertion's flags say user present, user verified, backup eligible and backed up, with sign count 0; user verified says the authenticator verified the user, not how, and a backed-up passkey can be synced to other devices, so they do not name one device"
+  },
+  "read_again_utc": "2026-11-12T14:32Z",
+  "read_again": "The three NEAR testnet transactions were fetched again from archival RPC and the coin from the Mutinynet API, after the request's unlock: create_vault and heartbeat (undo:created, undo:active for this vault), propose_btc (undo:proposed request=0 unlock=1794493524084, returning request 0), cancel_all_and_rotate (undo:rotating grant=0), all three sent by s.undo-relay.testnet, the relay's account, and all three succeeded; the contract's code hash at the cancel's block 4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1; the coin 2,000 sats at the vault's address, height 3584237, unspent."
+}

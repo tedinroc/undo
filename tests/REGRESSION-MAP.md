@@ -80,7 +80,7 @@ result, and its partner is the test that shows the refusal.
 | 14 | medium | Fee cap strands exits | `review_contract`, `crates/undo-core/props` | Mainnet cap sizing. |
 | 15 | medium | Consensus-lib overclaim, CSV operand | `review_script`, `review_contract`, `crates/undo-btc/tests/regtest.rs` | - |
 | 16 | medium | `K_e` intents undefined | Intent format in `contracts/undo/src/auth.rs`, tested through `cold_key_cancel`, `review1`, and `tools/freeze.mjs` in `tools/test/sandbox-intents.mjs` | - |
-| 17 | medium | WebAuthn checks incomplete | `review_contract` | A real phone assertion. Software authenticator only here. |
+| 17 | medium | WebAuthn checks incomplete | `review_contract`; one real phone's assertion, from its NEAR testnet cancel `HHzwhu5f3GxY7B3Y8abdtuKJirZsHVAdRoyGG6UXBSE9` (`proofs/phone-take.json`; which phone it was is the author's report), checked again the way the contract checks it by `./verify.sh A` from archival RPC and by `tools/test/judge-floor.test.mjs` from its saved answers | Assertions from other phones and authenticators. The sandbox tests here use a software authenticator only. |
 | 18 | medium | Request expiry undefined | `review_contract`, `crates/undo-core/props` | - |
 | 19 | medium | Agent mode against protocol limits | `review_fckey` | Live allowance. |
 | 20 | medium | Committed sentence as key material | No such key exists. Secret scan in `scripts/secret-scan.sh`. | - |

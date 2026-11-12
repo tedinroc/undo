@@ -20,6 +20,8 @@
 //    Then the take of the live pages in proofs/film-take.json: the thief tab's proposal and its wait, the phone
 //    page's cancel_all_and_rotate before that unlock, with its WebAuthn assertion checked again here under the
 //    passkey the vault was made with, the execute the contract refused after the unlock, and the coin, read now.
+//    The same for every other take, proofs/NAME-take.json, such as the run from a real phone in
+//    proofs/phone-take.json; the execute line only where the record has an execute after the wait.
 // 4. The agent run in proofs/c14-agent.json: the transaction that gave the agent its function-call key,
 //    its proposal, the calls the contract refused, the owner's cancel and rotation, each fetched again
 //    from archival RPC. What NEAR itself refused was never on chain, so that part is INFO.
@@ -767,30 +769,76 @@ const refusalWords = (failure) => {
   }
 };
 
+/** The takes of the live pages: proofs/film-take.json, the film's, first, then every other proofs/NAME-take.json. */
+function takeFiles() {
+  const dir = join(REPO, 'proofs');
+  const others = existsSync(dir) ? readdirSync(dir).filter((f) => /^[a-z][a-z0-9]{0,15}-take\.json$/.test(f) && f !== 'film-take.json').sort() : [];
+  return ['film-take.json', ...others];
+}
+
 /**
- * proofs/film-take.json against the chains: the one take of the live phone page and thief tab that the film is cut
- * from. Its NEAR testnet transactions are fetched again from archival RPC, and the cancel's WebAuthn assertion is
- * checked again here, the way contracts/undo/src/auth.rs checks it, under the passkey in the vault's own create_vault.
- * The coin is read from the Mutinynet API as it is now. What no chain can say, which authenticator held the passkey,
- * is read from the record, and the line says so.
+ * What each kind of take record must hold. The film's take has an execute after the wait, and must. A take from a
+ * real device may have one; it names the device as its author reported it, and the authenticator data as read.
  */
-async function replayTake(config) {
-  const name = 'proofs/film-take.json';
-  const take = proof('film-take.json');
+const TAKE_KINDS = {
+  'undo-film-take-v1': { execute: 'required', device: false },
+  'undo-phone-take-v1': { execute: 'optional', device: true },
+};
+
+/** The flags and the counter in a WebAuthn assertion's authenticator data: the 32-byte rpIdHash, a flags byte, a 4-byte count. */
+function authenticatorFlags(hex) {
+  const ad = typeof hex === 'string' && /^([0-9a-f]{2})+$/.test(hex) ? fromHex(hex) : new Uint8Array(0);
+  if (ad.length < 37) return null;
+  const f = ad[32];
+  return {
+    authenticator_data_bytes: ad.length,
+    user_present: Boolean(f & 0x01), user_verified: Boolean(f & 0x04), backup_eligible: Boolean(f & 0x08), backed_up: Boolean(f & 0x10),
+    sign_count: ((ad[33] << 24) >>> 0) + (ad[34] << 16) + (ad[35] << 8) + ad[36],
+  };
+}
+const FLAG_WORDS = [['user_present', 'user present'], ['user_verified', 'user verified'], ['backup_eligible', 'backup eligible'], ['backed_up', 'backed up']];
+const flagWords = (read) => FLAG_WORDS.map(([k, w]) => (read[k] ? w : `not ${w}`)).join(', ');
+
+async function replayTakes(config) {
+  for (const file of takeFiles()) await replayTake(config, file);
+}
+
+/**
+ * A take record against the chains: proofs/film-take.json is the one take of the live phone page and thief tab that
+ * the film is cut from; proofs/phone-take.json is a run of the same pages with a real phone's passkey. Its NEAR
+ * testnet transactions are fetched again from archival RPC, and the cancel's WebAuthn assertion is checked again
+ * here, the way contracts/undo/src/auth.rs checks it, under the passkey in the vault's own create_vault. The coin is
+ * read from the Mutinynet API as it is now. What no chain can say, which authenticator held the passkey, is read from
+ * the record, and the line says so.
+ */
+async function replayTake(config, file = 'film-take.json') {
+  const name = `proofs/${file}`;
+  const take = proof(file);
   console.log(`\n== tier A: replay of the live take in ${name}: the phone page's Cancel, fetched again from archival RPC`);
   if (!take) return line('SKIP', 'C17', 'replay', `${name} is not in this tree`);
   const t = take.thief ?? {};
   const contract = take.contract;
   const vault = take.vault?.id ?? '';
-  const sound = take.schema === 'undo-film-take-v1' && typeof contract === 'string' && /^[0-9a-f]{64}$/.test(vault) && take.vault.create_tx && take.vault.address
+  const kind = TAKE_KINDS[take.schema];
+  const labels = Array.isArray(take.labels) ? take.labels : [];
+  const virtual = labels.includes('virtual authenticator');
+  const device = labels.includes('real device');
+  const reported = take.device_as_reported;
+  // An execute after the wait is a line only where the record has one, and half of one is no record.
+  const after = take.after;
+  const hasExecute = after != null && (typeof after !== 'object' || 'execute_after_the_wait_tx' in after || 'execute_refusal' in after);
+  const executeSound = hasExecute ? Boolean(typeof after === 'object' && after.execute_after_the_wait_tx && after.execute_refusal) : kind?.execute === 'optional';
+  // A real device's take says so, never a virtual authenticator too, and names what its author reported.
+  const deviceSound = !kind?.device || (device && !virtual && typeof reported?.device === 'string' && typeof reported.os === 'string'
+    && Boolean(take.assertion_as_read) && typeof take.assertion_as_read === 'object');
+  const sound = Boolean(kind) && typeof contract === 'string' && /^[0-9a-f]{64}$/.test(vault) && take.vault.create_tx && take.vault.address
     && t.propose_tx && Number.isSafeInteger(t.request_id) && Number.isSafeInteger(t.unlock_ms) && Number.isSafeInteger(t.wait_ms) && t.sent_to && take.cancel?.tx && take.cancel.method === 'cancel_all_and_rotate'
-    && take.after?.execute_after_the_wait_tx && take.after.execute_refusal && /^[0-9a-f]{64}$/.test(take.coin?.mutinynet_txid ?? '') && typeof take.origin === 'string';
+    && executeSound && deviceSound && /^[0-9a-f]{64}$/.test(take.coin?.mutinynet_txid ?? '') && typeof take.origin === 'string';
   if (!sound) return line('FAIL', 'C17', 'replay', `${name} is not the record of a take of the live pages`);
   const archival = config.replay.near_archival_rpc;
   const esplora = config.replay.mutinynet_esplora;
   const signer = config.replay.signer ?? config.signer;
   const coinId = `${take.coin.mutinynet_txid}:${take.coin.vout}`;
-  const virtual = (take.labels ?? []).includes('virtual authenticator');
   const fetchTx = async (hash) => {
     const tx = await rpc(archival, 'tx', { tx_hash: hash, sender_account_id: contract, wait_until: 'NONE' });
     if (tx.transaction?.hash !== hash) throw new Error(`NEAR testnet tx ${hash}: the node answered about another transaction`);
@@ -861,8 +909,19 @@ async function replayTake(config) {
       const digest = intentDigest({ tag: PASSKEY_TAG, contract, vault: fromHex(vault), method: call.method, args: argBytes.cancel_all_and_rotate({ newKs: fromHex(call.args.new_k_s) }), expiresAt: call.args.expires_at, nonce: call.args.nonce });
       const refusal = refusalOf({ assertion: call.args.assertion, digest, pubkey: kp, rpIdHash: fromHex(a.passkey.rp_id_hash), origins: [take.origin] });
       if (refusal) throw new Error(`NEAR testnet tx ${take.cancel.tx}: its WebAuthn assertion does not pass here the checks the contract makes: ${refusal}`);
+      // The authenticator data as read here, against what the record says was read: a record that names other flags or
+      // another count is not the record of this cancel.
+      const read = authenticatorFlags(call.args.assertion?.authenticator_data);
+      const recorded = take.assertion_as_read;
+      if (recorded) {
+        const differ = read ? Object.keys(read).filter((k) => recorded[k] !== read[k]) : ['authenticator_data_bytes'];
+        if (differ.length) throw new Error(`NEAR testnet tx ${take.cancel.tx}: its authenticator data reads ${differ.map((k) => `${k} ${read ? read[k] : 'none'}`).join(', ')}, and ${name} records ${differ.map((k) => `${k} ${recorded[k]}`).join(', ')}`);
+      }
       cancelBlock = receipt.block_hash;
-      return `NEAR testnet tx ${take.cancel.tx}: ${call.method} on ${contract} for vault ${short(vault)}, sent by ${sender}, the relay's account, which made the vault and is the guard it names, in a block ${Math.floor(since / 1000)} s after the proposal's and ${Math.floor(before / 1000)} s before request ${t.request_id}'s unlock, log "${take.cancel.log}". Its WebAuthn assertion passes here the checks the contract makes: the origin is ${take.origin}, the challenge is the digest of this call's own arguments, user present and verified, and the P-256 signature verifies under the passkey in that vault's create_vault, tx ${take.vault.create_tx}, whose keys hash to the vault id. ${virtual ? `As ${name} records, the passkey was Chrome's virtual authenticator, not a phone's` : `Which authenticator held the passkey, no chain says: see ${name}`}`;
+      const who = virtual ? `As ${name} records, the passkey was Chrome's virtual authenticator, not a phone's`
+        : device ? `Which authenticator held the passkey, no chain says: ${name} reports a real device, ${reported.device} on ${reported.os}${typeof reported.browser === 'string' ? ` in ${reported.browser}` : ''}, as its author reported it, not as any chain shows it. Its authenticator data, as read here: ${flagWords(read)}, sign count ${read.sign_count}. ${read.backed_up ? 'A backed-up passkey can be synced to other devices, so these flags do not name one device either' : 'These flags do not name a device either'}`
+          : `Which authenticator held the passkey, no chain says: see ${name}`;
+      return `NEAR testnet tx ${take.cancel.tx}: ${call.method} on ${contract} for vault ${short(vault)}, sent by ${sender}, the relay's account, which made the vault and is the guard it names, in a block ${Math.floor(since / 1000)} s after the proposal's and ${Math.floor(before / 1000)} s before request ${t.request_id}'s unlock, log "${take.cancel.log}". Its WebAuthn assertion passes here the checks the contract makes: the origin is ${take.origin}, the challenge is the digest of this call's own arguments, user present and verified, and the P-256 signature verifies under the passkey in that vault's create_vault, tx ${take.vault.create_tx}, whose keys hash to the vault id. ${who}`;
     }],
     ['C05', `${contract} code at the cancel`, async () => {
       if (!cancelBlock) return { status: 'SKIP', text: `${contract}'s code at the block of that cancel: not read, since the cancel did not pass` };
@@ -872,6 +931,9 @@ async function replayTake(config) {
       if (account.code_hash !== want) throw new Error(`${contract} ran code ${account.code_hash} at the block of NEAR testnet tx ${take.cancel.tx}, not ${want}, the hash of the wasm ${sha}`);
       return `NEAR testnet account ${contract} ran code hash ${account.code_hash} at the block of that cancel, read from archival RPC: the sha256 ${sha}${sha === config.wasm_sha256 ? ` that ${shown(configPath)} names: the final build` : ''}`;
     }],
+  ];
+  // The execute after the wait, where the record has one: a run with none has no line for it.
+  if (hasExecute) checks.push(
     ['C17', `${name} execute ${take.after.execute_after_the_wait_tx}`, async () => {
       if (proposedMs === null) return restsOnProposal(`${name} execute ${take.after.execute_after_the_wait_tx}`, 'the request this execute names, and its unlock');
       const hash = take.after.execute_after_the_wait_tx;
@@ -887,7 +949,7 @@ async function replayTake(config) {
       if ((tx.receipts_outcome ?? []).some((r) => r.outcome.executor_id === signer)) throw new Error(`NEAR testnet tx ${hash}: a receipt of it went to the signer ${signer}`);
       return `NEAR testnet tx ${hash}: an execute of request ${t.request_id} of that vault, sent by ${tx.transaction.signer_id} in a block ${Math.floor(after / 1000)} s after its unlock. The contract refused it: ${refusalWords(out.failure)}. No receipt of it went to the signer ${signer}`;
     }],
-  ];
+  );
   // One at a time, in story order. When the archival RPC stops answering it says so once, and the rest are counted.
   for (const [i, [id, what, check]] of checks.entries()) {
     try {
@@ -1030,7 +1092,7 @@ await replayNear(config);
 await replayAgent(config);
 await replayMutinynet(config);
 await replayLaterRuns(config);
-await replayTake(config);
+await replayTakes(config);
 recoveryDryRun();
 staticChecks();
 console.log(`\nTIER A: ${tally.PASS} PASS, ${tally.SKIP} SKIP, ${tally.FAIL} FAIL${tally.INFO ? `, ${tally.INFO} INFO` : ''} in ${Math.round((Date.now() - started) / 1000)} s${config.placeholder ? '. The deployed-contract lines are SKIP because the config is a placeholder' : ''}`);
