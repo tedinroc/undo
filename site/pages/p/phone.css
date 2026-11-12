@@ -142,6 +142,10 @@ button.link { background: none; border: 0; padding: 6px 0; color: var(--dim); fo
 #screen.snug .sats { font-size: 34px; }
 #screen.snug .words { font-size: 13px; }
 #screen.snug .fee, #screen.snug #synced { display: none; }
+/* ---- the control still cut after all that, as inside an app with no passkey id and a hint to give: the small lines
+   close up, and none is dropped. phone.mjs adds this last, so a screen the steps above fit is drawn as before */
+#screen.packed .small { font-size: 13px; line-height: 1.25; margin-top: 2px; }
+#screen.packed .grow { min-height: 4px; }
 
 /* ---- a command in a sentence: one piece, so a line never breaks inside a flag */
 .cmd { font: 500 0.93em/1 var(--mono); white-space: nowrap; }

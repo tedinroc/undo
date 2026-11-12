@@ -1106,7 +1106,7 @@ function clockBlock(s) {
 function afterAttach() {
   const root = document.documentElement;
   if (P.screen === 'cancelled') {
-    screen().classList.remove('snug');
+    screen().classList.remove('snug', 'packed');
     P.face?.fit();
     pinDigits();
     // What landed under the stamp while its frame held, say the coin line, needs the room: the digits settle now.
@@ -1127,12 +1127,14 @@ const overflowY = () => document.documentElement.scrollHeight - window.innerHeig
 
 /**
  * Cancel, or what a screen offers in its place, whole on the screen, whatever else has something to say. The digits give
- * up size first, to 60% of what fits, then the sentences get smaller, then the digits go on down to 40%. Each step is
- * measured, because fonts and phones differ. A screen with no control just gets the digits as large as they fit.
+ * up size first, to 60% of what fits, then the sentences get smaller, then the digits go on down to 40%. If the control
+ * is still cut, the small lines close up too and the digits are fitted again: every line stays, and a screen the
+ * steps before already fit is drawn as it was. Each step is measured, because fonts and phones differ. A screen with no
+ * control just gets the digits as large as they fit.
  */
 function keepControlOnScreen() {
   const face = P.face;
-  screen().classList.remove('snug');
+  screen().classList.remove('snug', 'packed');
   if (!face) return;
   face.cap = null;
   face.fit();
@@ -1147,6 +1149,12 @@ function keepControlOnScreen() {
   shrinkTo(Math.floor(full * 0.6));
   if (overflowY() <= 0) return;
   screen().classList.add('snug');
+  shrinkTo(Math.floor(full * 0.4));
+  // Whole with the page at its top, where a person first sees it: done. Still cut: the last step.
+  if (screenControl().getBoundingClientRect().bottom + window.scrollY <= window.innerHeight) return;
+  screen().classList.add('packed');
+  face.cap = null;
+  face.fit();
   shrinkTo(Math.floor(full * 0.4));
 }
 

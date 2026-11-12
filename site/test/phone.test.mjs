@@ -985,6 +985,53 @@ test('opened inside the X app: the page warns, and a sheet that hangs gets a sen
   }
 });
 
+test('inside the X app, with no passkey id and a browser that reports no passkey manager: every line stays, and Cancel is whole on a short phone', { skip, timeout: 120_000 }, async () => {
+  const v = await makeVault('x-app-crowded');
+  // A real coin, so the screen holds no line about the coin: the same screen a phone in the X app reached.
+  await thiefProposes(v, await fundDirect(v));
+  const plainUa = await cdp.page('return navigator.userAgent;');
+  await cdp.send('Emulation.setUserAgentOverride', { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/11.20' });
+  await inject(`PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = async () => false;
+    Object.defineProperty(navigator, 'userAgentData', { value: { mobile: true } });`);
+  const lines = async () => [await exists('#that-phone'), await exists('#platform-hint'), await exists('#in-app')];
+  const classes = () => cdp.page('return document.getElementById("screen").className;');
+  try {
+    // The link named no id (or a refused tap dropped it), so all three lines are up: who the button is for, what to
+    // check, and the way out of the app, which inside it may be the only way to the passkey.
+    await go('/p/', { v: v.vaultHex });
+    await waitState('request');
+    await sleep(1500);
+    assert.equal(await exists('#coin-check'), false, 'a node has this coin');
+    assert.deepEqual(await lines(), [true, true, true]);
+    assert.match(await textOf('#in-app'), /inside the X app/);
+    // A screen the earlier steps fit is drawn as before.
+    await setPhoneSize(390, 664);
+    assert.doesNotMatch(await classes(), /\bpacked\b/);
+    await assertWhole('#cancel', { size: '390x664', width: 390, height: 664 });
+    // The deployed chip, as the header test draws it: at 320 px a local run's chip and the wordmark beside it are wider
+    // than the screen.
+    await cdp.page(`document.getElementById('chip').textContent = 'signet test coins'; dispatchEvent(new Event('resize'));`);
+    for (const [width, height] of [[375, 548], [320, 568]]) {
+      const size = `${width}x${height}`;
+      await setPhoneSize(width, height);
+      await shot(`14b-x-app-crowded-${size}`);
+      assert.deepEqual(await lines(), [true, true, true], `every line at ${size}`);
+      await assertWhole('#cancel', { size, width, height });
+      assert.ok(await fitsAcross(width), size);
+      assert.match(await classes(), /\bpacked\b/, `the small lines closed up at ${size}`);
+      assert.ok(await cdp.page('return parseFloat(getComputedStyle(document.getElementById("platform-hint")).fontSize) >= 13;'), `the hint still readable at ${size}`);
+    }
+    await setPhoneSize(390, 844);
+    await clickOn('#cancel');
+    await waitState('cancelled');
+    assert.doesNotMatch(await classes(), /\bsnug\b|\bpacked\b/, 'CANCELLED is drawn as always');
+  } finally {
+    await setPhoneSize(390, 844);
+    await clearInjected();
+    await cdp.send('Emulation.setUserAgentOverride', { userAgent: plainUa });
+  }
+});
+
 test('the sheet dismissed: Not cancelled, and the button is right there. A sheet that hid the page says so afterwards', { skip, timeout: 120_000 }, async () => {
   const v = await makeVault('dismiss');
   await thiefProposes(v);
