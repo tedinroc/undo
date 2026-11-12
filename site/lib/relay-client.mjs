@@ -13,8 +13,14 @@ export class RelayRefused extends Error {
   }
 }
 
-const DOWN = (why, errorKind = null) => ({
+/**
+ * A status that could not be read. `answered`: something answered, which a page must not call out of reach. `code`: the
+ * relay's own code when it answered no in its own JSON; null when the answer was not the relay's JSON, or none came.
+ */
+const DOWN = (why, errorKind = null, { answered = false, code = null } = {}) => ({
   reachable: false,
+  answered,
+  code,
   why,
   errorKind,
   relayAccount: null,
@@ -37,9 +43,10 @@ export class RelayClient {
       res = await this.fetchFn(this.relay, { method: 'GET', cache: 'no-store', signal: AbortSignal.timeout(Math.min(this.timeoutMs, 8000)) });
       data = await res.json();
     } catch (err) {
-      return DOWN(noAnswerWords(err), err.name);
+      // With `res` set, an answer came and was not JSON: a proxy's error page, say.
+      return DOWN(noAnswerWords(err), err.name, { answered: res !== undefined });
     }
-    if (!data || data.ok !== true) return DOWN(data?.code ?? `HTTP ${res.status}`);
+    if (!data || data.ok !== true) return DOWN(data?.code ?? `HTTP ${res.status}`, null, { answered: true, code: typeof data?.code === 'string' ? data.code : null });
     return {
       reachable: true,
       why: null,

@@ -47,6 +47,11 @@ const PF = 'site/pages/p/phone-fragment.mjs';
 const OC = 'site/pages/p/own-cancel.mjs';
 const HR = 'site/pages/p/h7-report.mjs';
 const PW = 'site/lib/plain-words.mjs';
+const SE = 'site/pages/p/sense.mjs';
+const PA = 'site/pages/p/passkey-ask.mjs';
+const VM = 'site/pages/p/vault-make.mjs';
+const PH = 'site/pages/p/phone.mjs';
+const RC = 'site/lib/relay-client.mjs';
 
 // [name, file, old text, new text, a Chrome test that checks it]
 const MUTANTS = [
@@ -219,7 +224,7 @@ const MUTANTS = [
   ['words: a contract refusal shown in its own words', PW, "return (name && Object.hasOwn(CONTRACT_WORDS, name) ? CONTRACT_WORDS[name] : null) ?? 'The NEAR contract refused it.';", 'return String(raw);'],
   ['words: a view\'s panic not read', PW, 'if (view) return view[1].trim();', ''],
   ['words: a relay code shown as itself', PW, "return (err?.code && Object.hasOwn(RELAY_WORDS, err.code) ? RELAY_WORDS[err.code] : null) ?? 'The relay said no.';", 'return err?.code ?? \'The relay said no.\';'],
-  ['words: a relay refusal with the contract\'s words read as the relay\'s', PW, "if ((err?.code === 'tx_refused' || err?.code === 'would_refuse') && err.verbatim) return contractWords(err.verbatim);", ''],
+  ['words: a relay refusal with the contract\'s words read as the relay\'s', PW, "if ((err?.code === 'would_refuse' || (err?.code === 'tx_refused' && panicOf(err.verbatim))) && err.verbatim) return contractWords(err.verbatim);", ''],
   ['words: a node\'s script refusal unnamed', PW, "if (kind === 'script') return 'It needs a second signature.';", ''],
   ['words: a proxy\'s page read as a busy node', PW, "if (status === 400 && !/<html/i.test(answer.body ?? '')) return", 'if (status >= 400) return'],
   ['words: an answer from no node shows its HTTP status', PW, "return Object.hasOwn(NOT_A_NODE, status) ? NOT_A_NODE[status] : 'Something on the way to the node answered instead of it.';", 'return `Something on the way answered HTTP ${status}, not a node.`;'],
@@ -248,6 +253,76 @@ const MUTANTS = [
   ['phone: stored test-mode fields read unchecked', PF, "if (typeof raw?.[name] === 'string' && rule.test(raw[name])) out[name] = raw[name];", "if (typeof raw?.[name] === 'string') out[name] = raw[name];"],
   ['phone: a stored credential id read unchecked', PF, 'return value && CREDENTIAL_ID.test(value) ? value : null;', 'return value || null;'],
 
+  // ---------------------------------------------------------------- the phone page on a phone that does not behave
+  ['sense: a phone whose browser reports no platform authenticator loses Make and Cancel', SE, "  if (blocked) return 'webauthn_blocked';\n  return null;", "  if (blocked) return 'webauthn_blocked';\n  if (sense.platform === false && sense.mobile) return 'no_platform_authenticator';\n  return null;"],
+  ['sense: a laptop gets the phone\'s hint', SE, 'export const platformHint = (sense) => (sense.platform === false && sense.mobile', 'export const platformHint = (sense) => (sense.platform === false'],
+  ['sense: iOS 17 is told a menu path it does not have', SE, 'if (device && major !== null && major >= 18) return', 'if (device && major !== null) return'],
+  ['sense: Safari on iOS 26, which says 18, is read as before 18', SE, 'if (device && major !== null && major >= 18) return', 'if (device && major !== null && major >= 19) return'],
+  ['sense: an Android phone is told the iPhone\'s steps', SE, "  if (/\\bAndroid\\b/.test(ua)) return 'set a screen lock on this phone';\n", ''],
+  ['sense: a browser that will not say gets the hint', SE, 'export const platformHint = (sense) => (sense.platform === false && sense.mobile', 'export const platformHint = (sense) => (!sense.platform && sense.mobile'],
+  ['sense: a browser of its own is told to open a browser', SE, 'export const hangWords = (sense, again) => (sense.inApp', 'export const hangWords = (sense, again) => (true'],
+  ['passkey: the page\'s signal is dropped on the way to the browser', WA, 'const withSignal = (signal) => (signal ? { signal } : {});', 'const withSignal = () => ({});'],
+  ['passkey: only the Level 2 word for a discoverable credential', WA, "residentKey: 'required', requireResidentKey: true,", "residentKey: 'required',"],
+  ['passkey: an assertion is asked for with no signal', PA, 'timeoutMs: 60_000, signal }), { onHang, signal })', 'timeoutMs: 60_000 }), { onHang, signal })'],
+  ['passkey: a new passkey is asked for with no signal', PA, 'rpId: ctx.config.rpId, label, signal }), { onHang, signal })', 'rpId: ctx.config.rpId, label }), { onHang, signal })'],
+  ['words: the hourly limit read in seconds', PW, 'if (s < 120) return `${s} s`;', 'if (s < 120_000) return `${s} s`;'],
+  ['words: a day\'s wait read in minutes', PW, 'if (s < 7200) return `about ${Math.ceil(s / 60)} minutes`;', 'if (s < Infinity) return `about ${Math.ceil(s / 60)} minutes`;'],
+  ['words: a wait rounded down to nothing', PW, 'const s = Math.max(1, Math.ceil(Number(seconds) || 0));', 'const s = Math.floor(Number(seconds) || 0);'],
+  ['words: a reset time from no time', PW, "export const resetWords = (at) => (Number.isFinite(at) && at > 0 ?", 'export const resetWords = (at) => (true ?'],
+  ['make: time asleep counts against the wait for the vault', VM, 'awake += Math.min(Math.max(0, at - last), STEP_COUNTS_MS);', 'awake += Math.max(0, at - last);'],
+  ['make: the wait for the vault never gives up', VM, 'if (awake > ACTIVE_WAIT_MS) throw', 'if (false) throw'],
+  ['make: giving up forgets the creation was sent', VM, "new Error('the contract has not read this vault active yet'), { sentHash: hash });", "new Error('the contract has not read this vault active yet'), {});"],
+  ['make: activate goes to a vault no node knows', VM, 'if (vault && !activated && awake > ACTIVE_WAIT_MS / 2) {', 'if (!activated && awake > ACTIVE_WAIT_MS / 2) {'],
+  ['make: no line while the proof of work runs', VM, "  onLine('working');\n", ''],
+  ['phone: a stuck Cancel is asked again without ending the call that is out', PH, '  P.tap = null;\n  old.abort.abort();\n  onCancelTap(old.own);', '  P.tap = null;\n  onCancelTap(old.own);'],
+  ['phone: the button comes back before the page has said no sheet came', PH, 'const again = !P.hang ? null : P.tap?.own', 'const again = P.tap?.own'],
+  ['phone: a call the page gave up on, answering late, is sent', PH, '    if (P.tap !== tap) return;\n    assertion = got.assertion;', '    assertion = got.assertion;'],
+  ['phone: one instant refusal leaves the next request with no Cancel', PH, 'function passkeyAnswered() {\n  P.passkeyOk = true;\n  P.blocked = false;', 'function passkeyAnswered() {\n  P.passkeyOk = true;'],
+  ['phone: an instant refusal drops the credential id this browser has used', PH, 'if (!P.credential || P.credentialTrusted) return false;', 'if (!P.credential) return false;'],
+  ['phone: the line about a sheet that has not shown stays beside "Passkey made."', PH, "  P.hangMaking = null;\n  passkeyAnswered();\n  lines.push('Passkey made.');", "  passkeyAnswered();\n  lines.push('Passkey made.');"],
+  ['phone: a closed second sheet starts the vault over', PH, "if (err instanceof PasskeyFailed && (err.kind === 'dismissed' || err.kind === 'blocked')) {\n      if (err.kind === 'blocked') logRaw", "if (false) {\n      if (err.kind === 'blocked') logRaw"],
+  ['phone: a vault that was sent reads as nothing made', PH, 'if (err?.sentHash) drawSent(prepared, said, err.sentHash);\n    else makeFailed', 'if (false) drawSent(prepared, said, err.sentHash);\n    else makeFailed'],
+  ['phone: a send with no answer reads as no vault made', PH, "if (err instanceof RelayRefused && !relaySentNothing(err.code)) {\n    drawNoVault(", "if (false) {\n    drawNoVault("],
+  ['phone: with no vault the relay is read once', PH, '  P.relayTimer = setTimeout(() => readRelayAgain(true), wait);\n', ''],
+  ['phone: with no vault a relay that is out is asked every 5 s for good', PH, 'const RELAY_AGAIN_MS = [5000, 10_000, 20_000, 60_000];', 'const RELAY_AGAIN_MS = [5000];'],
+  ['phone: coming back, a connection back and a restored page each ask, with no gap between them', PH, '  if (!timed && Date.now() - P.statusAt < RELAY_AGAIN_GAP_MS) return;\n', ''],
+  ['phone: a hidden tab keeps asking the relay', PH, 'if (!relayHoldsMake() || P.relayReading || document.hidden) return;', 'if (!relayHoldsMake() || P.relayReading) return;'],
+  ['phone: a relay at its daily limit is asked every minute until it resets', PH, 'if (Number.isFinite(resets) && resets > Date.now()) wait =', 'if (false) wait ='],
+  ['phone: a relay out of reach reads as down', PH, "  if (!P.relay.reachable) return unreadStatusWords(P.relay);\n", ''],
+  ['words: a proxy\'s page for the relay reads as out of reach', PW, '  if (!status?.answered) return', '  if (!status?.answered || !status.code) return'],
+  ['words: the relay\'s own no reads as some other page', PW, "  if (!status.code) return 'Something answered", "  if (true) return 'Something answered"],
+  ['words: a relay status with no answer reads as an answer', PW, "  if (!status?.answered) return 'Can\\'t reach the relay';\n", ''],
+  ['phone: the request screen says a relay it got no answer from is down', PH, "  if (why === 'relay_down') return P.relay.reachable ? NO_BUTTON_WORDS.relay_owner_down : relayDownWords(P.relay);\n", ''],
+  ['phone: a relay that answered relay_down reads as one that did not answer', PH, "return P.relay.reachable ? NO_BUTTON_WORDS.relay_owner_down : relayDownWords(P.relay);", 'return relayDownWords(P.relay);'],
+  ['phone: a relay that answered with its cancel side down reads as down', PH, "  relay_owner_down: 'The relay says it can\\'t send a cancel right now, so this page can\\'t send one.',", "  relay_owner_down: 'The relay is down, so this page can\\'t send a cancel.',"],
+  ['phone: a cancel the relay did not answer reads as a status read', PH, "  if (relay.cancelUnanswered) return 'The relay did not answer", "  if (false) return 'The relay did not answer"],
+  ['phone: a cancel the relay did not answer reads as one it did not send', PH, 'P.signed = { ...signed, unsure: unanswered || erred };', 'P.signed = { ...signed, unsure: false };'],
+  ['own cancel: a send with no answer reads as not sent', OC, '    unsure\n      ? `If the relay', '    false\n      ? `If the relay'],
+  ['thief: a relay it got no answer from reads as down', TL, 'if (!status.reachable) return `${unreadRelayWords(status)}, so this tab may', 'if (!status.reachable) return `The relay is down, so this tab may'],
+  ['relay client: an answer that is not JSON reads as no answer', RC, '{ answered: res !== undefined }', '{ answered: false }'],
+  ['relay client: the relay\'s own no loses its code', RC, "code: typeof data?.code === 'string' ? data.code : null }", 'code: null }'],
+  ['phone: a test coin is offered to a vault whose spend key is gone', PH, 'const keyGone = !P.seed && P.credentialTrusted;', 'const keyGone = false;'],
+  ['phone: the dispenser at its limit says nothing', PH, "      else out.push(h('p', { class: 'line', id: 'no-funds' }", "      else if (false) out.push(h('p', { class: 'line', id: 'no-funds' }"],
+  ['phone: a coin refused for the hour says only to wait', PH, "if (err.code === 'rate_limited' && err.retryAfterS > 120) return `This network address has used its test coin tries", "if (false) return `This network address has used its test coin tries"],
+  ['phone: the idle screen lets the phone holding the spend key go dark', PH, " || (id === 'idle' && P.seed && Date.now() < P.idleAwakeUntil));", ');'],
+  ['phone: the idle screen keeps the phone awake for as long as it is left there', PH, " && Date.now() < P.idleAwakeUntil));", '));'],
+  ['phone: a touch on the idle screen does not keep it awake longer', PH, "      P.idleAwakeUntil = Date.now() + IDLE_AWAKE_MS;\n      keepAwake('idle');", "      keepAwake('idle');"],
+  ['sense: the wake lock is asked for twice while the first ask is out', SE, 'if (!out.wanted || !nav?.wakeLock || out.lock || out.asking) return;', 'if (!out.wanted || !nav?.wakeLock || out.lock) return;'],
+  ['phone: a request that ends leaves its stuck passkey call out', PH, '  if (P.tap && !P.tap.answered) P.tap.abort.abort();\n  P.tap = null;\n  P.hang = false;', '  P.tap = null;\n  P.hang = false;'],
+  ['phone: a request that ends leaves the line about its sheet for the next one', PH, '  if (P.tap && !P.tap.answered) P.tap.abort.abort();\n  P.tap = null;\n  P.hang = false;', '  if (P.tap && !P.tap.answered) P.tap.abort.abort();\n  P.tap = null;'],
+  ['phone: the hint stays beside the line about a sheet that has not shown', PH, 'const hint = aside ? null : hintNow();', 'const hint = hintNow();'],
+  ['phone: the in-app line stays beside the line about a sheet that has not shown', PH, 'const elsewhere = aside || (P.notice?.inAppAside === true && hint) ? null : openElsewhere(ctx.sense);', 'const elsewhere = openElsewhere(ctx.sense);'],
+  ['phone: the hint steps aside after a refused passkey', PH, 'const aside = P.hang;', 'const aside = P.hang || P.notice !== null;'],
+  ['sense: a wake lock granted after the page stopped wanting it is kept', SE, '      if (out.wanted) out.lock = lock;\n      else lock.release?.().catch?.(() => {});', '      out.lock = lock;'],
+  ['phone: the idle screen\'s wake lock is wanted on any screen', PH, "(id === 'idle' && P.seed && Date.now() < P.idleAwakeUntil)", '(P.seed && Date.now() < P.idleAwakeUntil)'],
+  ['phone: a Make call the page gave up on draws its passkey', PH, '  // A call this page gave up on, answering late: a newer tap is making the vault.\n  if (P.making !== call) return;\n', ''],
+  ['phone: a Confirm call the page gave up on sends the vault', PH, '  call.answered = true;\n  if (P.making !== call) return;\n  P.hangMaking = null;\n  passkeyAnswered();\n  const said', '  call.answered = true;\n  P.hangMaking = null;\n  passkeyAnswered();\n  const said'],
+  ['phone: a Confirm call the tap ended reads as a closed sheet', PH, '    call.answered = true;\n    if (P.making !== call) return;\n    P.hangMaking = null;\n    // The passkey from the first tap', '    call.answered = true;\n    P.hangMaking = null;\n    // The passkey from the first tap'],
+  ['phone: the line about a sheet that has not shown stays beside "Signed."', PH, '  if (P.making !== call) return;\n  P.hangMaking = null;\n  passkeyAnswered();\n  const said', '  if (P.making !== call) return;\n  passkeyAnswered();\n  const said'],
+  ['phone: the hint stays after a passkey call answered here', PH, 'const hintNow = () => (P.passkeyOk || P.credentialTrusted ? null : platformHint(ctx.sense));', 'const hintNow = () => platformHint(ctx.sense);'],
+  ['phone: the browser is asked about its passkeys once', PH, '    if (document.hidden) return;\n    senseAgain();\n', '    if (document.hidden) return;\n'],
+  ['phone: inside an app the warning comes after the headline', PH, "    elsewhere ? h('p', { class: 'notice warn', id: 'in-app' }, elsewhere) : null,\n    h('p', { class: 'say big' }, 'A cancel button for test Bitcoin.'),", "    h('p', { class: 'say big' }, 'A cancel button for test Bitcoin.'),\n    elsewhere ? h('p', { class: 'notice warn', id: 'in-app' }, elsewhere) : null,"],
+
   // ---------------------------------------------------------------- the test mode's report
   ['h7: the creation tap\'s S form swapped', HR, "proofS === 'h' ? 'high-S' : 'low-S'", "proofS === 'h' ? 'low-S' : 'high-S'"],
   ['h7: each try\'s S form swapped', HR, "${t.s === 'h' ? 'high-S' : 'low-S'}", "${t.s === 'h' ? 'low-S' : 'high-S'}"],
@@ -260,8 +335,9 @@ const MUTANTS = [
 
 const SITE_TEST = 'site/test';
 const STAGE = ['relay.workerd.test.mjs', 'sandbox.test.mjs', 'made-row.test.mjs', 'stage-made.test.mjs'].map((f) => `${SITE_TEST}/${f}`);
-// Times its reads against a fetch that answers after a delay, so a busy machine can fail it.
-const TIMED = [`${SITE_TEST}/phone-boot.test.mjs`];
+// Each times its reads against a fetch that answers after a delay, so a busy machine can fail it. phone-flow.test.mjs
+// also waits out the page's own timers in child processes, a few at a time.
+const TIMED = [`${SITE_TEST}/phone-boot.test.mjs`, `${SITE_TEST}/phone-flow.test.mjs`];
 const FAST = readdirSync(join(REPO, SITE_TEST)).filter((f) => f.endsWith('.test.mjs')).map((f) => `${SITE_TEST}/${f}`).filter((f) => !STAGE.includes(f)).sort();
 const NEAREST = [
   ['site/functions/_relay/', ['relay.test.mjs']],
@@ -278,6 +354,11 @@ const NEAREST = [
   [PF, ['h7-link.test.mjs', 'thief-link.test.mjs']],
   [OC, ['phone-unit.test.mjs']],
   [HR, ['h7-link.test.mjs']],
+  [SE, ['phone-unit.test.mjs']],
+  [VM, ['vault-make.test.mjs']],
+  [PA, ['phone-flow.test.mjs']],
+  [PH, ['phone-unit.test.mjs', 'phone-flow.test.mjs']],
+  [RC, ['lib.test.mjs', 'phone-flow.test.mjs']],
 ];
 
 /** The tiers a mutant of `file` goes through, nearest tests first. */

@@ -1391,8 +1391,12 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   for (const cell of doCells) assert.doesNotMatch(cell, /^`\.\/(verify|demo)\.sh/, 'a command of the Run it table is not listed a second time');
   assert.match(readme, /\n- The agent on a local node: `agent\/test\/run-sandbox\.sh 86 88` /, 'the agent\'s sandbox run is under More');
   // The relay: the paragraph before the steps stops at "So it can be full." and the rest is in the doc it links.
-  const before = readmeBetween('### Try a cancel yourself', '1. On the phone, open https://undo-btc.pages.dev/p/ and tap **Make a test vault**, then **Confirm with your passkey**: two passkey prompts. This makes a passkey for undo-btc.pages.dev and a vault on NEAR testnet.');
+  const before = readmeBetween('### Try a cancel yourself', '1. On the phone, open https://undo-btc.pages.dev/p/ in Safari or Chrome itself, not inside X or Telegram, and tap **Make a test vault**, then **Confirm with your passkey**: two passkey prompts. This makes a passkey for undo-btc.pages.dev and a vault on NEAR testnet.');
   assert.match(before, /So it can be full\. \[docs\/relay\.md\]\(docs\/relay\.md\) has the rest of the relay's accounting\.\n/);
+  // Where to open it, and on what: an app's own browser may give no passkey sheet, and the thief tab is laid out for a laptop.
+  assert.match(readme, /\n1\. On the phone, open https:\/\/undo-btc\.pages\.dev\/p\/ in Safari or Chrome itself, not inside X or Telegram, and tap /);
+  assert.match(readme, /\n\*\*On one device\.\*\* One laptop or desktop browser with a passkey is enough: /);
+  assert.match(readme, /Copy it before you leave or reload the page: the page holds the spend key only while it is open\./, 'still true: the page stores neither key');
   const relay = read('docs/relay.md');
   for (const moved of ['The coin count can run one over for each relay fault of one kind:', 'a request that stalls for over two minutes before its coin goes out can also end with two coins', 'counts on the earlier day, the day it was charged.']) {
     assert.ok(relay.includes(moved), `docs/relay.md holds: ${moved}`);

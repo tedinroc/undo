@@ -127,7 +127,8 @@ function stoppedBy(st, err, retry) {
       return;
     }
     if (err.kind === 'dismissed') {
-      stopped(st, 'The sheet closed before it signed.', null, retry);
+      // A sheet's trace can come from something else, and a sheet can leave none: only what holds in each.
+      stopped(st, 'The passkey did not sign.', null, retry);
       return;
     }
     stopped(st, 'The passkey call failed.', err.message, retry);
@@ -135,10 +136,12 @@ function stoppedBy(st, err, retry) {
   }
   if (err instanceof RelayRefused) {
     const words = err.verbatim ?? `${err.code}: ${err.message}`;
-    if (err.code === 'relay_down') stopped(st, 'The relay is down, so this test can\'t go on.', words, retry);
+    // relay_down is an answer that is not the relay's own, or none: a relay that is up and a phone with no signal look alike.
+    if (err.code === 'relay_down') stopped(st, 'The relay did not answer, so this test stopped here.', words, retry);
     else if (err.code === 'daily_ceiling') stopped(st, 'The relay hit today\'s limit, so this test can\'t go on.', words, retry);
-    else if (err.code === 'rate_limited') stopped(st, `Too many of these from this connection. Wait ${err.retryAfterS ?? 60} s and try again.`, words, retry);
-    else stopped(st, 'The relay refused that.', words, retry);
+    else if (err.code === 'rate_limited') stopped(st, `Too many tries through the relay. Wait ${err.retryAfterS ?? 60} s and try again.`, words, retry);
+    // Its code may be one it gives after a send (relaySentNothing): the words under it say which.
+    else stopped(st, 'The relay answered with an error, so this test stopped here.', words, retry);
     return;
   }
   stopped(st, 'That did not work.', err.verbatim ?? `${err.name}: ${err.message}`, retry);
@@ -154,7 +157,7 @@ async function route(st) {
     }
     const vault = await views.vault(st.f.v);
     if (!vault) {
-      stopped(st, 'That test vault is not on this contract. Start again.', null, () => startOver(st));
+      stopped(st, 'This page can\'t find that test vault on this contract. Start again.', null, () => startOver(st));
       return;
     }
     st.vault = vault;
@@ -183,7 +186,7 @@ function drawCheck(st) {
       h('li', {}, `Passkeys in this browser: ${sense.api ? 'yes' : 'no'}`),
       h('li', {}, `Face ID, fingerprint or screen lock: ${sense.platform === null ? 'this browser won\'t say' : sense.platform ? 'yes' : 'no'}`),
       h('li', { id: 'in-app-fact' }, `Opened inside an app: ${sense.inApp ?? 'no'}`),
-      h('li', {}, `Relay: ${relayUp ? 'up' : `down (${st.relay.general?.why ?? st.relay.why ?? 'no answer'})`}`)),
+      h('li', {}, `Relay: ${relayUp ? 'up' : `not ready (${(st.relay.reachable ? st.relay.general?.why ?? st.relay.owner?.why : st.relay.why) ?? 'no answer'})`}`)),
     problem ? h('p', { class: 'notice warn', id: 'why', 'data-why': problem }, problemWords(problem)) : null,
     openElsewhere(sense) ? h('p', { class: 'small', id: 'in-app' }, openElsewhere(sense)) : null,
     h('div', { class: 'grow' }),

@@ -10,11 +10,16 @@ export class PasskeyFailed extends Error {
   }
 }
 
-function watched(start, { onHang }) {
+function watched(start, { onHang, signal = null }) {
   const watch = watchSheet(window);
   const hang = setTimeout(() => {
     if (!watch.evidence().seen) onHang?.();
   }, SHEET_HANG_MS);
+  // A call the page gave up on may never settle, so its watch ends with the abort and not with an answer.
+  signal?.addEventListener('abort', () => {
+    clearTimeout(hang);
+    watch.stop();
+  }, { once: true });
   let pending;
   try {
     pending = start();
@@ -34,14 +39,18 @@ function watched(start, { onHang }) {
   );
 }
 
-/** Resolves to { assertion, evidence }. `assertion` is getAssertion's: args, highS, credentialId, flags. */
-export function askAssertion(ctx, { digest, credentialId = null, onHang = null }) {
-  return watched(() => getAssertion({ credentials: ctx.credentials, digest, rpId: ctx.config.rpId, credentialId, timeoutMs: 60_000 }), { onHang })
+/**
+ * Resolves to { assertion, evidence }. `assertion` is getAssertion's: args, highS, credentialId, flags. `signal` is the
+ * caller's AbortSignal: a page aborts a call only from a tap, never from a timer, because a timer cannot tell a stuck
+ * call from a sheet a person is still reading, and an abort closes that sheet.
+ */
+export function askAssertion(ctx, { digest, credentialId = null, onHang = null, signal = null }) {
+  return watched(() => getAssertion({ credentials: ctx.credentials, digest, rpId: ctx.config.rpId, credentialId, timeoutMs: 60_000, signal }), { onHang, signal })
     .then(({ value, evidence }) => ({ assertion: value, evidence }));
 }
 
-/** Resolves to { passkey, evidence }, where passkey is createPasskey's: pubkey, credentialId, flags. */
-export function askNewPasskey(ctx, { label, onHang = null }) {
-  return watched(() => createPasskey({ credentials: ctx.credentials, rpId: ctx.config.rpId, label }), { onHang })
+/** Resolves to { passkey, evidence }, where passkey is createPasskey's: pubkey, credentialId, flags. `signal` as above. */
+export function askNewPasskey(ctx, { label, onHang = null, signal = null }) {
+  return watched(() => createPasskey({ credentials: ctx.credentials, rpId: ctx.config.rpId, label, signal }), { onHang, signal })
     .then(({ value, evidence }) => ({ passkey: value, evidence }));
 }

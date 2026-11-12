@@ -332,6 +332,25 @@ test('Chrome 375x667: the film shrinks so the replay link stays above the fold',
   await shot('landing-375x667');
 });
 
+test('Chrome 320 wide: the chip and the wordmark fit side by side on the landing page and on the replay, with no sideways scroll', { skip, timeout: 30_000 }, async () => {
+  await viewport(320, 568);
+  for (const path of ['/', '/replay/']) {
+    await cdp.open(`${served.testnet.origin}${path}`);
+    assert.equal(await cdp.page('return document.documentElement.scrollWidth;'), 320, `${path} is as wide as the screen`);
+    const [chip, mark] = [await box('.top .chip'), await box('.top .wordmark')];
+    assert.ok(mark.right <= 320 - 16 + 0.5, `${path}: the wordmark ends at ${mark.right}, inside the gutter`);
+    assert.ok(chip.right < mark.left, `${path}: the chip ends before the wordmark starts`);
+    assert.equal(await cdp.page('return getComputedStyle(document.querySelector(".top .wordmark")).fontSize;'), '17px');
+    assert.equal(await cdp.page('return document.querySelector(".top .wordmark").innerText;'), 'Undo for Bitcoin', 'whole, not cut');
+  }
+  await shot('landing-320x568');
+  // One pixel wider than the rule reaches, the header is the one every other phone has, and it fits there too.
+  await viewport(346, 700);
+  await cdp.open(`${served.testnet.origin}/`);
+  assert.equal(await cdp.page('return getComputedStyle(document.querySelector(".top .wordmark")).fontSize;'), '19px');
+  assert.equal(await cdp.page('return document.documentElement.scrollWidth;'), 346);
+});
+
 test('Chrome 1440x900: two columns, the whole first screen in view', { skip, timeout: 30_000 }, async () => {
   problems.length = 0;
   await viewport(1440, 900, false);

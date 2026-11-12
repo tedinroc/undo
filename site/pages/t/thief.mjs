@@ -2,12 +2,12 @@
 // phone is the contract: this page never hears from it. The stolen key stays in this tab and leaves only as signatures.
 import {
   advanceState, bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, buildFragment, buildPropose, clock, configWords, contractViews, contractWords, digits,
-  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, panicOf, parseFragment, postTxOnce, RelayClient, relayWords,
+  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, panicOf, parseFragment, postTxOnce, RelayClient, relaySentNothing, relayWords,
   RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything, SkewTracker, spkToAddress, StaleRead, ViewRefused,
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
-import { destinationProblem, destinationSpk, destinationWords, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from './logic.mjs';
+import { autoLine, destinationProblem, destinationSpk, destinationWords, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from './logic.mjs';
 
 const $ = (id) => document.getElementById(id);
 const root = $('root');
@@ -33,8 +33,10 @@ const KEY_PHRASE = 'finished with a false/empty top stack element';
 
 const S = {
   config: null, reader: null, views: null, btc: null, relay: null, instance: null,
-  // executeBlocked: the relay's sentence from the last execute call that never reached it, until one does.
-  relayStatus: null, executeBlocked: null,
+  // executeBlocked: the relay's sentence when it refused the last execute as one it can't send (its daily limit), or the
+  // contract's when it refused one, and executeUnanswered: the last execute got no answer. Each failed execute sets both;
+  // one that goes through clears them. executeRefused: the contract refused an execute, and this tab sends it no more.
+  relayStatus: null, executeBlocked: null, executeUnanswered: false, executeRefused: false,
   vaultHex: null, vault: null, requestId: null, request: null, lastKnown: null, read: null,
   tracker: new SkewTracker(), lastBlockRead: 0, badReads: 0, badReadsShown: false, unseenReads: 0, nullReads: 0, nodeWords: null,
   seed: null, script: null, coins: [], spend: null, seedOk: false, toOk: false, viewProblem: null, nearDown: null, btcDown: null, feeRate: null,
@@ -179,17 +181,20 @@ async function refreshRelay() {
 function drawAuto() {
   const sentence = relaySentence(S.relayStatus);
   if (S.state === 'waiting') {
-    root.dataset.auto = sentence ? 'off' : 'armed';
-    // The line under the digits says only that it is off; the sentence below them says why, once.
-    $('auto').textContent = sentence ? 'auto-execute off' : 'auto-execute armed';
+    // The line under the digits says only whether it is off (autoLine: by the relay's own word); the sentence below them
+    // says why, once.
+    showAuto(autoLine({ firing: false, status: S.relayStatus, sentence }));
     if (!S.badReadsShown) $('note').textContent = sentence ?? '';
   } else if (S.state === 'firing') {
-    // At zero, the same rule: while the relay can't call execute, by its status or by the last call, the line under
-    // the digits does not say the contract signs. fire() says why below them.
-    const off = sentence ?? S.executeBlocked;
-    root.dataset.auto = off ? 'off' : 'firing';
-    $('auto').textContent = off ? 'auto-execute off' : 'The contract signs';
+    // At zero, the same rule, and the line under the digits says the contract signs only while nothing says the relay
+    // may not get execute there. fire() says why below them.
+    showAuto(autoLine({ firing: true, status: S.relayStatus, sentence, blocked: S.executeBlocked, unanswered: S.executeUnanswered }));
   }
+}
+
+function showAuto({ auto, text }) {
+  root.dataset.auto = auto;
+  $('auto').textContent = text;
 }
 
 // ---------------------------------------------------------------- armed
@@ -300,7 +305,7 @@ async function refreshArmed() {
   if (S.state !== 'armed' && S.state !== 'short') return undefined;
   try {
     S.vault = await S.views.vault(S.vaultHex);
-    if (!S.vault?.active) return plain('no_vault', 'That vault is not on this contract, or not active yet.');
+    if (!S.vault?.active) return plain('no_vault', 'This tab can\'t find that vault on this contract, or it is not active yet.');
     root.dataset.guardOnline = String(S.vault.guard_online);
     root.dataset.delayMs = String(await S.views.delayNow(S.vaultHex));
     if (!S.script) {
@@ -328,7 +333,7 @@ async function refreshArmed() {
   checkTo();
   buildSpend();
   if (!S.nearDown && !S.btcDown && (S.coins.length === 0 || S.spend?.short)) {
-    return plain('short', 'No coin in this vault yet', { address: S.vault.address });
+    return plain('short', 'No coin to send in this vault yet', { address: S.vault.address });
   }
   await checkPropose().catch(() => {});
   if (S.state !== 'armed' && S.state !== 'short') return undefined;
@@ -366,7 +371,7 @@ async function pressSend() {
     send.textContent = label;
   });
   S.timings.answered = performance.now();
-  if (answer.none) return plain('short', 'No coin in this vault yet', { address: S.vault.address });
+  if (answer.none) return plain('short', 'No coin to send in this vault yet', { address: S.vault.address });
   if (answer.kind === 'accepted') {
     // The kill line for the whole product. Nothing else on this screen, and nothing further happens.
     return plain('accepted', 'A NODE ACCEPTED THIS', { verbatim: btcTxLabel(S.config, answer.body) });
@@ -439,9 +444,9 @@ function fitNodeText() {
 
 // ---------------------------------------------------------------- asking the NEAR contract
 
-/** The relay's own sentence, for the two reasons the relay's status line also gives. Null for any other. */
+/** A call with no answer, which may have gone out all the same, and the relay's daily limit. Null for any other. */
 function relayDownSentence(err) {
-  if (err?.code === 'relay_down') return relaySentence({ reachable: false });
+  if (err?.code === 'relay_down') return 'The relay did not answer, so this tab can\'t tell whether the call went out.';
   if (err?.code === 'daily_ceiling') return relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } });
   return null;
 }
@@ -461,7 +466,7 @@ function showAskFailure(err) {
   $('ask-why').textContent = askWhy(err);
   // Only a call no transaction or view reached may say the contract was not asked.
   const answered = err.code === 'contract_refused' || (err.code === 'would_refuse' && err.verbatim);
-  const fallback = answered ? 'The NEAR contract refused this.' : err.code === 'no_request' ? 'Sent to the NEAR contract, and no request appeared.' : 'The NEAR contract was not asked.';
+  const fallback = answered ? 'The NEAR contract refused this.' : err.code === 'no_request' ? 'Sent to the NEAR contract, and no request appeared.' : !err.code || relaySentNothing(err.code) ? 'The NEAR contract was not asked.' : 'This tab can\'t tell whether the call went out.';
   $('term-1').textContent = relayDownSentence(err) ?? fallback;
   root.dataset.why = err.code ?? 'error';
   $('ask-retry').classList.add('on');
@@ -624,7 +629,7 @@ function onRead(vault, request) {
   if (next.kind === 'unseen') {
     // No sighting and nothing on the contract. It might be a lagging node, so give it some reads before saying so.
     S.unseenReads += 1;
-    if (S.unseenReads >= 5 && !S.lastKnown && !S.request) plain('no_request', 'That request is not on this contract.');
+    if (S.unseenReads >= 5 && !S.lastKnown && !S.request) plain('no_request', 'This tab can\'t find that request on this contract.');
     return;
   }
   S.unseenReads = 0;
@@ -726,7 +731,7 @@ function enterFiring() {
     $('note').textContent = '';
     drawAuto();
   }
-  if (!firingLoop) {
+  if (!firingLoop && !S.executeRefused) {
     firingLoop = true;
     fire().finally(() => {
       firingLoop = false;
@@ -746,9 +751,11 @@ async function fire() {
       S.nearTx = sent.hash;
       S.timings.executed ??= performance.now();
       if (S.state !== 'firing') return;
-      // The relay took execute, so what said it can't is out of date: the sentence goes, and its status is read again.
-      if (root.dataset.auto === 'off') {
+      // The relay took execute, so what said it can't or may not is out of date: the sentence goes, and its status is
+      // read again.
+      if (root.dataset.auto !== 'firing') {
         S.executeBlocked = null;
+        S.executeUnanswered = false;
         S.relayStatus = await S.relay.status();
         if (S.state !== 'firing') return;
         if (!S.badReadsShown) $('note').textContent = '';
@@ -764,14 +771,21 @@ async function fire() {
       } else if (outcome?.failure) {
         logRaw('execute refused', outcome.failure);
         $('note').textContent = contractWords(outcome.failure);
+        // The contract's own no, and this tab sends execute no more (enterFiring does not start it again), so the line
+        // under the digits says auto-execute is off.
+        S.executeRefused = true;
+        S.executeBlocked = $('note').textContent;
+        drawAuto();
         waitMs = null;
       }
     } catch (err) {
       if (err.errorKind) console.warn(`undo: no answer from the relay (${err.errorKind})`);
       logRaw('execute not sent', rawWords(err));
-      // One sentence: the relay's own, which already says execute can't go, or the reason in words.
+      // One sentence: that the call got no answer, the relay's daily limit, or the reason in words. Only the relay's own
+      // no turns the line under the digits off; with no answer the tab keeps sending, and the line says that.
       $('note').textContent = relayDownSentence(err) ?? relayWords(err);
-      S.executeBlocked = relayDownSentence(err);
+      S.executeUnanswered = err?.code === 'relay_down';
+      S.executeBlocked = S.executeUnanswered ? null : relayDownSentence(err);
       waitMs = err.retryAfterS ? err.retryAfterS * 1000 : EXECUTE_RETRY_MS;
       S.relayStatus = await S.relay.status();
       drawAuto();
@@ -868,7 +882,7 @@ async function broadcastFinal() {
     root.dataset.broadcast = 'refused';
   } else {
     logRaw(`no answer from the ${S.config.labels.bitcoin} node (HTTP ${answer.status ?? 'none'})`, answer.body || answer.error || 'an empty answer');
-    $('note').textContent = `Signed, not sent yet. ${noNodeWords(answer)}`;
+    $('note').textContent = `Signed. No node has said it took it yet. ${noNodeWords(answer)}`;
     root.dataset.broadcast = 'no_answer';
   }
 }
@@ -943,7 +957,7 @@ async function loadVault() {
     S.instance = await S.views.instance();
     if (S.instance.network === 'mainnet') return plain('no_config', 'This page is a demo for test coins only, and this contract is not on a test network.');
     S.vault = await S.views.vault(S.vaultHex);
-    if (!S.vault || !S.vault.active) return plain('no_vault', 'That vault is not on this contract, or not active yet.');
+    if (!S.vault || !S.vault.active) return plain('no_vault', 'This tab can\'t find that vault on this contract, or it is not active yet.');
     S.tracker.add(await S.reader.blockTime());
     S.lastBlockRead = Date.now();
     if (S.requestId === null) {

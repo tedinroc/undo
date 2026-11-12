@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { segwitAddress } from '../../tools/lib/btc.mjs';
 import { sha256 } from '../../tools/lib/crypto.mjs';
-import { codeKeyState, contractWords, logRaw, noNodeWords, nodeRefusalWords, panicOf, passkeyErrorWords, passkeyWords, relayWords, upgradeWords } from '../lib/plain-words.mjs';
+import { codeKeyState, contractWords, logRaw, nodeRefusalWords, noNodeWords, panicOf, passkeyErrorWords, passkeyWords, relayClause, relaySentNothing, relayWords, resetWords, unreadRelayWords, upgradeWords, waitWords } from '../lib/plain-words.mjs';
 import { RELAY_ERRORS } from '../lib/relay-table.mjs';
 import { destinationWords } from '../pages/t/logic.mjs';
 
@@ -71,9 +71,65 @@ test('every relay code has a sentence with no code in it, and a refusal that car
   assert.equal(relayWords({ code: 'tx_refused', verbatim: '{"ActionError":{"index":0,"kind":{"FunctionCallError":{"ExecutionError":"Smart contract panicked: Unauthorized"}}}}' }), 'The contract did not take that signature.');
   assert.equal(relayWords({ code: 'would_refuse', verbatim: 'wasm execution failed with error: HostError(GuestPanic { panic_msg: "SpendKeySuspended" })' }), 'That key can\'t ask again.');
   assert.equal(relayWords({ code: 'rate_limited', retryAfterS: 7 }), 'Too many tries through the relay. Wait 7 s and try again.');
+  // The hourly and daily limits answer in thousands of seconds, which nobody reads on a phone.
+  assert.equal(relayWords({ code: 'rate_limited', retryAfterS: 2400 }), 'Too many tries through the relay. Wait about 40 minutes and try again.');
+  assert.equal(relayWords({ code: 'rate_limited', retryAfterS: 50_000 }), 'Too many tries through the relay. Wait about 14 hours and try again.');
   assert.equal(relayWords({ code: 'something_new' }), 'The relay said no.');
   for (const refusal of ['webauthn: bad signature', 'webauthn: wrong rp id', 'webauthn: user not verified', 'webauthn signature must be 64 bytes']) plainSentence(passkeyWords(refusal), refusal);
   for (const kind of ['no_support', 'wrong_site', 'other']) plainSentence(passkeyErrorWords(kind), kind);
+});
+
+test('a node\'s refusal of the relay\'s transaction is not the NEAR contract\'s; and only a refusal before the relay\'s sender signed says it sent nothing', () => {
+  // The sender's tx_refused: a node called the transaction invalid, so it never ran on the contract.
+  assert.equal(relayWords({ code: 'tx_refused' }), 'A NEAR node refused the transaction.');
+  assert.equal(relayWords({ code: 'tx_refused', verbatim: '{"name":"HANDLER_ERROR","cause":{"name":"INVALID_TRANSACTION"},"data":{"TxExecutionError":{"InvalidTxError":"NotEnoughBalance"}}}' }), 'A NEAR node refused the transaction.');
+  assert.doesNotMatch(relayWords({ code: 'tx_refused', verbatim: '{"InvalidTxError":"Expired"}' }), /contract/);
+  // A refused body may have been read (no such request, no such vault), and a SecurityError comes at Make too, with no
+  // passkey yet.
+  assert.equal(relayWords({ code: 'bad_request' }), 'The relay did not take what this page sent.');
+  assert.equal(passkeyErrorWords('wrong_site'), 'This page isn\'t allowed to use a passkey here.');
+  assert.equal(passkeyErrorWords('other'), 'The passkey call failed.');
+  // The checks and limits ahead of NearSender.send in handler.mjs.
+  for (const code of ['bad_request', 'bad_origin', 'unknown_method', 'pow_required', 'pow_bad', 'wrong_guard', 'rate_limited', 'daily_ceiling', 'not_this_relays', 'assertion_refused', 'would_refuse', 'relay_reserve']) assert.equal(relaySentNothing(code), true, code);
+  // A resend whose first send landed unseen, then a stale nonce, a node, the state store, the relay's own code, or a
+  // send already under way; no answer; and any code a page does not know.
+  for (const code of ['relay_down', 'relay_error', 'stale_nonce', 'state_store_down', 'rpc_down', 'relay_not_configured', 'tx_refused', 'already_sent', 'esplora_down', 'something_new', undefined, null]) assert.equal(relaySentNothing(code), false, String(code));
+});
+
+test('a relay status a page could not read says only what came back: no answer is not a relay that is down', () => {
+  assert.equal(unreadRelayWords({ reachable: false, answered: false, code: null }), 'Can\'t reach the relay');
+  assert.equal(unreadRelayWords({ reachable: false }), 'Can\'t reach the relay', 'a status that does not say what came back claims nothing');
+  assert.equal(unreadRelayWords({ reachable: false, answered: true, code: null }), 'Something answered for the relay, but not with its status');
+  assert.equal(unreadRelayWords({ reachable: false, answered: true, code: 'relay_not_configured' }), 'The relay is not set up');
+  assert.equal(unreadRelayWords({ reachable: false, answered: true, code: 'relay_error' }), 'The relay hit an error');
+  assert.equal(unreadRelayWords({ reachable: false, answered: true, code: 'something_new' }), 'The relay said no');
+  for (const code of [null, ...Object.keys(RELAY_ERRORS)]) plainSentence(`${unreadRelayWords({ answered: true, code })}.`, `answered ${code}`);
+  plainSentence(`${unreadRelayWords({ answered: false })}.`, 'no answer');
+  for (const code of [null, 'relay_not_configured', 'relay_error']) assert.doesNotMatch(unreadRelayWords({ answered: false, code }), /down/);
+});
+
+test('a relay sentence as a clause is its first sentence with no full stop, so a reason in two sentences joins as one', () => {
+  assert.equal(relayClause('relay_not_configured'), 'The relay is not set up');
+  assert.equal(relayClause('rate_limited'), 'Too many tries through the relay');
+  assert.equal(relayClause('stale_nonce'), 'The relay\'s key was busy');
+  assert.equal(relayClause('something_new'), 'The relay said no');
+  assert.equal(unreadRelayWords({ answered: true, code: 'stale_nonce' }), 'The relay\'s key was busy');
+  for (const code of [null, 'relay_down', ...Object.keys(RELAY_ERRORS)]) {
+    const clause = relayClause(code);
+    assert.doesNotMatch(clause, /\.|[Tt]ry again/, `${code}: ${clause}`);
+    plainSentence(`${clause}, so this page can't send a cancel.`, `clause ${code}`);
+  }
+});
+
+test('a wait reads in seconds under two minutes, then minutes, then hours, rounded up; a reset time only when one is given', () => {
+  for (const [seconds, words] of [[1, '1 s'], [59.2, '60 s'], [119, '119 s'], [120, 'about 2 minutes'], [121, 'about 3 minutes'], [2400, 'about 40 minutes'], [3600, 'about 60 minutes'], [7199, 'about 120 minutes'], [7200, 'about 2 hours'], [86_400, 'about 24 hours']]) {
+    assert.equal(waitWords(seconds), words, String(seconds));
+  }
+  assert.equal(waitWords(0), '1 s', 'never "0 s"');
+  assert.equal(waitWords(undefined), '1 s');
+  assert.equal(resetWords(Date.UTC(2026, 10, 15, 0, 0)), ' It resets at 00:00 UTC.');
+  assert.equal(resetWords(Date.UTC(2026, 10, 14, 17, 5)), ' It resets at 17:05 UTC.');
+  for (const none of [null, undefined, 0, Number.NaN, '2026']) assert.equal(resetWords(none), '', String(none));
 });
 
 test('the footer says an upgrade waits 1 hour only when the contract account\'s key list shows no full-access key; with one, or with no list, it says the key could change the code at once', () => {

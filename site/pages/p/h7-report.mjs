@@ -34,7 +34,7 @@ export function sheetSentence(tries) {
   const hidden = tries.filter((t) => t.hidden || t.pagehide).length;
   const blurred = tries.filter((t) => t.blurred).length;
   const stall = Math.max(...tries.map((t) => t.stallMs));
-  return `While the sheet was up, over ${tries.length} tries: the page went hidden ${hidden} times, lost focus ${blurred} times, and its longest drawing stall was ${seconds(stall)} s.`;
+  return `While the passkey was asked, over ${tries.length} tries: the page went hidden ${hidden} times, lost focus ${blurred} times, and its longest drawing stall was ${seconds(stall)} s.`;
 }
 
 export function reportText({ sense, config, passkeyFlags, proofS, tries, operator, answers, vault, problems = [], awake = null }) {

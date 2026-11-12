@@ -45,15 +45,54 @@ export async function sensePasskeys(win = globalThis) {
   return { secure, api, platform, mobile: isMobile(nav), inApp: inAppBrowser(ua), ua };
 }
 
-/** Null, or why this device cannot make an assertion. `blocked` is true once a tap has shown it. */
+/**
+ * Null, or why this device cannot make an assertion. `blocked` is true once a tap has shown it. A browser that reports
+ * no platform authenticator is not a reason: only a tap finds out, so the buttons stay and `platformHint` says what to do.
+ */
 export function passkeyProblem(sense, blocked = false) {
   if (!sense.secure) return 'not_secure';
   if (!sense.api) return 'no_webauthn';
   if (blocked) return 'webauthn_blocked';
-  // A laptop with no platform authenticator can still reach a phone's passkey through the OS sheet. A phone cannot.
-  if (sense.platform === false && sense.mobile) return 'no_platform_authenticator';
   return null;
 }
+
+/**
+ * The major iOS version a user agent names, or null. Safari from iOS 26 names 18.x there (Apple froze it), so this
+ * reads 18 or more for every iOS from 18 on, and the real number for 16 and 17, which is all platformHint needs.
+ */
+export function iosMajor(ua) {
+  const m = /\b(?:iPhone|iPad|iPod)\b[^)]*?\bOS (\d+)_\d+/.exec(ua ?? '');
+  return m ? Number(m[1]) : null;
+}
+
+const appleDevice = (ua) => (/\biPad\b/.test(ua) ? 'iPad' : /\biPod\b/.test(ua) ? 'iPod touch' : /\biPhone\b/.test(ua) ? 'iPhone' : null);
+
+/**
+ * What to do, by what the user agent names. Before iOS 26.2 an iPhone's browser answered true almost always, and false
+ * meant no passcode; from 26.2 it answers true only once a passkey manager is set up (Apple, developer forums thread
+ * 808367). From iOS 18 that switch is "AutoFill Passwords and Passkeys" under Settings > General > AutoFill & Passwords
+ * (support.apple.com/en-us/120758); on 17 and before passwords sit under Settings > Passwords (support.apple.com/en-us/
+ * 104955), but there the answer was the passcode's. A user agent that says 18 may be any iOS from 18 to 26.x, so it gets
+ * both steps. One that names no iOS version and no Android gets every step and names no menu path.
+ */
+function hintStep(ua) {
+  const device = appleDevice(ua);
+  const major = iosMajor(ua);
+  if (device && major !== null && major >= 18) return `check that this ${device} has a passcode and that AutoFill Passwords and Passkeys is on in Settings > General > AutoFill & Passwords`;
+  if (device && major !== null) return `check that this ${device} has a passcode`;
+  if (/\bAndroid\b/.test(ua)) return 'set a screen lock on this phone';
+  return 'turn one on (iPhone or iPad: set a passcode, and turn on AutoFill for passwords and passkeys in Settings; Android: set a screen lock)';
+}
+
+/**
+ * What to say on a phone whose browser answers false to isUserVerifyingPlatformAuthenticatorAvailable(). The page
+ * cannot tell what is missing, and the OS may still offer its own way through at the tap, so this is a hint beside the
+ * button and never in place of it, and it says what to check rather than what the phone lacks. A laptop gets none: it
+ * can reach a phone's passkey through the OS sheet.
+ */
+export const platformHint = (sense) => (sense.platform === false && sense.mobile
+  ? `This browser reports no passkey manager or screen lock it can use. If no passkey sheet comes up, ${hintStep(sense.ua ?? '')}, then come back to this page.`
+  : null);
 
 /** Watches the page while an OS sheet may be up. `evidence()` says what the page saw. */
 export function watchSheet(win = globalThis) {
@@ -117,20 +156,27 @@ export function classifyPasskeyError(err, evidence) {
 }
 
 /**
- * Keeps the screen on while a clock runs, since a five-minute wait is longer than most phones' auto-lock. A page loses
- * the lock when it is hidden, so this asks again when it comes back. `state` is on, refused, or none (no such API).
+ * Keeps the screen on while the page wants it (phone.mjs keepAwake: while a clock runs, since a five-minute wait is
+ * longer than most phones' auto-lock, and for a while on the idle screen). A page loses the lock when it is hidden, so
+ * this asks again when it comes back. `state` is on, refused, or none (no such API).
  */
 export function screenAwake(win = globalThis) {
   const nav = win.navigator;
-  const out = { state: 'none', wanted: false, lock: null };
+  const out = { state: 'none', wanted: false, lock: null, asking: false };
+  // One request at a time, and a lock that comes after it stopped being wanted is let go at once.
   const ask = async () => {
-    if (!out.wanted || !nav?.wakeLock || out.lock) return;
+    if (!out.wanted || !nav?.wakeLock || out.lock || out.asking) return;
+    out.asking = true;
     try {
-      out.lock = await nav.wakeLock.request('screen');
+      const lock = await nav.wakeLock.request('screen');
       out.state = 'on';
-      out.lock.addEventListener?.('release', () => { out.lock = null; });
+      lock.addEventListener?.('release', () => { if (out.lock === lock) out.lock = null; });
+      if (out.wanted) out.lock = lock;
+      else lock.release?.().catch?.(() => {});
     } catch {
       out.state = 'refused';
+    } finally {
+      out.asking = false;
     }
   };
   win.document?.addEventListener?.('visibilitychange', () => { if (!win.document.hidden) ask(); });
@@ -149,10 +195,21 @@ export function screenAwake(win = globalThis) {
 const PROBLEM_WORDS = {
   not_secure: 'This page was not opened over a secure connection, so passkeys are off.',
   no_webauthn: 'This browser has no passkeys, so this page can\'t cancel here. Open it in Safari or Chrome.',
-  webauthn_blocked: 'No passkey sheet came up. Either this phone doesn\'t hold this vault\'s passkey, or this browser is blocking passkeys. If it does hold it, open this page in Safari or Chrome.',
-  no_platform_authenticator: 'This phone has no Face ID, fingerprint or screen lock this browser can use, so it can\'t make or use a passkey here.',
+  // Said after a refusal within BLOCKED_MS with no trace of a sheet: no sheet, no passkey, or a sheet shut at once look alike.
+  webauthn_blocked: 'No passkey came back. This phone may not hold this vault\'s passkey, or this browser may be blocking passkeys.',
 };
 
 export const problemWords = (problem) => PROBLEM_WORDS[problem] ?? null;
 
-export const openElsewhere = (sense) => (sense.inApp ? `You opened this inside ${sense.inApp}. Passkeys may not work here. Open it in Safari or Chrome if no sheet appears.` : null);
+/** Inside an app's own browser: where it is, and what to do about it, before any tap. */
+export const openElsewhere = (sense) => (sense.inApp
+  ? `You opened this inside ${sense.inApp}, where passkeys may not work. Open this page in Safari or Chrome itself: use the app's menu, or copy this page's address.`
+  : null);
+
+/**
+ * A sheet that has not shown after SHEET_HANG_MS. `again` names the button the screen has put back. In a browser of its
+ * own the call may only be stuck, so the way out is that button and then a reload; inside an app it is the app.
+ */
+export const hangWords = (sense, again) => (sense.inApp
+  ? `No passkey sheet yet? This app's browser may be blocking passkeys. Open this page in Safari or Chrome, or tap ${again} to try once more.`
+  : `No passkey sheet yet? Tap ${again} again. If none comes, reload this page and try once more.`);

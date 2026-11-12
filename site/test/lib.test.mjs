@@ -540,8 +540,15 @@ test('RelayClient.status: never throws. A dead relay, a web page or a refusal al
   assert.equal(down.owner.up, false);
   assert.equal(down.why, 'the connection failed');
   assert.equal(down.errorKind, 'TypeError');
-  assert.equal((await make(async () => ({ status: 502, json: async () => { throw new SyntaxError('html'); } }))).reachable, false);
-  assert.equal((await make(jsonFake(503, { ok: false, code: 'relay_not_configured' }))).why, 'relay_not_configured');
+  // What a page may say of each: no answer, an answer that is not the relay's JSON, and the relay's own no.
+  assert.deepEqual([down.answered, down.code], [false, null]);
+  const page = await make(async () => ({ status: 502, json: async () => { throw new SyntaxError('html'); } }));
+  assert.deepEqual([page.reachable, page.answered, page.code], [false, true, null]);
+  const refused = await make(jsonFake(503, { ok: false, code: 'relay_not_configured' }));
+  assert.deepEqual([refused.reachable, refused.answered, refused.code, refused.why], [false, true, 'relay_not_configured', 'relay_not_configured']);
+  assert.deepEqual((({ answered, code, why }) => ({ answered, code, why }))(await make(jsonFake(500, null))), { answered: true, code: null, why: 'HTTP 500' });
+  const timedOut = await make(async () => { throw new DOMException('timed out', 'TimeoutError'); });
+  assert.deepEqual([timedOut.answered, timedOut.why], [false, 'no answer in time']);
   const up = await make(jsonFake(200, { ok: true, relay_account: 'r.testnet', pow_bits: 18, owner: { up: true }, general: { up: false, why: 'daily_ceiling' }, funds: { up: true } }));
   assert.equal(up.reachable, true);
   assert.equal(up.relayAccount, 'r.testnet');

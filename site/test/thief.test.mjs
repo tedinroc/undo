@@ -27,6 +27,7 @@ import { createPasskey, getAssertion } from '../lib/webauthn.mjs';
 import { destinationProblem, destinationSpk, fuseFraction, isNotYetUnlocked, liveRequestIn, parseSeed, relaySentence, resendWhileSigning, satsText, sumOfInputs, tickPulse } from '../pages/t/logic.mjs';
 import { chromeAvailable, startChrome } from './chrome.mjs';
 import { stageAvailable, startStage, staticServer } from './stage.mjs';
+import { autoLine } from '../pages/t/logic.mjs';
 
 const SITE = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skip = stageAvailable() && chromeAvailable() ? false : 'set NEAR_SANDBOX_BIN_PATH, UNDO_WASM_DIR and UNDO_BITCOIN_BIN, with Chrome installed';
@@ -101,6 +102,30 @@ describe('rules with no page around them', () => {
     assert.equal(tickPulse(10_000), 0);
   });
 
+  test('the line under the digits says off only on the relay\'s own word: an unread status or an execute with no answer leaves it on, and at zero it says it retries', () => {
+    const unread = { reachable: false, answered: false, code: null, general: { up: false, why: 'relay_down' } };
+    const proxy = { reachable: false, answered: true, code: null, general: { up: false, why: 'relay_down' } };
+    const ceiling = { reachable: true, general: { up: false, why: 'daily_ceiling' } };
+    const up = { reachable: true, general: { up: true, why: null } };
+    const line = (fields) => autoLine({ sentence: relaySentence(fields.status), ...fields });
+    // Waiting: the tab sends execute at zero whatever the status, so only a relay that answered can turn it off.
+    assert.deepEqual(line({ firing: false, status: up }), { auto: 'armed', text: 'auto-execute armed' });
+    assert.deepEqual(line({ firing: false, status: null }), { auto: 'armed', text: 'auto-execute armed' }, 'no status read yet');
+    assert.deepEqual(line({ firing: false, status: unread }), { auto: 'armed', text: 'auto-execute armed' }, 'no answer is no word from the relay');
+    assert.deepEqual(line({ firing: false, status: proxy }), { auto: 'armed', text: 'auto-execute armed' }, 'a proxy page is no word from the relay');
+    assert.deepEqual(line({ firing: false, status: ceiling }), { auto: 'off', text: 'auto-execute off' }, 'the relay said it can\'t');
+    assert.deepEqual(line({ firing: false, status: { ...ceiling, general: { ...ceiling.general, calls_fit: true } } }), { auto: 'armed', text: 'auto-execute armed' }, 'a vault no longer fits, an execute does');
+    assert.deepEqual(line({ firing: false, status: up, blocked: 'x', unanswered: true }), { auto: 'armed', text: 'auto-execute armed' }, 'an execute\'s answer counts only at zero');
+    // At zero.
+    assert.deepEqual(line({ firing: true, status: up }), { auto: 'firing', text: 'The contract signs' });
+    assert.deepEqual(line({ firing: true, status: unread }), { auto: 'on', text: 'auto-execute on' }, 'an unread status: the tab sends execute, and does not say the contract signs');
+    assert.deepEqual(line({ firing: true, status: up, unanswered: true }), { auto: 'on', text: 'auto-execute on, retrying' }, 'an execute with no answer is sent again in 2 s');
+    assert.deepEqual(line({ firing: true, status: unread, unanswered: true }), { auto: 'on', text: 'auto-execute on, retrying' });
+    assert.deepEqual(line({ firing: true, status: ceiling }), { auto: 'off', text: 'auto-execute off' }, 'the relay said it can\'t');
+    assert.deepEqual(line({ firing: true, status: up, blocked: 'The relay hit today\'s limit, so this tab can\'t ask the NEAR contract or call execute.' }), { auto: 'off', text: 'auto-execute off' }, 'the relay refused the last execute as one it can\'t send');
+    assert.deepEqual(line({ firing: true, status: unread, blocked: 'x' }), { auto: 'off', text: 'auto-execute off' });
+  });
+
   test('only being early is worth resending', () => {
     assert.equal(isNotYetUnlocked('{"ActionError":{"kind":{"FunctionCallError":{"ExecutionError":"Smart contract panicked: NotUnlocked { unlock: 123 }"}}}}'), true);
     assert.equal(isNotYetUnlocked('Smart contract panicked: RequestNotFound'), false);
@@ -109,7 +134,13 @@ describe('rules with no page around them', () => {
 
   test('the relay sentences are plain, and absent while the relay works', () => {
     assert.equal(relaySentence({ reachable: true, general: { up: true, why: null } }), null);
-    assert.match(relaySentence({ reachable: false, general: { up: false, why: 'relay_down' } }), /relay is down/);
+    // A status it could not read says only what came back: no answer is not a relay that is down.
+    const unread = (fields) => relaySentence({ reachable: false, general: { up: false, why: 'relay_down' }, ...fields });
+    // Send stays, and at zero the tab still sends execute, so what an unread status leads to is only a may.
+    assert.equal(unread({ answered: false, code: null }), 'Can\'t reach the relay, so this tab may not be able to ask the NEAR contract or call execute.');
+    assert.equal(unread({ answered: true, code: null }), 'Something answered for the relay, but not with its status, so this tab may not be able to ask the NEAR contract or call execute.');
+    assert.equal(unread({ answered: true, code: 'relay_not_configured' }), 'The relay is not set up, so this tab may not be able to ask the NEAR contract or call execute.');
+    assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'relay_down' } }), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.', 'only a relay that answered may say so');
     assert.match(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling' } }), /today's limit/);
     assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'daily_ceiling', calls_fit: true } }), null, 'a vault no longer fits, but this tab can still send');
     assert.equal(relaySentence({ reachable: true, general: { up: false, why: 'state_store_down' } }), 'The relay can\'t reach its records right now, so this tab can\'t ask the NEAR contract or call execute.', 'the reason in words, not its code');
@@ -215,6 +246,8 @@ function standInRelay(stage) {
     bodies: [],
     holdExecute: null,
     refuseAll: null,
+    // Tgas to attach to execute in place of what the relay's table says: too little makes the contract refuse it.
+    executeTgas: null,
   };
   r.onApi = async (req, res, url) => {
     if (r.dead) {
@@ -243,6 +276,7 @@ function standInRelay(stage) {
     if (method === 'execute') {
       const request = await r.views.request(args.vault, args.request);
       tgas = request ? executeTgas(request.inputs.length, { signTgas: r.instance.sign_tgas, callbackTgas: r.instance.callback_tgas }) : 50;
+      if (r.executeTgas) tgas = r.executeTgas;
     }
     const sent = await stage.near.send(stage.relay, stage.contract, [action.call(method, args, BigInt(tgas) * TGAS, 0n)]);
     return send(200, { ok: true, hash: sent.hash, key: 'general', method });
@@ -550,6 +584,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     relay.dead = false;
     relay.general = { up: true, why: null, resets_at: null };
     relay.holdExecute = null;
+    relay.executeTgas = null;
     await cdp.send('Network.setBlockedURLs', { urls: [] });
   });
 
@@ -639,7 +674,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     const v = await makeVault({ coin: 0 });
     await openThief(v, { to: LOCAL_TO, k: v.seedHex });
     await waitState('short');
-    assert.equal(await textOf('plain-text'), 'No coin in this vault yet');
+    assert.equal(await textOf('plain-text'), 'No coin to send in this vault yet');
     assert.match(await textOf('plain-address'), /address bcrt1/, 'a local run labels itself by its own chain');
     await assertFrame('short');
     await shot('04-short');
@@ -670,7 +705,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.deepEqual(await startLink(), ['Start on the phone page', '/p/', true]);
     await open('/t/', { v: 'ab'.repeat(32) });
     await waitState('no_vault');
-    assert.match(await textOf('plain-text'), /not on this contract/);
+    assert.match(await textOf('plain-text'), /can't find that vault on this contract/);
     assert.equal(await js('[...document.querySelectorAll("button, input, textarea")].filter((e) => e.checkVisibility()).length'), 0);
     assert.equal(await startLink(), null, 'a link that names a vault this contract does not hold is not sent to make another');
   });
@@ -898,6 +933,31 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.equal((await (await fetch(`${stage.config.esplora}/tx/${v.coin.txid}/outspend/${v.coin.vout}`)).json()).spent, false);
   });
 
+  test('a refused execute: the contract\'s no under the digits, the line says auto-execute is off, and the tab sends execute no more', { timeout: 180_000 }, async () => {
+    const v = await makeVault();
+    await toArmed(v, {});
+    const r = await pressToWaiting();
+    const req = await views.request(v.vaultHex, r);
+    // A relay set up wrong: 40 Tgas is less than the signature needs, so the contract refuses execute and nothing moves.
+    relay.executeTgas = 40;
+    await fastForwardToLeft(req.unlock, 6_000);
+    const executes = () => relay.calls.filter((m) => m === 'execute').length;
+    const before = executes();
+    await waitState('firing', 40_000);
+    await waitFor('the line under the digits says off', async () => (await textOf('auto')) === 'auto-execute off', 30_000);
+    assert.equal(await js('document.getElementById("root").dataset.auto'), 'off');
+    assert.equal(await textOf('note'), 'The NEAR contract refused it.');
+    const sent = executes() - before;
+    assert.ok(sent >= 1, `${sent}`);
+    await shot('19-execute-refused');
+    // Polls go on every second, and none of them starts execute again, so the line stays true.
+    await sleep(8000);
+    assert.equal(executes() - before, sent, 'no execute after the contract refused one');
+    assert.equal(await textOf('auto'), 'auto-execute off');
+    assert.equal(await stateNow(), 'firing');
+    assert.equal((await views.request(v.vaultHex, r)).status, 'Pending', 'the refused execute moved nothing');
+  });
+
   test('a plain cancel: stamped, but the key can still ask, so the page does not say it can\'t', { timeout: 120_000 }, async () => {
     const v = await makeVault();
     await toArmed(v, {});
@@ -995,7 +1055,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await fastForwardToLeft(req.unlock, 5_000);
     await waitState('signed', 90_000);
     await waitFor('the words', async () => (await js('document.getElementById("root").dataset.broadcast')) === 'no_answer', 15_000);
-    assert.equal(await textOf('note'), 'Signed, not sent yet. Something on the way to the node said it isn\'t available right now.');
+    assert.equal(await textOf('note'), 'Signed. No node has said it took it yet. Something on the way to the node said it isn\'t available right now.');
     assert.equal(await textOf('txid-row'), '', 'no txid before a node has it');
     await shot('22-signed-not-sent');
     stage.rig.setRule(null);
@@ -1003,19 +1063,21 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     assert.match(await textOf('txid-row'), /^local regtest txid /);
   });
 
-  test('a dead relay: says so before and after the press, shows no armed claim, and retries when it is back', { timeout: 180_000 }, async () => {
+  test('a dead relay: says so before and after the press, keeps sending execute at zero under a line that says so, and retries when it is back', { timeout: 180_000 }, async () => {
     const v = await makeVault();
     relay.dead = true;
     await openThief(v, { to: LOCAL_TO, k: v.seedHex });
     await waitState('armed');
-    await waitFor('the sentence', async () => /relay is down/.test(await textOf('armed-note')));
+    await waitFor('the sentence', async () => /Can't reach the relay/.test(await textOf('armed-note')));
+    assert.match(await textOf('armed-note'), /Can't reach the relay, so this tab may not be able to ask the NEAR contract or call execute\./, 'no answer is not a relay that is down');
     await assertFrame('armed, relay down');
     await shot('23-relay-down-armed');
     await click('send');
     await waitState('refused', 15_000);
     await waitState('asking', 5_000);
     await waitFor('the asking words', async () => (await js('document.getElementById("root").dataset.why')) === 'relay_down', 30_000);
-    assert.equal(await textOf('term-1'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.');
+    // The proposal got no answer, and may have gone out all the same: the row does not say the contract was not asked.
+    assert.equal(await textOf('term-1'), 'The relay did not answer, so this tab can\'t tell whether the call went out.');
     assert.equal(await textOf('ask-why'), '', 'the row says it, so nothing says it again, and no code');
     assert.equal(await js('document.getElementById("ask-retry").checkVisibility()'), true);
     assert.equal(await js('document.getElementById("clock-block").checkVisibility()'), false, 'no clock without a request');
@@ -1031,26 +1093,30 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await click('ask-retry');
     await waitState('waiting', 60_000);
 
-    // It dies again during the count. The clock is the contract's and keeps falling; the page stops claiming it will fire.
+    // It dies again during the count. The clock is the contract's and keeps falling. No answer is no word from the relay
+    // that it can't, and at zero the tab sends execute all the same, so the line under the digits does not say off.
     const r = Number(new URLSearchParams((await js('location.hash')).slice(1)).get('r'));
     const req = await views.request(v.vaultHex, r);
     relay.dead = true;
     await js('location.reload()');
     await waitState('waiting', 10_000);
-    await waitFor('the waiting words', async () => (await js('document.getElementById("root").dataset.auto')) === 'off', 10_000);
-    assert.equal(await textOf('auto'), 'auto-execute off', 'what is off, under the digits');
-    assert.equal(await textOf('note'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.', 'and why, once');
+    await waitFor('the waiting words', async () => /Can't reach the relay/.test(await textOf('note')), 10_000);
+    assert.equal(await textOf('auto'), 'auto-execute armed', 'under the digits: the tab will still send execute at zero');
+    assert.equal(await js('document.getElementById("root").dataset.auto'), 'armed');
+    assert.equal(await textOf('note'), 'Can\'t reach the relay, so this tab may not be able to ask the NEAR contract or call execute.', 'and why it may not work, once');
     await assertFrame('waiting, relay down');
     await shot('25-relay-down-waiting');
     await fastForwardToLeft(req.unlock, 4_000);
     await waitState('firing', 30_000);
-    await waitFor('the firing words', async () => /relay is down/.test(await textOf('note')), 15_000);
-    assert.equal(await textOf('note'), 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.', 'one sentence, and no code');
+    await waitFor('the firing words', async () => /did not answer/.test(await textOf('note')), 15_000);
+    assert.equal(await textOf('note'), 'The relay did not answer, so this tab can\'t tell whether the call went out.', 'one sentence, and no code');
     // The read that accepts a fast-forward can be the one that reaches zero, and the digits draw on the next frame.
     await waitFor('the digits at zero', async () => (await clockText()) === '0:00.0', 5_000);
-    // The label under the zero follows the waiting state's rule: it does not say the contract signs over a sentence that says it can't.
-    assert.equal(await textOf('auto'), 'auto-execute off', 'what is off, under the zero');
-    assert.equal(await js('document.getElementById("root").dataset.auto'), 'off');
+    // The label under the zero: the tab keeps sending execute, 2 s after each call with no answer, so it says that, and not
+    // that the contract signs, nor that it is off.
+    await waitFor('the label after the status read that follows a failed execute', async () => (await textOf('auto')) === 'auto-execute on, retrying', 10_000);
+    assert.equal(await textOf('auto'), 'auto-execute on, retrying', 'what the tab is doing, under the zero');
+    assert.equal(await js('document.getElementById("root").dataset.auto'), 'on');
     await shot('26-relay-down-firing');
     await atOtherSizes('26-relay-down-firing', async ({ landscape }) => (landscape ? labelClear() : []));
     await assertFrame('firing, relay down');
@@ -1113,7 +1179,7 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await js('sessionStorage.clear()');
     await open('/t/', { v: v.vaultHex, r });
     await waitState('no_request', 15_000);
-    assert.equal(await textOf('plain-text'), 'That request is not on this contract.');
+    assert.equal(await textOf('plain-text'), 'This tab can\'t find that request on this contract.');
     await shot('28-no-request');
   });
 
@@ -1317,6 +1383,9 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
       [{ code: 'would_refuse', message: 'the contract refused that read', verbatim: words }, 'The NEAR contract refused this.', 'That coin is already in another request.'],
       [{ code: 'would_refuse', message: 'that proposal is not signed by this vault\'s spend key', verbatim: null }, 'The NEAR contract was not asked.', 'The relay checked it first and did not send it.'],
       [{ code: 'rate_limited', message: 'too many calls', verbatim: null }, 'The NEAR contract was not asked.', 'Too many tries through the relay. Wait a few seconds and try again.'],
+      // Codes the relay can give after its sender put the proposal out: the row says only that this tab can't tell.
+      [{ code: 'relay_error', message: 'the relay failed', verbatim: null }, 'This tab can\'t tell whether the call went out.', 'The relay hit an error.'],
+      [{ code: 'stale_nonce', message: 'nonce retries used up', verbatim: null }, 'This tab can\'t tell whether the call went out.', 'The relay\'s key was busy. Try again.'],
     ]) {
       const v = await makeVault();
       await toArmed(v, {});

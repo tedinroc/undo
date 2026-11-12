@@ -151,6 +151,39 @@ test('createPasskey: the compressed key from a SPKI, asks for ES256 and UV, labe
   assert.deepEqual(seen[0].pubKeyCredParams, [{ type: 'public-key', alg: -7 }]);
   assert.equal(seen[0].authenticatorSelection.userVerification, 'required');
   assert.equal(seen[0].user.name, 'test vault');
+  // A discoverable credential in both spellings, the Level 2 word and the Level 1 flag.
+  assert.deepEqual(seen[0].authenticatorSelection, { residentKey: 'required', requireResidentKey: true, userVerification: 'required' });
+});
+
+test('a page\'s AbortSignal goes to the browser with both passkey calls, beside publicKey, and no signal key is sent when there is none', async () => {
+  const inner = soft();
+  const seen = [];
+  const credentials = {
+    create: (o) => {
+      seen.push(o);
+      return inner.create(o);
+    },
+    get: (o) => {
+      seen.push(o);
+      return inner.get(o);
+    },
+  };
+  const { signal } = new AbortController();
+  await createPasskey({ credentials, rpId: RP, signal });
+  await getAssertion({ credentials, digest: label('x'), rpId: RP, signal });
+  await createPasskey({ credentials, rpId: RP });
+  await getAssertion({ credentials, digest: label('x'), rpId: RP });
+  assert.deepEqual(seen.map((o) => Object.keys(o)), [['publicKey', 'signal'], ['publicKey', 'signal'], ['publicKey'], ['publicKey']]);
+  assert.equal(seen[0].signal, signal);
+  assert.equal(seen[1].signal, signal);
+  // The call is made before anything waits: a browser that gives Face ID only inside a tap sees it in that tap.
+  let called = false;
+  const pending = getAssertion({ credentials: { get: () => { called = true; return new Promise(() => {}); } }, digest: label('x'), rpId: RP, signal });
+  assert.equal(called, true, 'credentials.get ran before getAssertion returned');
+  called = false;
+  const making = createPasskey({ credentials: { create: () => { called = true; return new Promise(() => {}); } }, rpId: RP, signal });
+  assert.equal(called, true, 'credentials.create ran before createPasskey returned');
+  assert.ok(pending instanceof Promise && making instanceof Promise);
 });
 
 test('p256FromSpki refuses another curve, and a browser with no getPublicKey is told so', async () => {

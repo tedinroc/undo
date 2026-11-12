@@ -75,12 +75,15 @@ export function assertionToArgs(credential) {
   };
 }
 
+/** A call a page may have to give up on carries the page's AbortSignal: some browsers never settle one on their own. */
+const withSignal = (signal) => (signal ? { signal } : {});
+
 /**
  * The passkey signs this digest. Returns the arguments and what the page should log, because G3 records
  * the S form of each real tap. `allowCredentials` narrows the sheet to one key, so a phone holding
  * several test vaults' keys does not add a chooser to the tap.
  */
-export async function getAssertion({ credentials, digest, rpId, credentialId = null, timeoutMs = 60_000 }) {
+export async function getAssertion({ credentials, digest, rpId, credentialId = null, timeoutMs = 60_000, signal = null }) {
   const credential = await credentials.get({
     publicKey: {
       challenge: toArrayBuffer(digest),
@@ -89,6 +92,7 @@ export async function getAssertion({ credentials, digest, rpId, credentialId = n
       userVerification: 'required',
       timeout: timeoutMs,
     },
+    ...withSignal(signal),
   });
   if (!credential) throw new Error('webauthn: no assertion');
   const raw = derToRaw(fromBuffer(credential.response.signature));
@@ -118,17 +122,19 @@ export function p256FromSpki(spki) {
  * A new passkey on this device, labelled `test vault` in the OS sheet. ES256 only, because the contract's
  * p256_verify takes nothing else. User verification is required, because the contract refuses UV=0.
  */
-export async function createPasskey({ credentials, rpId, rpName = 'Undo', label = 'test vault', timeoutMs = 120_000, random = (n) => crypto.getRandomValues(new Uint8Array(n)) }) {
+export async function createPasskey({ credentials, rpId, rpName = 'Undo', label = 'test vault', timeoutMs = 120_000, random = (n) => crypto.getRandomValues(new Uint8Array(n)), signal = null }) {
   const credential = await credentials.create({
     publicKey: {
       rp: { id: rpId, name: rpName },
       user: { id: toArrayBuffer(random(16)), name: label, displayName: label },
       challenge: toArrayBuffer(random(32)),
       pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
-      authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+      // Both spellings of a discoverable credential: `requireResidentKey` is the one WebAuthn Level 1 browsers read.
+      authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
       attestation: 'none',
       timeout: timeoutMs,
     },
+    ...withSignal(signal),
   });
   if (!credential) throw new Error('webauthn: no credential');
   if (typeof credential.response.getPublicKey !== 'function') throw new Error('webauthn: this browser cannot read the passkey\'s public key');

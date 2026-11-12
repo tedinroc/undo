@@ -25,7 +25,7 @@ export function runOperatorCheck(ctx, { nonce, instance }) {
     const asking = askAssertion(ctx, { digest, credentialId: null });
     setState('op_wait');
     show(h('p', { class: 'say big' }, 'Waiting for your passkey'), h('p', { class: 'line dim' }, 'Pick the one labelled operator.'));
-    asking.then(({ assertion }) => signed(assertion), (err) => draw(err instanceof PasskeyFailed && err.kind === 'dismissed' ? 'The sheet closed before it signed.' : `The passkey call failed: ${err.message}`));
+    asking.then(({ assertion }) => signed(assertion), (err) => draw(err instanceof PasskeyFailed && (err.kind === 'dismissed' || err.kind === 'blocked') ? 'The passkey did not sign.' : `The passkey call failed: ${err.message}`));
   };
   const signed = (assertion) => {
     const text = JSON.stringify({ format: OPERATOR_PROOF_FORMAT, instance, nonce, credential_id: credentialToFragment(assertion.credentialId), ...assertion.args });

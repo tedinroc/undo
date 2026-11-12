@@ -5,8 +5,8 @@
 import {
   bitcoinReader, configWords, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, contractWords,
   credentialToFragment, advanceState, credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, passkeyErrorWords,
-  passkeyWords, refusalOf, RelayClient, RelayRefused, relayWords, requestState, rotateArgs, rotateDigest, RpcDown, rpIdHashOf, SkewTracker, solvePow, spendKeys,
-  spkToAddress, StaleRead, upgradeWords, ViewRefused,
+  passkeyWords, refusalOf, RELAY_METHODS, RelayClient, RelayRefused, relayClause, relaySentNothing, relayWords, requestState, resetWords, rotateArgs, rotateDigest, RpcDown, rpIdHashOf, SkewTracker,
+  solvePow, spendKeys, spkToAddress, StaleRead, unreadRelayWords, upgradeWords, ViewRefused, waitWords,
 } from '/site/lib/index.mjs';
 import { addressPrefix, parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
@@ -18,8 +18,8 @@ import { ClockFace, h, hashBlock, satsText, screen, setState, show, sumInputs } 
 import { OWN_PATH_PARTS, ownCancelFile, ownCancelFileName, ownCancelParts, RECOVERY_PATH_PARTS, relayIsWhy, relayRefusedIt } from './own-cancel.mjs';
 import { askAssertion, askNewPasskey, PasskeyFailed } from './passkey-ask.mjs';
 import { parsePhoneFragment, recallCredential, recallSeen, rememberCredential, rememberSeen, thiefLink, writeFragment } from './phone-fragment.mjs';
-import { openElsewhere, passkeyProblem, problemWords, screenAwake, sensePasskeys } from './sense.mjs';
-import { chainNowOf, confirmVault, prepareVault, sendVault } from './vault-make.mjs';
+import { hangWords, openElsewhere, passkeyProblem, platformHint, problemWords, screenAwake, sensePasskeys } from './sense.mjs';
+import { chainNowOf, confirmVault, prepareVault, sendVault, waitActive } from './vault-make.mjs';
 
 const POLL_MS = 1000;
 const FAST_POLL_MS = 400;
@@ -44,6 +44,18 @@ const NULL_READS_TO_BELIEVE = 3;
 const CODE_KEYS_MS = 2500;
 // Under the Recovery file button's own words. The README's row for the owner's phone says why at length.
 const RECOVERY_WHY = 'Save it before your first Cancel';
+// With no vault and a relay that is down or out of reach, its status is read again after these waits, the last one
+// repeating, and only while the page is on screen. The status is a Pages Function with a daily allowance of requests,
+// so a tab left open must not ask every few seconds for as long as an outage lasts.
+const RELAY_AGAIN_MS = [5000, 10_000, 20_000, 60_000];
+// Coming back to the page, a restored page and a connection coming back each ask at once, but not more often than this.
+const RELAY_AGAIN_GAP_MS = 2000;
+// How long the idle screen of the page that holds the spend key keeps the screen on after it came up or was last
+// touched. Long enough to send a theft from a laptop; a phone left on that screen then sleeps (keepAwake).
+const IDLE_AWAKE_MS = 10 * 60_000;
+// Before each of the two sheets: what the device is about to ask, and why.
+const BEFORE_MAKE = (rpId) => `Next, this device asks to save a passkey named "test vault" for ${rpId}: this vault's cancel key. You can delete it afterwards.`;
+const BEFORE_CONFIRM = 'One more sheet: your passkey signs this vault\'s creation, and the contract checks it.';
 
 const P = {
   screen: null, v: null, r: null, fragment: {}, vault: null, vaultRead: false, lastKnown: null, rs: null, items: new Map(), hintR: null,
@@ -57,6 +69,18 @@ const P = {
   codeKeys: null,
   // The first tick's vault and request reads, sent with the boot reads.
   early: null,
+  // The screen with no vault, while it is the one on screen: { words }. Null once a vault is being made or watched.
+  noVault: null,
+  // The passkey call a vault in the making is waiting on: { abort }. A later tap replaces it, and its answer is then dropped.
+  making: null,
+  // The button a sheet that has not shown puts back, by its name, or null. And the same for the two making taps.
+  hangMaking: null,
+  // The relay's status read again while there is no vault: how many times, the timer for the next, and one in flight.
+  relayReads: 0, relayTimer: null, relayReading: false,
+  // A passkey call has answered on this page, so what the browser reported of its passkeys beforehand no longer matters.
+  passkeyOk: false,
+  // Whether the screen wake lock is wanted, and until when the idle screen wants it (keepAwake).
+  awake: null, idleAwakeUntil: 0,
 };
 let ctx;
 
@@ -119,6 +143,15 @@ async function main() {
   }
   P.relay = await status;
   P.statusAt = Date.now();
+  // What a browser says of its passkeys can change while the page is away: a passkey manager turned on in Settings. And
+  // a relay that was out of reach when the page loaded is asked again when the page, or the connection, comes back.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    senseAgain();
+    readRelayAgain();
+  });
+  window.addEventListener('pageshow', () => readRelayAgain());
+  window.addEventListener('online', () => readRelayAgain());
 
   for (;;) {
     try {
@@ -175,6 +208,60 @@ function answerWithin(promise, ms) {
   return Promise.race([promise.catch(() => null), new Promise((r) => { setTimeout(() => r(null), ms); })]);
 }
 
+/** Asked again whenever the page comes back. The screen is drawn again only if what it would say has changed. */
+async function senseAgain() {
+  const sense = await sensePasskeys(window);
+  const changed = platformHint(sense) !== platformHint(ctx.sense) || passkeyProblem(sense) !== passkeyProblem(ctx.sense);
+  ctx.sense = sense;
+  if (!changed) return;
+  if (P.noVault) drawNoVault(P.noVault.words);
+  else if (P.screen) judge();
+}
+
+/**
+ * The hint for a phone whose browser reports no passkey manager or screen lock, while that report is all the page has
+ * to go on. Once a passkey call has answered here, or this browser has used this vault's passkey before, it says nothing.
+ */
+const hintNow = () => (P.passkeyOk || P.credentialTrusted ? null : platformHint(ctx.sense));
+
+/** A passkey call answered: the sheet came. Whatever an earlier tap or the browser's own report suggested no longer holds. */
+function passkeyAnswered() {
+  P.passkeyOk = true;
+  P.blocked = false;
+}
+
+/** Whether the screen with no vault is waiting on the relay: it could not be reached, or it cannot make a vault now. */
+const relayHoldsMake = () => Boolean(P.noVault) && (!P.relay.reachable || !P.relay.general?.up);
+
+/** The next read of the relay's status for the screen with no vault: backed off, and never while the page is hidden. */
+function relayAgainLater() {
+  clearTimeout(P.relayTimer);
+  P.relayTimer = null;
+  if (!relayHoldsMake()) return;
+  let wait = RELAY_AGAIN_MS[Math.min(P.relayReads, RELAY_AGAIN_MS.length - 1)];
+  // A daily limit says when it ends, so nothing is asked before then: coming back to the page still asks at once.
+  const resets = P.relay.reachable && P.relay.general?.why === 'daily_ceiling' ? P.relay.general.resets_at : null;
+  if (Number.isFinite(resets) && resets > Date.now()) wait = Math.max(wait, Math.min(resets - Date.now() + 1000, 0x7fffffff));
+  P.relayTimer = setTimeout(() => readRelayAgain(true), wait);
+}
+
+/** Reads the relay's status again for the screen with no vault, and draws that screen again with what it says. */
+async function readRelayAgain(timed = false) {
+  if (!relayHoldsMake() || P.relayReading || document.hidden) return;
+  if (!timed && Date.now() - P.statusAt < RELAY_AGAIN_GAP_MS) return;
+  clearTimeout(P.relayTimer);
+  P.relayTimer = null;
+  P.relayReading = true;
+  P.statusAt = Date.now();
+  const status = await ctx.relay.status();
+  P.relayReading = false;
+  P.relayReads += 1;
+  // A vault may be in the making by now, or the page watching one: this read was for a screen that is gone.
+  if (!P.noVault) return;
+  P.relay = status;
+  drawNoVault(P.noVault.words);
+}
+
 /** "Undo for Bitcoin" where it fits beside the chip, as on the landing page; only "Undo" where the chip leaves no room. */
 function fitWordmark() {
   const mark = document.querySelector('.top .wordmark');
@@ -217,6 +304,9 @@ function readOnce(key, read) {
 
 function watchVault(v) {
   P.v = v;
+  P.noVault = null;
+  P.making = null;
+  clearTimeout(P.relayTimer);
   // Only a place to look. A number in a link says nothing about what is waiting.
   P.hintR = P.fragment.r ?? null;
   const saved = recallSeen(v);
@@ -236,7 +326,14 @@ function watchVault(v) {
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden) pollSoon(0); });
   window.addEventListener('pageshow', (event) => { if (event.persisted) pollSoon(0); });
-  document.addEventListener('pointerdown', () => { P.touch = performance.now(); }, { capture: true, passive: true });
+  document.addEventListener('pointerdown', () => {
+    P.touch = performance.now();
+    // A person is looking at the idle screen: it keeps the screen on for its full time again.
+    if (P.screen === 'idle') {
+      P.idleAwakeUntil = Date.now() + IDLE_AWAKE_MS;
+      keepAwake('idle');
+    }
+  }, { capture: true, passive: true });
   requestAnimationFrame(frame);
   tick();
 }
@@ -434,22 +531,33 @@ function judge() {
       }
       break;
     case 'cancelled':
-      P.tap = null;
+      endTap();
       render('cancelled');
       break;
     case 'signing':
     case 'signed':
-      P.tap = null;
+      endTap();
       if (s.kind === 'signed' && !P.tooLateTxid) readFinalTx();
       render('too_late');
       break;
     case 'expired':
-      P.tap = null;
+      endTap();
       render('expired');
       break;
     default:
       render('idle');
   }
+}
+
+/**
+ * The request on screen has ended, so its tap ends with it. A passkey call still out is ended too: no sheet can do
+ * anything for this request now, and a call that never settles would otherwise stay out for as long as the page is
+ * open, ahead of the next request's. Its line goes with it. An abort of a call that has answered does nothing.
+ */
+function endTap() {
+  if (P.tap && !P.tap.answered) P.tap.abort.abort();
+  P.tap = null;
+  P.hang = false;
 }
 
 function onCancelled(live) {
@@ -561,6 +669,8 @@ async function readBalance() {
     const list = await ctx.esplora.utxos(P.vault.address);
     P.balance = list.reduce((sum, c) => sum + c.value, 0);
     P.balanceWords = null;
+    // What a failed ask for a coin said is out of date once a coin is here.
+    if (P.balance > 0 && P.notice?.fund) P.notice = null;
   } catch (err) {
     P.balanceWords = err.message;
   } finally {
@@ -577,29 +687,57 @@ function onCancelTap(own = false) {
   const prep = ensurePrep();
   P.notice = null;
   P.hang = false;
-  P.tap = { phase: 'tapped', sentAt: null, own: own === true };
+  const tap = { phase: 'tapped', sentAt: null, own: own === true, abort: new AbortController(), answered: false };
+  P.tap = tap;
   window.undoTimings = { tap: performance.now(), touch: P.touch, assertion: null, sent: null, included: null, readCancelled: null, sForm: null, sheet: null };
   // Straight to the browser: no await may come before this, or iOS Safari drops the gesture.
-  const asking = askAssertion(ctx, { digest: prep.digest, credentialId: P.credential, onHang: () => { P.hang = true; render(P.tap?.phase ?? P.screen, true); } });
+  const asking = askAssertion(ctx, {
+    digest: prep.digest,
+    credentialId: P.credential,
+    signal: tap.abort.signal,
+    onHang: () => {
+      if (P.tap !== tap) return;
+      P.hang = true;
+      render(tap.phase, true);
+    },
+  });
   render('tapped');
-  finishTap(asking, prep);
+  finishTap(asking, prep, tap);
 }
 
-async function finishTap(asking, prep) {
+/**
+ * The button a sheet that never showed puts back. A passkey call can stay out for good (WebKit bug 273712), and the page
+ * cannot tell that from a sheet a person is still reading, so nothing ends the call but this tap: it aborts the one that
+ * is out and asks again, all inside this handler, because the new call needs this tap's gesture as the first one did.
+ */
+function onCancelAgain() {
+  const old = P.tap;
+  if (!old || old.phase !== 'tapped') return;
+  P.tap = null;
+  old.abort.abort();
+  onCancelTap(old.own);
+}
+
+async function finishTap(asking, prep, tap) {
   const timings = window.undoTimings;
   let assertion;
   try {
     const got = await asking;
+    tap.answered = true;
+    // A call this page gave up on, answering late: a newer tap has the screen, and nothing of this one is sent or drawn.
+    if (P.tap !== tap) return;
     assertion = got.assertion;
     timings.assertion = performance.now();
     P.hang = false;
+    passkeyAnswered();
     timings.sForm = assertion.highS ? 'high' : 'low';
     timings.sheet = got.evidence;
     document.documentElement.dataset.sForm = timings.sForm;
     console.log(`undo: S form of this tap: ${timings.sForm}`);
-    P.sheetNote = got.evidence.seen && got.evidence.stallMs >= 1000 ? `The sheet covered this page for ${(got.evidence.stallMs / 1000).toFixed(1)} s. The contract's clock kept running.` : null;
+    P.sheetNote = got.evidence.seen && got.evidence.stallMs >= 1000 ? `This page stopped drawing for ${(got.evidence.stallMs / 1000).toFixed(1)} s while the passkey was asked. The contract's clock kept running.` : null;
   } catch (err) {
-    onTapFailed(err);
+    tap.answered = true;
+    if (P.tap === tap) onTapFailed(err);
     return;
   }
   if (P.rs?.terminal) {
@@ -625,7 +763,7 @@ async function finishTap(asking, prep) {
     saveFragment({ c: credentialB64() });
   }
   const callArgs = rotateArgs({ vaultHex: P.v, newKs: prep.newKs, nonce: prep.nonce, expiresAt: prep.expiresAt, assertion: assertion.args });
-  if (P.tap.own) {
+  if (tap.own) {
     P.tap = null;
     P.prep = null;
     P.signed = { method: 'cancel_all_and_rotate', args: callArgs, expiresAt: prep.expiresAt };
@@ -633,8 +771,8 @@ async function finishTap(asking, prep) {
     judge();
     return;
   }
-  P.tap.phase = 'sending';
-  P.tap.sentAt = Date.now();
+  tap.phase = 'sending';
+  tap.sentAt = Date.now();
   render('sending');
   pollSoon(FAST_POLL_MS);
   timings.sent = performance.now();
@@ -648,17 +786,19 @@ async function finishTap(asking, prep) {
   }
   timings.included = performance.now();
   P.txSent = sent.hash;
-  if (P.tap) P.tap.hash = sent.hash;
+  if (P.tap === tap) tap.hash = sent.hash;
   watchOutcome(sent.hash);
 }
 
 /**
  * A link can name any hash, so a screen never takes one from it, and a failed read of a credential means little: a
  * link can name a junk id too, and a browser refuses that in the same words as a person closing the sheet. So an id
- * that has never made an assertion is dropped after one failed tap, and the next tap offers any passkey here.
+ * that has never made an assertion is dropped after one failed tap, and the next tap offers any passkey here. An id
+ * this browser made or has used is kept whatever the refusal: without it the sheet offers every passkey for this site,
+ * all named "test vault", to a person with a clock running.
  */
-function forgetUntrustedCredential(fast) {
-  if (!P.credential || (P.credentialTrusted && !fast)) return false;
+function forgetUntrustedCredential() {
+  if (!P.credential || P.credentialTrusted) return false;
   P.credential = null;
   P.credentialTrusted = false;
   saveFragment({ c: null });
@@ -669,11 +809,16 @@ function onTapFailed(err) {
   P.tap = null;
   P.hang = false;
   if (err instanceof PasskeyFailed) {
-    const dropped = err.kind === 'blocked' || err.kind === 'dismissed' ? forgetUntrustedCredential(err.kind === 'blocked') : false;
-    if (dropped && err.kind === 'blocked') P.notice = { say: 'Not cancelled. No passkey sheet came up, so the passkey this link names may not be on this phone. Tap Cancel to try any passkey here.', words: null };
+    const dropped = err.kind === 'blocked' || err.kind === 'dismissed' ? forgetUntrustedCredential() : false;
+    // An id only a link named, refused at once: the next tap already offers any passkey here. Only what holds whether
+    // there was no sheet, no passkey or a sheet shut at once, and the in-app line makes room as after a later refusal.
+    if (dropped && err.kind === 'blocked') P.notice = { say: 'Not cancelled. The passkey did not sign.', words: null, inAppAside: true };
     else if (err.kind === 'blocked') P.blocked = true;
     else if (err.kind === 'wrong_site') P.rpBad = true;
-    else if (err.kind === 'dismissed') P.notice = { say: 'Not cancelled. The sheet closed.', words: null, line: P.credential ? null : 'If it offered no passkey, this phone doesn\'t hold this vault\'s.' };
+    // A sheet a person closed, one that left no trace, or none at all: a trace (focus lost, a hidden page, a stalled
+    // frame) can come from something else, so only what holds in every case, and the hint for a sheet that did not come
+    // stays.
+    else if (err.kind === 'dismissed') P.notice = { say: 'Not cancelled. The passkey did not sign.', words: null, inAppAside: true };
     else {
       logRaw('the passkey', rawWords(err));
       P.notice = { warn: true, say: `Not cancelled. ${passkeyErrorWords(err.kind)}`, words: null };
@@ -696,11 +841,21 @@ function onRelayRefused(err, signed = null) {
   P.txSent = null;
   logRaw('the relay', rawWords(err));
   if (err instanceof RelayRefused) {
-    if (signed && relayRefusedIt(err.code)) P.signed = signed;
+    // relay_down is a send with no answer from the relay (no connection, 20 s with nothing, or a page that is not the
+    // relay's JSON): the cancel may have gone out all the same, so nothing on the screen may say it did not.
+    const unanswered = err.code === 'relay_down';
+    // Any code but a refusal before the relay's sender signed (relaySentNothing) can come after it put the cancel out: a
+    // resend whose first send landed unseen, then a stale nonce, a node, the state store or the relay's own code that
+    // failed. The relay answered, and says nothing of whether the cancel went.
+    const erred = !unanswered && !relaySentNothing(err.code);
+    if (signed && relayRefusedIt(err.code)) P.signed = { ...signed, unsure: unanswered || erred };
     if (err.code === 'not_this_relays') P.notOurs = true;
-    if (err.code === 'relay_down') P.relay = { ...P.relay, reachable: false, owner: { up: false, why: 'relay_down' } };
+    if (unanswered) P.relay = { ...P.relay, reachable: false, cancelUnanswered: Boolean(signed), owner: { up: false, why: 'relay_down' } };
+    // Not "Not cancelled": the line under it, for the signed cancel this page keeps, says only "If the relay didn't send".
+    else if (erred) P.notice = { warn: true, say: relayWords(err), words: null };
     else if (err.code === 'daily_ceiling') P.relay = { ...P.relay, owner: { up: false, why: 'daily_ceiling', resets_at: err.resetsAt } };
-    else if (err.code === 'rate_limited') P.notice = { warn: true, say: `Not cancelled. Too many tries on this vault. Wait ${err.retryAfterS ?? 10} s and tap again.`, words: null };
+    // The relay's limits on cancels are per vault, and also one allowance for calls it could not check, shared by all.
+    else if (err.code === 'rate_limited') P.notice = { warn: true, say: `Not cancelled. Too many tries through the relay. Wait ${waitWords(err.retryAfterS ?? 10)} and tap again.`, words: null };
     // The screen that follows says this one in its own headline, so the relay's sentence would say it twice.
     else if (SAID_BY_THE_SCREEN.has(err.code)) P.notice = { warn: true, say: 'Not cancelled.', words: null };
     else P.notice = { warn: true, say: `Not cancelled. ${relayWords(err)}`, words: null };
@@ -770,9 +925,10 @@ function frame() {
   face.setFuse(c.fuse);
 }
 
+// relay_down is worded from what this page saw (relayDownWords). relay_owner_down is a status the relay answered, with
+// its cancel side down and no reason given.
 const NO_BUTTON_WORDS = {
-  relay_down: 'The relay is down, so this page can\'t send a cancel.',
-  relay_owner_down: 'The relay is down, so this page can\'t send a cancel.',
+  relay_owner_down: 'The relay says it can\'t send a cancel right now, so this page can\'t send one.',
   rpc_down: 'The relay can\'t reach NEAR right now, so this page can\'t send a cancel.',
   owner_key_low: 'The relay\'s key can\'t pay for a cancel right now, so this page can\'t send one.',
   owner_key_missing: 'The relay\'s key can\'t pay for a cancel right now, so this page can\'t send one.',
@@ -795,7 +951,7 @@ function ownCancelNodes() {
   const held = heldSigned();
   if (!held) return null;
   return [
-    h('p', { class: 'small', id: 'own-path' }, partNodes(ownCancelParts({ expiresAt: held.expiresAt, vaultHex: P.v }))),
+    h('p', { class: 'small', id: 'own-path' }, partNodes(ownCancelParts({ expiresAt: held.expiresAt, vaultHex: P.v, unsure: held.unsure }))),
     h('button', { class: 'go quiet', type: 'button', id: 'save-cancel', onclick: saveSigned }, 'Save the signed cancel'),
   ];
 }
@@ -821,8 +977,21 @@ function noButtonWords() {
   const { why } = P.button;
   const problem = passkeyState().problem;
   if (why === 'no_passkey_here' && problem) return problemWords(problem) ?? NO_BUTTON_WORDS.no_passkey_here;
+  // No answer is worded from what this page saw. A relay that answered and gave this as its own reason said only that
+  // its cancel side is down, which relay_owner_down says.
+  if (why === 'relay_down') return P.relay.reachable ? NO_BUTTON_WORDS.relay_owner_down : relayDownWords(P.relay);
   // Any other reason the relay gives, as its sentence and never its code.
-  return NO_BUTTON_WORDS[why] ?? `${relayWords({ code: why }).replace(/\.$/, '')}, so this page can't send a cancel.`;
+  return NO_BUTTON_WORDS[why] ?? `${relayClause(why)}, so this page can't send a cancel.`;
+}
+
+/**
+ * No Cancel because the relay's status could not be read, from what this page saw. A cancel this page sent with no
+ * answer may have gone out, so until the status is read again that is what the page says; the status is read again
+ * every STATUS_DOWN_MS while it can't be read (tick), so "Trying again" holds.
+ */
+function relayDownWords(relay) {
+  if (relay.cancelUnanswered) return 'The relay did not answer, so this page can\'t tell whether the cancel went out.';
+  return `${unreadRelayWords(relay)}, so this page can't send a cancel. Trying again.`;
 }
 
 function resetLine() {
@@ -864,7 +1033,7 @@ function amountLines(request) {
 function coinWords(request) {
   const name = ctx.config.labels.bitcoin;
   const check = coinCheck(request, P.coinFacts);
-  if (check.unknown) return `${name} doesn't know ${request.inputs.length > 1 ? 'these coins' : 'this coin'}. This amount is only what the request claims.`;
+  if (check.unknown) return `This page can't find ${request.inputs.length > 1 ? 'these coins' : 'this coin'} on ${name}. This amount is only what the request claims.`;
   if (check.differs) return `${name} says ${request.inputs.length > 1 ? 'these coins hold' : 'this coin holds'} ${satsText(check.real)}, not what the request claims.`;
   if (P.coinsDown) return `Can't check this amount with ${name} right now.`;
   return null;
@@ -886,21 +1055,28 @@ function noticeNodes() {
   const out = [];
   if (nodeLooksStuck()) out.push(h('p', { class: 'notice warn', id: 'stale-node' }, 'The node this page reads looks stuck, so this may be out of date.'));
   if (P.alreadySigned) out.push(h('p', { class: 'small', id: 'also-signed' }, `${P.alreadySigned} other ${P.alreadySigned === 1 ? 'request has' : 'requests have'} already been signed.`));
-  if (needsThatPhone()) out.push(h('p', { class: 'small', id: 'that-phone' }, 'Only the phone holding this vault\'s passkey can cancel.'));
+  if (needsThatPhone()) out.push(h('p', { class: 'small', id: 'that-phone' }, 'Cancel here works only with this vault\'s passkey.'));
   if (P.readFails >= READ_FAILS_TO_SAY) {
     out.push(h('p', { class: 'notice warn', id: 'read-down' }, 'Can\'t read the NEAR contract right now.'));
   }
   // A notice the idle screen set is said only there: an answer that lands after a request came up stays off its screen.
   if (P.notice && (!P.notice.screen || P.notice.screen === P.screen)) {
     out.push(h('p', { class: `notice${P.notice.warn ? ' warn' : ''}`, id: 'notice' }, P.notice.say));
-    if (P.notice.line) out.push(h('p', { class: 'small' }, P.notice.line));
     if (P.notice.words) out.push(h('p', { class: 'words', id: 'verbatim' }, P.notice.words));
   }
-  if (P.hang) out.push(h('p', { class: 'notice warn', id: 'hang' }, 'No passkey sheet yet? This browser may be blocking passkeys. Open this page in Safari or Chrome.'));
+  if (P.hang) out.push(h('p', { class: 'notice warn', id: 'hang' }, hangWords(ctx.sense, P.tap?.own ? 'the button' : 'Cancel')));
   if (P.sheetNote) out.push(h('p', { class: 'small', id: 'sheet-note' }, P.sheetNote));
+  // While the line about a sheet that has not shown is up, it is the one thing to read, and the button under it must
+  // stay on a small screen: the hint comes back with the next screen, and inside an app that line says to leave it.
+  const aside = P.hang;
+  const hint = aside ? null : hintNow();
+  if (hint) out.push(h('p', { class: 'small', id: 'platform-hint' }, hint));
   if (P.lastKnown?.hold_active) out.push(h('p', { class: 'notice', id: 'hold' }, `Held: ${P.lastKnown.assess_reason}`));
-  if (P.vault && (P.vault.backup_eligible || P.vault.backup_state)) out.push(h('p', { class: 'small', id: 'synced' }, 'This passkey can sync, so your other devices can use it too.'));
-  const elsewhere = openElsewhere(ctx.sense);
+  if (P.vault && (P.vault.backup_eligible || P.vault.backup_state)) out.push(h('p', { class: 'small', id: 'synced' }, 'This passkey can sync, so your other devices may be able to use it too.'));
+  // After a refusal with no trace of a sheet the hint stays, as a sheet may not have come; where the hint is up, the
+  // in-app line, said before the tap and back with the next one, makes room for the notice, so Cancel stays on a small
+  // screen. With no hint there is room, and inside an app it is the line to read.
+  const elsewhere = aside || (P.notice?.inAppAside === true && hint) ? null : openElsewhere(ctx.sense);
   if (elsewhere) out.push(h('p', { class: 'small', id: 'in-app' }, elsewhere));
   if (ctx.config.softPasskey) out.push(h('p', { class: 'small' }, ctx.config.softPasskeyLabel ?? 'Signed by a test key in this browser.'));
   return out;
@@ -1032,18 +1208,25 @@ const drawers = {
     // The relay is the only thing in the way, and this phone holds the passkey: sign it here, send it from any account.
     const signHere = !heldSigned() && relayIsWhy(P.button.why) && passkeyState().canAssert && passkeyState().rpMatches && ctx.instance.origins.includes(location.origin);
     return [
-      // The notice leads into the headline, so it sits right above it and not under the clock.
-      askedBlock(P.lastKnown), clockBlock(P.rs), h('div', { class: 'grow' }), noticeNodes(),
+      // The notice leads into the headline, so it sits right above it and not under the clock. After a passkey call that
+      // came back at once, the way on is the button under the headline, so the lines on what to check go under it, where
+      // a small screen still has room for them, and the button stays on it.
+      askedBlock(P.lastKnown), clockBlock(P.rs), h('div', { class: 'grow' }), retry ? null : noticeNodes(),
       h('p', { class: 'say', id: 'why', 'data-why': P.button.why }, words),
+      retry, retry ? noticeNodes() : null,
       resetLine() ? h('p', { class: 'line' }, resetLine()) : null,
       ownCancelNodes(),
       showTool && !heldSigned() ? h('p', { class: 'small', id: 'tool' }, partNodes(relayIsWhy(P.button.why) ? OWN_PATH_PARTS : RECOVERY_PATH_PARTS)) : null,
       signHere ? h('button', { class: 'go quiet', type: 'button', id: 'sign-own', onclick: () => onCancelTap(true) }, 'Sign a cancel to send yourself') : null,
-      retry,
     ];
   },
   tapped() {
-    return [askedBlock(P.lastKnown), h('div', { class: 'grow' }), clockBlock(P.rs), noticeNodes(), h('div', { class: 'grow' }), h('div', { class: 'slot', id: 'waiting' }, 'Waiting for your passkey')];
+    // Once the page has said no sheet came, the button is back in the slot's place: its tap ends the call that is out and
+    // asks again. Until then nothing here can be tapped, so a second tap never lands on a sheet that is on its way.
+    const again = !P.hang ? null : P.tap?.own
+      ? h('button', { class: 'go quiet', type: 'button', id: 'sign-own', 'data-again': '1', onclick: onCancelAgain }, 'Sign a cancel to send yourself')
+      : h('button', { id: 'cancel', type: 'button', 'data-again': '1', onclick: onCancelAgain }, 'Cancel');
+    return [askedBlock(P.lastKnown), h('div', { class: 'grow' }), clockBlock(P.rs), noticeNodes(), h('div', { class: 'grow' }), again ?? h('div', { class: 'slot', id: 'waiting' }, 'Waiting for your passkey')];
   },
   sending() {
     return [askedBlock(P.lastKnown), h('div', { class: 'grow' }), clockBlock(P.rs), noticeNodes(), h('div', { class: 'grow' }), h('div', { class: 'slot', id: 'sending' }, 'Sending')];
@@ -1079,7 +1262,7 @@ const drawers = {
     // Set as the request screen sets it: the label, then the address whole in mono, so one address reads one way.
     if (P.lastKnown) out.push(h('div', { class: 'label' }, 'to'), h('div', { class: 'addr', id: 'too-late-to' }, destination(P.lastKnown, P.vault)));
     if (P.tooLateTxid) out.push(hashBlock(btcTxLabel(ctx.config, P.tooLateTxid), P.tooLateTxid, btcTxLink(ctx.config, P.tooLateTxid)));
-    else if (P.tooLateUnsent) out.push(h('p', { class: 'line dim', id: 'too-late-unsent' }, `No ${ctx.config.labels.bitcoin} node has that transaction yet. Anyone can send it.`));
+    else if (P.tooLateUnsent) out.push(h('p', { class: 'line dim', id: 'too-late-unsent' }, `This page can't find that transaction on ${ctx.config.labels.bitcoin} yet. Anyone can send it.`));
     else if (P.lastKnown) out.push(h('p', { class: 'line dim' }, signing ? 'Waiting for the signature.' : 'Reading the transaction.'));
     if (P.alreadySigned) out.push(h('p', { class: 'small', id: 'also-signed' }, `${P.alreadySigned} other ${P.alreadySigned === 1 ? 'request has' : 'requests have'} already been signed.`));
     return out;
@@ -1088,10 +1271,10 @@ const drawers = {
     return [h('p', { class: 'say big', id: 'expired' }, 'This request expired.'), h('p', { class: 'line dim' }, 'Nobody signed it, and nobody can now. Its coin stays where it was.')];
   },
   wrong_vault() {
-    return [h('p', { class: 'say big' }, 'No vault with this id on this contract.'), h('p', { class: 'words' }, `${ctx.config.labels.near} contract ${ctx.config.contract}`)];
+    return [h('p', { class: 'say big' }, 'This page can\'t find a vault with this id on this contract.'), h('p', { class: 'words' }, `${ctx.config.labels.near} contract ${ctx.config.contract}`)];
   },
   inactive() {
-    return [h('p', { class: 'say big' }, 'This vault is not active yet.'), h('p', { class: 'line dim' }, 'The contract is still checking its second key.')];
+    return [h('p', { class: 'say big' }, 'This vault is not active yet.'), h('p', { class: 'line dim' }, 'The contract has not checked its second key yet.')];
   },
   read_down() {
     return [h('p', { class: 'say big' }, 'Can\'t read the NEAR contract right now.')];
@@ -1106,27 +1289,54 @@ const drawers = {
     out.push(h('p', { class: 'say big', id: 'nothing' }, 'Nothing is waiting.'));
     out.push(noticeNodes(), h('div', { class: 'grow' }));
     if (P.fundedTxid) out.push(hashBlock(btcTxLabel(ctx.config, P.fundedTxid), P.fundedTxid, btcTxLink(ctx.config, P.fundedTxid)));
-    if (P.relay.funds?.up && !P.fundedTxid && P.balance === 0) out.push(h('button', { class: 'go', type: 'button', id: 'fund', onclick: onFund }, 'Get test coins'));
+    // A vault this browser's passkey is for, on a page that no longer holds its spend key: a reload, or a tab the phone
+    // dropped and loaded again. A coin sent to it now could only be cancelled over, never asked for, so none is offered.
+    const keyGone = !P.seed && P.credentialTrusted;
+    if (!P.fundedTxid && P.balance === 0 && !keyGone) {
+      if (P.relay.funds?.up) out.push(h('button', { class: 'go', type: 'button', id: 'fund', onclick: onFund }, 'Get test coins'));
+      else out.push(h('p', { class: 'line', id: 'no-funds' }, `This page can't get a test coin from the relay right now.${resetWords(P.relay.funds?.why === 'daily_ceiling' ? P.relay.funds.resets_at : null)} A ${ctx.config.labels.bitcoin} coin you send to this address works too.`));
+    }
     if (P.seed) {
       out.push(h('button', { class: 'go quiet', type: 'button', id: 'thief-link', onclick: copyThiefLink }, 'Copy the thief link'));
       // This page's Cancel swaps in a K_s whose secret it drops (ensurePrep), so after it the coins leave only by the cold
       // key, and that key is in this file and nowhere else once the page closes. Said inside the button, in the room it
       // already has, so nothing on the screen moves.
       out.push(h('button', { class: 'go quiet two', type: 'button', id: 'recovery', onclick: downloadRecovery }, 'Recovery file', h('span', { class: 'sub', id: 'recovery-why' }, RECOVERY_WHY)));
+      out.push(h('p', { class: 'small', id: 'copy-now' }, 'Copy it now. A reload forgets the spend key.'));
+    } else if (keyGone) {
+      out.push(h('p', { class: 'small', id: 'no-seed' }, 'This page does not hold this vault\'s spend key (a reload forgets it), so it can\'t make a thief link. Cancel still works here. To try a theft, make a new test vault.'));
+      out.push(h('button', { class: 'go quiet', type: 'button', id: 'new-vault', onclick: () => { location.assign(location.pathname); } }, 'Make a new test vault'));
     }
     return out;
   },
 };
 
+/**
+ * The screen wake lock. Held while a clock runs. And on the idle screen of the page that holds a vault's spend key:
+ * that phone is put down while the thief's laptop is used, and it should not be dark and locked when the request lands.
+ * But not for ever: IDLE_AWAKE_MS after that screen came up or was last touched it is let go, and a phone left there
+ * sleeps. A tap on the page takes it again, and so does a request coming up, since its clock holds it.
+ */
+function keepAwake(id) {
+  if (id === 'idle' && P.screen !== 'idle') P.idleAwakeUntil = Date.now() + IDLE_AWAKE_MS;
+  const want = Boolean(P.rs?.clockRuns || P.rs?.cancellable || (id === 'idle' && P.seed && Date.now() < P.idleAwakeUntil));
+  if (want === P.awake) return;
+  P.awake = want;
+  if (want) ctx.awake.start();
+  else ctx.awake.stop();
+}
+
 function render(id, force = false) {
+  // Before the check below, which a screen that has not changed returns at: the idle screen's time can run out on it.
+  keepAwake(id);
   const asked = P.lastKnown && P.vault ? `${P.r}|${coinWords(P.lastKnown)}|${P.moreWaiting}|${P.alreadySigned}|${keyIsStopped()}|${needsThatPhone()}|${nodeLooksStuck()}|${P.txSent}|${P.tooLateUnsent}` : '';
-  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}|${heldSigned()?.expiresAt ?? ''}`;
+  const key = `${id}|${asked}|${JSON.stringify(P.notice)}|${P.hang}|${P.sheetNote}|${P.readFails >= READ_FAILS_TO_SAY}|${P.button?.why}|${P.lastKnown?.hold_active}|${P.lastKnown?.assess_reason}|${P.lastKnown?.unlock}|${P.relay?.owner?.why}|${P.blocked}|${P.rs?.kind}|${heldSigned()?.expiresAt ?? ''}|${hintNow() ? 1 : 0}|${P.relay?.funds?.up}|${P.relay?.funds?.resets_at}|${P.relay?.answered}|${P.relay?.code}|${P.relay?.cancelUnanswered}|${heldSigned()?.unsure}`;
   if (!force && key === P.renderKey) return;
   P.renderKey = key;
   P.screen = id;
   setState(id);
-  if (P.rs?.clockRuns || P.rs?.cancellable) ctx.awake.start();
-  else ctx.awake.stop();
+  // Asked again with each new drawing while it is wanted, as the page loses it whenever the browser lets it go.
+  if (P.awake) ctx.awake.start();
   show(drawers[id]());
   afterAttach();
 }
@@ -1134,57 +1344,114 @@ function render(id, force = false) {
 // ---------------------------------------------------------------- no vault, and making one
 
 function drawNoVault(words = null) {
+  P.noVault = { words };
+  P.making = null;
   setState('no_vault');
   const problem = passkeyProblem(ctx.sense) ?? (ctx.credentials ? null : 'no_webauthn');
   const can = !problem && P.relay.general?.up;
   const elsewhere = openElsewhere(ctx.sense);
+  const hint = hintNow();
   show(
+    // Inside an app's own browser the first thing to know is to leave it, so that comes before the page's own headline.
+    elsewhere ? h('p', { class: 'notice warn', id: 'in-app' }, elsewhere) : null,
     h('p', { class: 'say big' }, 'A cancel button for test Bitcoin.'),
     h('p', { class: 'line' }, 'Open the link from a vault, or make one here.'),
     can ? null : h('p', { class: 'notice warn', id: 'why', 'data-why': problem ?? P.relay.general?.why ?? 'relay_down' }, problem ? problemWords(problem) : generalDownWords()),
-    elsewhere ? h('p', { class: 'small', id: 'in-app' }, elsewhere) : null,
     words ? h('p', { class: 'notice warn', id: 'made-why' }, words) : null,
     h('div', { class: 'grow' }),
-    can ? h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault') : null,
+    can ? beforeSheet(BEFORE_MAKE(ctx.config.rpId)) : null,
+    can ? makeButton() : null,
+    // Under the button, so the button is where it is on any other phone: the hint is for after a tap that brought no sheet.
+    can && hint ? h('p', { class: 'small', id: 'platform-hint' }, hint) : null,
     h('p', { class: 'foot', id: 'foot', 'data-network': ctx.instance?.network ?? '' }, `Test coins only. The address starts with ${addressPrefix(ctx.instance?.network) ?? 'tb1'}. This page makes your spend key and your cold key and holds them while it is open, so a changed page could take both. ${upgradeWords(P.codeKeys)} The signing network alone can refuse, not take.`),
   );
+  relayAgainLater();
 }
+
+/** A status the page could not read, as only what it saw (unreadRelayWords). The page is asking again in every case. */
+const unreadStatusWords = (relay) => `${unreadRelayWords(relay)}. Trying again.`;
 
 function generalDownWords() {
+  if (!P.relay.reachable) return unreadStatusWords(P.relay);
   const why = P.relay.general?.why;
-  if (why === 'daily_ceiling') return 'The relay hit today\'s limit, so this page can\'t make a vault right now.';
+  if (why === 'daily_ceiling') return `The relay hit today's limit, so this page can't make a vault right now.${resetWords(P.relay.general.resets_at)}`;
   if (why === 'relay_reserve') return 'The relay is keeping what it has left for cancels, so this page can\'t make a vault right now.';
-  return 'The relay is down, so this page can\'t make a vault right now.';
+  // The relay answered, so it is not down: its own reason, or with none (it never sends none) only that it can't.
+  if (!why || why === 'relay_down') return 'The relay says it can\'t make a vault right now.';
+  return `${relayClause(why)}, so this page can't make a vault.`;
 }
 
-function creating(lines, button = null, words = null) {
+/**
+ * The screen while a vault is being made. `note` is a sentence about the step just tried; `before` is the line over a
+ * button that opens a sheet, saying what the device is about to ask.
+ */
+function creating(lines, button = null, { note = null, before = null } = {}) {
+  P.noVault = null;
+  clearTimeout(P.relayTimer);
   setState('creating');
   show(
     h('p', { class: 'say big' }, 'Making your test vault'),
-    lines.map((text) => h('p', { class: 'line' }, text)),
-    words ? h('p', { class: 'words', id: 'verbatim' }, words) : null,
-    P.hangMaking ? h('p', { class: 'notice warn', id: 'hang' }, 'No passkey sheet yet? This browser may be blocking passkeys. Open this page in Safari or Chrome.') : null,
+    lines.map((text) => h('p', { class: 'line made' }, text)),
+    note ? h('p', { class: 'notice', id: 'made-note' }, note) : null,
+    P.hangMaking ? h('p', { class: 'notice warn', id: 'hang' }, hangWords(ctx.sense, P.hangMaking)) : null,
     h('div', { class: 'grow' }),
+    before ? beforeSheet(before) : null,
     button,
   );
 }
 
-function onMakeVault() {
-  P.hangMaking = false;
-  const asking = askNewPasskey(ctx, { label: 'test vault', onHang: () => { P.hangMaking = true; creating(['Waiting for your passkey']); } });
-  creating(['Waiting for your passkey']);
-  continueMake(asking);
+/** The line over a button that opens a passkey sheet. A local run that signs with a test key in the browser has no sheet. */
+const beforeSheet = (text) => (ctx.config.softPasskey ? null : h('p', { class: 'small', id: 'before-sheet' }, text));
+
+const WAITING_FOR_PASSKEY = 'Waiting for your passkey';
+const WORKING = 'Working: a small proof of work.';
+const makeButton = () => h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault');
+
+/**
+ * One passkey call of a vault in the making, and the only one whose answer counts. A tap that asks again ends the call
+ * before it: that call may be one that never settles, and a browser takes one passkey request at a time.
+ */
+function newMakingCall() {
+  const old = P.making;
+  const call = { abort: new AbortController(), answered: false };
+  P.making = call;
+  if (old && !old.answered) old.abort.abort();
+  P.hangMaking = null;
+  return call;
 }
 
-async function continueMake(asking) {
+/** The first tap. Nothing here may wait before askNewPasskey: Safari gives the sheet only to a call made in the tap. */
+function onMakeVault() {
+  const call = newMakingCall();
+  const waiting = () => creating([WAITING_FOR_PASSKEY], P.hangMaking ? makeButton() : null);
+  const asking = askNewPasskey(ctx, {
+    label: 'test vault',
+    signal: call.abort.signal,
+    onHang: () => {
+      if (P.making !== call) return;
+      P.hangMaking = 'Make a test vault';
+      waiting();
+    },
+  });
+  waiting();
+  continueMake(asking, call);
+}
+
+async function continueMake(asking, call) {
   const lines = [];
   let passkey;
   try {
     ({ passkey } = await asking);
   } catch (err) {
-    makeFailed(err);
+    call.answered = true;
+    if (P.making === call) makeFailed(err);
     return;
   }
+  call.answered = true;
+  // A call this page gave up on, answering late: a newer tap is making the vault.
+  if (P.making !== call) return;
+  P.hangMaking = null;
+  passkeyAnswered();
   lines.push('Passkey made.');
   if (passkey.flags?.backupEligible) lines.push('It can sync to your other devices.');
   creating(lines);
@@ -1192,69 +1459,162 @@ async function continueMake(asking) {
   try {
     prepared = await prepareVault(ctx, passkey);
   } catch (err) {
-    logRaw('making a vault', rawWords(err));
-    drawNoVault(`Nothing was made. ${failureWords(err)}`);
+    if (P.making === call) makeFailed(err);
     return;
   }
+  if (P.making !== call) return;
   lines.push('Second key read from the signer.');
-  creating(lines, h('button', {
-    class: 'go',
-    type: 'button',
-    id: 'confirm',
-    onclick: () => {
-      P.hangMaking = false;
-      const confirming = confirmVault(ctx, prepared, { guard: P.relay.relayAccount, onHang: () => { P.hangMaking = true; creating(lines); } });
-      creating(lines);
-      finishMake(confirming, prepared, lines);
-    },
-  }, 'Confirm with your passkey'));
+  drawConfirm(prepared, lines);
 }
 
-async function finishMake(confirming, prepared, lines) {
+const confirmButton = (prepared, lines) => h('button', { class: 'go', type: 'button', id: 'confirm', onclick: () => onConfirm(prepared, lines) }, 'Confirm with your passkey');
+
+/** The second tap's screen. Drawn again, with the same keys, when its sheet closed or never came: nothing was sent. */
+function drawConfirm(prepared, lines, note = null) {
+  creating(lines, confirmButton(prepared, lines), { note, before: BEFORE_CONFIRM });
+}
+
+/**
+ * The second tap. confirmVault signs with the four keys this page made and then asks the passkey, all before it first
+ * waits, so the sheet is asked for inside this tap. Nothing here may wait before it.
+ */
+function onConfirm(prepared, lines) {
+  const call = newMakingCall();
+  const waiting = () => creating(lines, P.hangMaking ? confirmButton(prepared, lines) : null);
+  const confirming = confirmVault(ctx, prepared, {
+    guard: P.relay.relayAccount,
+    signal: call.abort.signal,
+    onHang: () => {
+      if (P.making !== call) return;
+      P.hangMaking = 'Confirm';
+      waiting();
+    },
+  });
+  waiting();
+  finishMake(confirming, prepared, lines, call);
+}
+
+async function finishMake(confirming, prepared, lines, call) {
+  let args;
   try {
-    const { args } = await confirming;
-    lines.push('Signed.');
-    creating(lines);
-    const made = await sendVault(ctx, prepared, args, {
+    ({ args } = await confirming);
+  } catch (err) {
+    call.answered = true;
+    if (P.making !== call) return;
+    P.hangMaking = null;
+    // The passkey from the first tap and the keys made for it still stand, and nothing has gone to the relay: the same
+    // screen and the same button, not a second passkey. A sheet closed, one that left no trace, or none at all look alike
+    // to the page, so the words are only what holds in each.
+    if (err instanceof PasskeyFailed && (err.kind === 'dismissed' || err.kind === 'blocked')) {
+      if (err.kind === 'blocked') logRaw('the passkey', rawWords(err));
+      drawConfirm(prepared, lines, 'The passkey did not sign. Tap Confirm to try again.');
+      return;
+    }
+    makeFailed(err);
+    return;
+  }
+  call.answered = true;
+  if (P.making !== call) return;
+  P.hangMaking = null;
+  passkeyAnswered();
+  const said = [...lines, 'Signed.'];
+  creating(said);
+  let made;
+  try {
+    made = await sendVault(ctx, prepared, args, {
       powBits: P.relay.powBits,
       onLine: (step, hash) => {
-        if (step === 'work') lines.push('Proof of work done.');
-        if (step === 'sent') lines.push(nearTxLabel(ctx.config, hash));
-        creating(lines);
+        // The proof of work is the one step with no answer to wait for, and on a slow phone it is not short.
+        if (step === 'working') said.push(WORKING);
+        if (step === 'work') said[said.includes(WORKING) ? said.indexOf(WORKING) : said.length] = 'Proof of work done.';
+        if (step === 'sent') said.push(nearTxLabel(ctx.config, hash));
+        creating(said);
       },
     });
-    P.seed = prepared.keys.seed;
-    P.cold = prepared.keys.cold;
-    P.credential = prepared.passkey.credentialId;
-    P.credentialTrusted = true;
-    rememberCredential(made.vault.id, credentialB64());
-    P.fragment = { refused: [], v: made.vault.id, c: credentialB64() };
-    writeFragment(P.fragment);
-    watchVault(made.vault.id);
   } catch (err) {
-    makeFailed(err);
+    if (err?.sentHash) drawSent(prepared, said, err.sentHash);
+    else makeFailed(err);
+    return;
   }
+  vaultMade(prepared, made);
 }
 
+/** The contract reads the vault active: this page now holds its keys, and watches it. */
+function vaultMade(prepared, made) {
+  P.seed = prepared.keys.seed;
+  P.cold = prepared.keys.cold;
+  P.credential = prepared.passkey.credentialId;
+  P.credentialTrusted = true;
+  rememberCredential(made.vault.id, credentialB64());
+  P.fragment = { refused: [], v: made.vault.id, c: credentialB64() };
+  writeFragment(P.fragment);
+  watchVault(made.vault.id);
+}
+
+/**
+ * The relay sent the creation and the contract has not read the vault active in the time this page gives it. The vault
+ * may still come, and this page holds its keys, so it says what is true and reads again on a tap, with the hash on screen.
+ */
+function drawSent(prepared, lines, hash) {
+  creating(lines, h('button', { class: 'go', type: 'button', id: 'check-again', onclick: () => checkAgain(prepared, lines, hash) }, 'Check again'), { note: 'The vault was sent, but the contract does not read it active yet.' });
+}
+
+async function checkAgain(prepared, lines, hash) {
+  creating(lines, null, { note: 'Reading the contract again.' });
+  let made;
+  try {
+    made = await waitActive(ctx, prepared, hash);
+  } catch {
+    drawSent(prepared, lines, hash);
+    return;
+  }
+  vaultMade(prepared, made);
+}
+
+/** Why a vault was not made, in one sentence. The relay's hourly limit for one address gets its number and its way out. */
+function makeWhy(err) {
+  if (err instanceof RelayRefused && err.code === 'rate_limited' && err.retryAfterS >= 120) {
+    return `This network address has used its ${RELAY_METHODS.create_vault.perIpHour} vault tries for this hour. Wait ${waitWords(err.retryAfterS)}, or use another network.`;
+  }
+  return failureWords(err);
+}
+
+/**
+ * Why no vault was made, or that the page can't tell. Only "No vault was made": a failure at the first sheet can come
+ * after the browser saved a passkey (one whose key this page can't read), so "nothing was made" may not hold.
+ */
 function makeFailed(err) {
+  P.hangMaking = null;
+  P.making = null;
   if (err instanceof PasskeyFailed && err.kind === 'blocked') {
     P.blocked = true;
-    ctx.sense = { ...ctx.sense };
+    P.noVault = null;
     setState('no_vault');
     logRaw('the passkey', rawWords(err));
+    const hint = hintNow();
     show(
-      h('p', { class: 'say', id: 'why', 'data-why': 'webauthn_blocked' }, problemWords('webauthn_blocked')),
+      // No vault exists yet, so this is not the Cancel's sentence about a phone that lacks a vault's passkey.
+      h('p', { class: 'say', id: 'why', 'data-why': 'webauthn_blocked' }, 'No passkey came back, so nothing was made. If you opened this inside an app, open it in Safari or Chrome.'),
+      hint ? h('p', { class: 'small', id: 'platform-hint' }, hint) : null,
       h('div', { class: 'grow' }),
       h('button', { class: 'go quiet', type: 'button', id: 'retry-passkey', onclick: onMakeVault }, 'Try the passkey again'),
     );
     return;
   }
   if (err instanceof PasskeyFailed && err.kind === 'dismissed') {
-    drawNoVault('The sheet closed. Nothing was made.');
+    // A trace of a sheet can come from something else, and a sheet can leave none: no passkey came back holds either way.
+    drawNoVault('No passkey came back, so nothing was made.');
     return;
   }
   logRaw('making a vault', rawWords(err));
-  drawNoVault(`Nothing was made. ${failureWords(err)}`);
+  // A send that got no answer may still have gone out, so the page does not say what it has not read. relay_down is any
+  // answer that is not the relay's own (none, the page's own 20 s, a page or JSON with no code: a proxy's), and any code
+  // but a refusal before the relay's sender signed (relaySentNothing) can come after it sent the creation.
+  if (err instanceof RelayRefused && !relaySentNothing(err.code)) {
+    drawNoVault(`${err.code === 'relay_down' ? 'The relay did not answer' : relayClause(err.code)}, so this page can't tell whether a vault was made.`);
+    return;
+  }
+  drawNoVault(`No vault was made. ${makeWhy(err)}`);
 }
 
 async function onFund() {
@@ -1271,11 +1631,38 @@ async function onFund() {
     drawIdleAgain();
   } catch (err) {
     logRaw('test coins', rawWords(err));
-    P.notice = { warn: true, say: `No coins sent. ${failureWords(err)}`, words: null, screen: 'idle' };
+    // Only a refusal before the relay sent anything says no coin was sent. With no answer, or a code it can give after
+    // the coin went out, the page can't tell. A short rate_limited is also the relay's answer while another ask for this
+    // vault holds its claim (funds.mjs, undo-state funded()), and that ask's coin may be on its way; only the hourly
+    // limit (over 120 s) is charged with no claim at all. Whatever the answer, the balance is read again at once: a coin
+    // it reads ends the notice.
+    const unsure = err instanceof RelayRefused && (!FUND_UNSENT.has(err.code) || (err.code === 'rate_limited' && !(err.retryAfterS > 120)));
+    P.notice = { warn: true, say: unsure ? `${err.code === 'relay_down' ? 'The relay did not answer' : relayClause(err.code)}, so this page can't tell whether a coin was sent.` : `No coins sent. ${fundWhy(err)}`, words: null, screen: 'idle', fund: true };
+    P.balanceAt = 0;
     drawIdleAgain();
   } finally {
     P.funding = false;
   }
+}
+
+// The codes /api/funds gives only before its coin goes out (funds.mjs): its checks, its limits, an empty dispenser, and a
+// node's refusal of the funding. state_store_down, esplora_down and relay_error can come after the broadcast.
+const FUND_UNSENT = new Set(['bad_origin', 'bad_request', 'relay_not_configured', 'pow_required', 'pow_bad', 'would_refuse', 'rpc_down', 'rate_limited', 'daily_ceiling', 'dispenser_empty', 'tx_refused']);
+
+/**
+ * Why no coin came, in one sentence. The dispenser's limits are the relay's, not the vault's: where one of them is the
+ * reason, the sentence says when it ends and that a coin from anywhere else does the same job.
+ */
+function fundWhy(err) {
+  if (!(err instanceof RelayRefused)) return failureWords(err);
+  const own = ` A ${ctx.config.labels.bitcoin} coin you send to this address works too.`;
+  // A wait of minutes is the hourly limit for one address; the relay's shorter waits are a coin that is still going out.
+  if (err.code === 'rate_limited' && err.retryAfterS > 120) return `This network address has used its test coin tries for this hour. Wait ${waitWords(err.retryAfterS)}, or use another network.${own}`;
+  if (err.code === 'daily_ceiling') return `${relayWords(err)}${resetWords(err.resetsAt)}${own}`;
+  if (err.code === 'dispenser_empty') return `${relayWords(err)}${own}`;
+  // The relay's /api/funds sends a coin on Bitcoin: its tx_refused is a node's refusal of that, not the NEAR contract's.
+  if (err.code === 'tx_refused') return `A ${ctx.config.labels.bitcoin} node refused the relay's transaction.${own}`;
+  return failureWords(err);
 }
 
 async function copyThiefLink() {

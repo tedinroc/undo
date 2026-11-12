@@ -8,7 +8,9 @@
   --mono: ui-monospace, "SF Mono", Menlo, "Roboto Mono", monospace;
   --gutter: 16px;
 }
-html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* The column never scrolls, so a downward drag at its top is the browser's pull to refresh, and a reload forgets the
+   spend key. This stops it where a browser lets a page say so (Chrome on Android); Safari on iOS does not. */
+html, body { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; overscroll-behavior-y: contain; }
 body { display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh;
   padding: max(12px, env(safe-area-inset-top)) max(var(--gutter), env(safe-area-inset-right)) max(14px, env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left)); }
 a { color: inherit; }
@@ -62,6 +64,9 @@ a { color: inherit; }
 /* Second to Cancel on its screen, so it takes less of it. */
 #save-cancel { font-size: 18px; min-height: 44px; padding: 10px 12px; }
 .small + .go { margin-top: 10px; }
+.go + .small { margin-top: 8px; }
+/* One line on a 320px phone, so it is on the screen with the three buttons above it. */
+#copy-now { font-size: 13px; }
 #cancel, .slot { display: flex; align-items: center; justify-content: center; width: 100%; height: clamp(116px, 22vh, 190px); flex: none; border-radius: 20px; }
 #cancel { border: 0; background: var(--red); color: var(--white); font: 800 68px/1 var(--sans); letter-spacing: -0.02em; padding: 0;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-user-select: none; user-select: none; }
@@ -103,6 +108,13 @@ a.hash { text-decoration: underline; text-decoration-thickness: 1px; text-underl
   .fee { display: none; }
 }
 
+/* ---- a short phone: the idle screen's line about the dispenser, and the steps of a vault in the making, take less of
+   it, so Recovery file and Check again under them stay on it. Neither is on the request or the CANCELLED screen. */
+@media (max-height: 620px) {
+  #no-funds { font-size: 15px; margin: 6px 0; }
+  .line.made { font-size: 16px; margin: 4px 0; }
+}
+
 /* ---- a short screen with a browser's bars: Cancel stays on it, whatever else has something to say */
 @media (max-height: 700px) {
   #cancel, .slot { height: 104px; }
@@ -137,3 +149,11 @@ button.link { background: none; border: 0; padding: 6px 0; color: var(--dim); fo
 /* ---- after the stamp has held its frame, the digits move up to where a reload draws them */
 .clockwrap.settling { transition: margin-top 0.45s cubic-bezier(0.2, 0.8, 0.2, 1); }
 @media (prefers-reduced-motion: reduce) { .clockwrap.settling { transition: none; } }
+
+/* ---- a laptop or a tablet: the same phone column, in the middle, not stretched to the window. The stamp and the
+   clock are sized by the screen's width on a phone; here they are sized for this column (15% and 36% of 480px). */
+@media (min-width: 700px) {
+  body { max-width: 480px; margin: 0 auto; }
+  .stamp { font-size: 72px; }
+  .clock { font-size: 172px; }
+}

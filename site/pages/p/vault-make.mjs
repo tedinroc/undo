@@ -6,7 +6,12 @@ import { askAssertion } from './passkey-ask.mjs';
 
 const CSV = 6;
 const CREATE_WINDOW_MS = 30 * 60_000;
-const ACTIVE_WAIT_MS = 45_000;
+// How long the page reads for a vault it sent, in time it was awake. A phone that sleeps or leaves the browser right
+// after Confirm stops this page's timers, so the wall clock would spend the whole wait while nothing was read: each
+// step counts for no more than STEP_COUNTS_MS, however long the clock says it took.
+export const ACTIVE_WAIT_MS = 45_000;
+export const STEP_COUNTS_MS = 8000;
+const READ_EVERY_MS = 600;
 
 export const chainNowOf = (skew) => {
   const s = skew.sample();
@@ -26,7 +31,7 @@ export async function prepareVault(ctx, passkey, { keys = newVaultKeys() } = {})
  * The second tap. Everything before the sheet is computed synchronously. Resolves to { args, highS } once the
  * passkey has signed the creation digest.
  */
-export function confirmVault(ctx, prepared, { guard, onHang = null }) {
+export function confirmVault(ctx, prepared, { guard, onHang = null, signal = null }) {
   const { config, instance, skew } = ctx;
   let highS = null;
   const expiresAt = Math.floor(chainNowOf(skew)) + CREATE_WINDOW_MS;
@@ -41,7 +46,7 @@ export function confirmVault(ctx, prepared, { guard, onHang = null }) {
     csv: CSV,
     expiresAt,
     assert: async (digest) => {
-      const { assertion } = await askAssertion(ctx, { digest, credentialId: prepared.passkey.credentialId, onHang });
+      const { assertion } = await askAssertion(ctx, { digest, credentialId: prepared.passkey.credentialId, onHang, signal });
       highS = assertion.highS;
       return assertion.args;
     },
@@ -50,26 +55,40 @@ export function confirmVault(ctx, prepared, { guard, onHang = null }) {
 
 /** Proof of work, the relay, and a wait until the contract reads the vault active. Each step reports only when done. */
 export async function sendVault(ctx, prepared, args, { powBits, onLine = () => {} }) {
-  const { relay, views } = ctx;
+  onLine('working');
   const pow = await solvePow(prepared.vaultHex, powBits);
   onLine('work');
-  const sent = await relay.call('create_vault', args, { pow });
+  const sent = await ctx.relay.call('create_vault', args, { pow });
   onLine('sent', sent.hash);
-  const deadline = Date.now() + ACTIVE_WAIT_MS;
+  return waitActive(ctx, prepared, sent.hash);
+}
+
+/**
+ * Reads the vault the relay sent until the contract says it is active. Gives up after ACTIVE_WAIT_MS of time this page
+ * was awake, and the error then carries `sentHash`: the creation was sent, so "nothing was made" would not be true.
+ * `now` and `sleep` are the clock and the pause, for a test.
+ */
+export async function waitActive(ctx, prepared, hash, { now = () => Date.now(), sleep = (ms) => new Promise((r) => { setTimeout(r, ms); }) } = {}) {
+  const { relay, views } = ctx;
+  let awake = 0;
+  let last = now();
   let activated = false;
   for (;;) {
     let vault = null;
     try {
       vault = await views.vault(prepared.vaultHex);
     } catch {
-      // A lagging or down node. The deadline below is what ends this.
+      // A lagging or down node. The time spent awake is what ends this.
     }
-    if (vault?.active) return { vault, hash: sent.hash };
-    if (Date.now() > deadline) throw new Error('the contract has not read this vault active yet');
-    if (vault && !activated && Date.now() > deadline - ACTIVE_WAIT_MS / 2) {
+    if (vault?.active) return { vault, hash };
+    const at = now();
+    awake += Math.min(Math.max(0, at - last), STEP_COUNTS_MS);
+    last = at;
+    if (awake > ACTIVE_WAIT_MS) throw Object.assign(new Error('the contract has not read this vault active yet'), { sentHash: hash });
+    if (vault && !activated && awake > ACTIVE_WAIT_MS / 2) {
       activated = true;
       await relay.call('activate', { vault: prepared.vaultHex }).catch(() => {});
     }
-    await new Promise((r) => { setTimeout(r, 600); });
+    await sleep(READ_EVERY_MS);
   }
 }

@@ -91,7 +91,7 @@ export function noNodeWords(answer) {
 // The relay's codes (site/lib/relay-table.mjs RELAY_ERRORS), each as a sentence.
 const RELAY_WORDS = {
   relay_down: 'The relay is down.',
-  bad_request: 'The relay could not read what this page sent.',
+  bad_request: 'The relay did not take what this page sent.',
   would_refuse: 'The relay checked it first and did not send it.',
   bad_origin: 'The relay takes calls only from its own site.',
   unknown_method: 'The relay does not send that call.',
@@ -104,7 +104,7 @@ const RELAY_WORDS = {
   state_store_down: 'The relay can\'t reach its records right now.',
   rpc_down: 'The relay can\'t reach NEAR right now.',
   stale_nonce: 'The relay\'s key was busy. Try again.',
-  tx_refused: 'The NEAR contract refused it.',
+  tx_refused: 'A NEAR node refused the transaction.',
   assertion_refused: 'The relay did not take that passkey signature.',
   not_this_relays: 'This relay sends cancels only for vaults it made.',
   already_sent: 'The relay already sent this one.',
@@ -114,11 +114,58 @@ const RELAY_WORDS = {
   esplora_down: 'The relay can\'t reach Bitcoin right now.',
 };
 
-/** One sentence for a relay refusal. A refusal that carries the contract's words reads as the contract's sentence. */
+/**
+ * A wait the relay names, in the unit a person reads it in: seconds under two minutes, then minutes, then hours. The
+ * relay's hourly and daily limits answer with thousands of seconds, and "2400 s" is not something to read on a phone.
+ */
+export function waitWords(seconds) {
+  const s = Math.max(1, Math.ceil(Number(seconds) || 0));
+  if (s < 120) return `${s} s`;
+  if (s < 7200) return `about ${Math.ceil(s / 60)} minutes`;
+  return `about ${Math.ceil(s / 3600)} hours`;
+}
+
+/** " It resets at 00:00 UTC.", from a status or a refusal that carries the time, and nothing from one that does not. */
+export const resetWords = (at) => (Number.isFinite(at) && at > 0 ? ` It resets at ${new Date(at).toISOString().slice(11, 16)} UTC.` : '');
+
+/**
+ * One sentence for a relay refusal. A refusal that carries the contract's words reads as the contract's sentence. The
+ * sender's tx_refused carries a node's refusal of the transaction, which never reached the contract, unless it names a
+ * contract panic.
+ */
 export function relayWords(err) {
-  if ((err?.code === 'tx_refused' || err?.code === 'would_refuse') && err.verbatim) return contractWords(err.verbatim);
-  if (err?.code === 'rate_limited' && err.retryAfterS) return `Too many tries through the relay. Wait ${err.retryAfterS} s and try again.`;
+  if ((err?.code === 'would_refuse' || (err?.code === 'tx_refused' && panicOf(err.verbatim))) && err.verbatim) return contractWords(err.verbatim);
+  if (err?.code === 'rate_limited' && err.retryAfterS) return `Too many tries through the relay. Wait ${waitWords(err.retryAfterS)} and try again.`;
   return (err?.code && Object.hasOwn(RELAY_WORDS, err.code) ? RELAY_WORDS[err.code] : null) ?? 'The relay said no.';
+}
+
+// The relay's codes for a call it refused before its sender signed anything: the checks and limits ahead of
+// NearSender.send in handler.mjs. Any other code, and no answer, can come after a transaction went out (a resend whose
+// first send landed unseen, then a nonce, a node or the state store that failed), so a page says it can't tell.
+const BEFORE_SEND = new Set([
+  'bad_request', 'bad_origin', 'unknown_method', 'pow_required', 'pow_bad', 'wrong_guard', 'rate_limited', 'daily_ceiling',
+  'not_this_relays', 'assertion_refused', 'would_refuse', 'relay_reserve',
+]);
+
+/** Whether the relay's code says it sent nothing for this call. */
+export const relaySentNothing = (code) => BEFORE_SEND.has(code);
+
+/**
+ * The relay's sentence for a code as a clause for a sentence to go on from (", so this page ..."): its first sentence,
+ * with no full stop. Two codes say two ("... busy. Try again."), and the advice would not read after a comma.
+ */
+export const relayClause = (code) => relayWords({ code }).split('. ')[0].replace(/\.$/, '');
+
+/**
+ * A relay status a page could not read (RelayClient.status with reachable false), as only what the page saw, and with
+ * no full stop, for a sentence to go on from. No answer says nothing about the relay itself, so "down" would be more
+ * than a page knows: a phone with no signal gets no answer from a relay that is up. An answer that is not the relay's
+ * JSON (a proxy's error page) was not the relay saying anything. The relay's own no is its own sentence.
+ */
+export function unreadRelayWords(status) {
+  if (!status?.answered) return 'Can\'t reach the relay';
+  if (!status.code) return 'Something answered for the relay, but not with its status';
+  return relayClause(status.code);
 }
 
 /** The passkey checks a page makes before sending (site/lib/webauthn.mjs refusalOf), as sentences. */
@@ -131,8 +178,10 @@ export function passkeyWords(refusal) {
 /** A browser's passkey error, by the kind sense.mjs gives it. The browser's own words go to the console. */
 export function passkeyErrorWords(kind) {
   if (kind === 'no_support') return 'This browser can\'t use a passkey here.';
-  if (kind === 'wrong_site') return 'That passkey is for another site.';
-  return 'The passkey did not sign.';
+  // A SecurityError: this page's site and the passkey's name for it do not fit, at Make as at Cancel.
+  if (kind === 'wrong_site') return 'This page isn\'t allowed to use a passkey here.';
+  // Any other failure, at Make too, where a passkey may have been saved before the page failed to read it.
+  return 'The passkey call failed.';
 }
 
 /**

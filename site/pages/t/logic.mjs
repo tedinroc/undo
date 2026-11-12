@@ -1,7 +1,7 @@
 // The thief tab's rules with no page around them, so a test can hold each one down without a browser.
 import { addressPrefix, addressToSpk } from '../../../tools/lib/btc.mjs';
 import { fromHex } from '../../../tools/lib/bytes.mjs';
-import { relayWords } from '../../../site/lib/plain-words.mjs';
+import { relayWords, unreadRelayWords } from '../../../site/lib/plain-words.mjs';
 import { retryClosesAt } from '../../../site/lib/request-state.mjs';
 
 /** The decoder's refusal of `text` on `network`, or null when it decodes. */
@@ -79,7 +79,7 @@ export const isNotYetUnlocked = (failure) => typeof failure === 'string' && fail
 /** What this tab can say about the relay, in its own words. Null while it can do its job. */
 export function relaySentence(status) {
   if (!status) return null;
-  if (!status.reachable || status.general?.why === 'relay_down') return 'The relay is down, so this tab can\'t ask the NEAR contract or call execute.';
+  if (!status.reachable) return `${unreadRelayWords(status)}, so this tab may not be able to ask the NEAR contract or call execute.`;
   if (status.general?.up || status.general?.calls_fit) return null;
   if (status.general?.why === 'daily_ceiling') return 'The relay hit today\'s limit, so this tab can\'t ask the NEAR contract or call execute.';
   if (status.general?.why === 'relay_reserve') return 'The relay is keeping what it has left for cancels, so this tab can\'t ask the NEAR contract or call execute.';
@@ -120,4 +120,18 @@ function signingStop({ signing, request, chainNow }) {
   if (!signing) return 'left_signing';
   const closesAt = retryClosesAt(request);
   return closesAt !== null && chainNow >= closesAt ? 'retry_closed' : null;
+}
+
+/**
+ * The line under the digits (`text`) and root's data-auto (`auto`). `sentence` is relaySentence's for the status this tab
+ * holds. "off" only on the relay's own word or the contract's: a status the relay answered that says it can't, or, at
+ * zero, the relay's or the contract's refusal of the last execute (`blocked`). A status this tab could not read, or an
+ * execute with no answer (`unanswered`), says no such thing, and at zero the tab sends execute all the same, again 2 s
+ * after each call that failed.
+ */
+export function autoLine({ firing, status, sentence, blocked = null, unanswered = false }) {
+  if ((sentence && status?.reachable) || (firing && blocked)) return { auto: 'off', text: 'auto-execute off' };
+  if (!firing) return { auto: 'armed', text: 'auto-execute armed' };
+  if (unanswered) return { auto: 'on', text: 'auto-execute on, retrying' };
+  return sentence ? { auto: 'on', text: 'auto-execute on' } : { auto: 'firing', text: 'The contract signs' };
 }

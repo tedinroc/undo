@@ -34,7 +34,8 @@ test('phone boot: the relay status, the instance, the block time, and the linked
   assert.ok(lastStart - config.end < delayMs / 2, 'none waited a round trip for another');
   assert.equal(page.fetched.filter((f) => f.kind === 'vault' && f.start < firstEnd).length, 1, 'the first tick used the vault read boot sent, and sent no second one');
   assert.equal(page.state, 'no_button');
-  assert.match(page.text, /Only the phone holding this vault's passkey can cancel\./);
+  assert.match(page.text, /Cancel here works only with this vault's passkey\./);
+  assert.doesNotMatch(page.text, /Only the phone holding/, 'a recovery file, the cold key and a synced passkey can cancel too');
 });
 
 test('phone boot: answers arriving in any order draw the same screen', () => {

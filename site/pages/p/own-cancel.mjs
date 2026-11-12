@@ -33,10 +33,15 @@ const utcTime = (ms) => `${new Date(ms).toISOString().slice(11, 16)} UTC`;
 const cmd = (text) => ({ cmd: text });
 export const partsText = (parts) => parts.map((p) => (typeof p === 'string' ? p : p.cmd)).join('');
 
-/** What the page says about a signed call it holds, in plain words, with the command to send it. */
-export function ownCancelParts({ expiresAt, vaultHex }) {
+/**
+ * What the page says about a signed call it holds, in plain words, with the command to send it. `unsure`: the relay
+ * did not answer, so it may have sent the cancel all the same, and the page does not say it did not.
+ */
+export function ownCancelParts({ expiresAt, vaultHex, unsure = false }) {
   return [
-    `The relay didn't send the cancel this page signed. Any NEAR testnet account can, until ${utcTime(expiresAt)}: save it, then run `,
+    unsure
+      ? `If the relay didn't send the cancel this page signed, any NEAR testnet account can, until ${utcTime(expiresAt)}: save it, then run `
+      : `The relay didn't send the cancel this page signed. Any NEAR testnet account can, until ${utcTime(expiresAt)}: save it, then run `,
     cmd('node tools/cancel.mjs'), ' ', cmd(`--file ${ownCancelFileName(vaultHex)}`), ' ', cmd('--account YOUR-ACCOUNT'),
   ];
 }
