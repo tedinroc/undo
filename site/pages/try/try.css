@@ -1,0 +1,267 @@
+/* /try/: one phone column that never scrolls as a page. phone.css gives it the phone page's type and controls; this file
+   adds the rail, the lines, the card, the refusal bar (its rules copied from thief.css, which this page does not link),
+   the dock, the request block, the stamp and the recap sheet. Nothing at rest moves: lines and blocks enter once, and the
+   counters change their digits only. */
+
+/* ---- the frame: a fixed full-screen box, so a drag at the top is never the browser's pull to refresh */
+html, body { height: 100%; overflow: hidden; }
+body { display: block; min-height: 0; padding: 0; }
+#frame { position: fixed; top: 0; bottom: 0; left: 0; right: 0; display: flex; flex-direction: column; overflow: hidden;
+  padding: max(10px, env(safe-area-inset-top)) max(var(--gutter), env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(var(--gutter), env(safe-area-inset-left)); }
+#screen { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  padding-top: 8px; display: block; }
+
+/* ---- the rail: four steps, one dot each */
+.rail { flex: none; display: flex; justify-content: space-between; gap: 6px; height: 36px; align-items: center; margin: 8px 0 0; padding: 0; list-style: none;
+  border-bottom: 1px solid var(--line); font: 600 14px/1 var(--sans); color: var(--dim); }
+.rail li { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.rail .dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--dim); position: relative; flex: none;
+  transition: background-color 200ms ease, border-color 200ms ease; }
+.rail li.now { color: var(--white); }
+.rail li.now .dot { background: var(--white); border-color: var(--white); }
+.rail li.red { color: var(--red); }
+.rail li.red .dot { background: var(--red); border-color: var(--red); }
+.rail li.done .dot { border-color: var(--white); background: transparent; }
+.rail li.done .dot::after { content: ""; position: absolute; left: 2px; top: -1px; width: 3px; height: 7px; border: solid var(--white); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.rail li.struck { color: var(--red); }
+.rail li.struck .nm { text-decoration: line-through; text-decoration-thickness: 2px; }
+.rail li.struck .dot { background: transparent; border-color: var(--red); }
+
+/* ---- the step title and the lines under it */
+.title { font: 800 32px/1.08 var(--sans); letter-spacing: -0.02em; margin: 10px 0 8px; }
+.lines { margin: 0; }
+.ln { font: 500 19px/1.28 var(--sans); margin: 6px 0; overflow-wrap: anywhere; color: var(--white); }
+.ln.done { color: var(--dim); padding-left: 22px; position: relative; }
+.ln.done::before { content: ""; position: absolute; left: 3px; top: 0.3em; width: 6px; height: 11px; border: solid var(--dim); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.ln.now { color: var(--white); }
+.ln.thief { color: var(--red); font-weight: 700; }
+.ln.warn { color: #FFB4AE; font-weight: 700; }
+.ln.owner { color: var(--white); font-weight: 800; font-size: 22px; }
+.ln.words { font: 500 14px/1.35 var(--mono); white-space: pre-wrap; color: var(--white); }
+.ln.big { font: 800 40px/1.05 var(--sans); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--white); padding-left: 0; }
+.ln.big::before { display: none; }
+.ln .hashline { margin: 0 0 2px; }
+.ln .hash { font-size: 15px; line-height: 1.25; }
+.ln.keyline { color: var(--white); }
+.ln.keyline .label { display: block; font: 500 14px/1.2 var(--mono); color: var(--dim); }
+.ln.keyline .mono { font: 700 20px/1.2 var(--mono); }
+.ln.addr .hashline { margin-top: 0; }
+.enter { animation: enter-up 180ms ease-out both; }
+@keyframes enter-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* ---- S0 */
+.rows { margin: 4px 0 8px; padding: 0; list-style: none; }
+.rows li { display: flex; gap: 10px; font: 500 17px/1.3 var(--sans); margin: 0 0 8px; }
+.rows .n { flex: none; width: 18px; font-weight: 800; color: var(--white); }
+.rows .t { color: var(--white); }
+.rows .t b { font-weight: 800; }
+.more .small { margin-top: 6px; }
+.links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; font: 500 15px/1.3 var(--sans); }
+.links a { color: var(--dim); text-decoration: underline; text-underline-offset: 3px; }
+.more .foot { margin-top: 12px; }
+
+/* ---- S0 on a short screen (try.mjs fitIntro): measured, so every line of S0 is whole in #screen with no scrolling, the
+   footer included, and none is hidden. A screen that fits as drawn gets none of this. One that does not gets .tight (the
+   gaps close up); then .tighter (smaller type); then .tightest (an app's own browser on a short phone, whose line about
+   the app comes first: the header, the rail, the Next line and the button give up room too); then .dense (the lines sit
+   closer); then .densest (the type a size smaller again). */
+html[data-step="intro"] #frame.tight #screen { padding-top: 2px; }
+html[data-step="intro"] #frame.tight .title { margin: 2px 0 4px; }
+html[data-step="intro"] #frame.tight .ln.warn { line-height: 1.25; margin: 3px 0; }
+html[data-step="intro"] #frame.tight .rows { margin: 2px 0 4px; }
+html[data-step="intro"] #frame.tight .rows li { line-height: 1.2; margin-bottom: 3px; }
+html[data-step="intro"] #frame.tight .more .small { line-height: 1.25; margin-top: 2px; }
+html[data-step="intro"] #frame.tight .links { margin-top: 4px; gap: 2px 14px; }
+html[data-step="intro"] #frame.tight .more .foot { line-height: 1.2; margin-top: 4px; }
+html[data-step="intro"] #frame.tight .next { line-height: 1.25; margin: 4px 0; }
+html[data-step="intro"] #frame.tight .dock .go { padding: 6px 12px; }
+html[data-step="intro"] #frame.tighter .title { font-size: 22px; }
+html[data-step="intro"] #frame.tighter .ln.warn { font-size: 15px; }
+html[data-step="intro"] #frame.tighter .rows li { font-size: 14px; }
+html[data-step="intro"] #frame.tighter .more .small { font-size: 12px; }
+html[data-step="intro"] #frame.tighter .links { font-size: 13px; }
+html[data-step="intro"] #frame.tighter .more .foot { font-size: 12px; }
+html[data-step="intro"] #frame.tighter .next { font-size: 13px; }
+html[data-step="intro"] #frame.tighter .dock .go { min-height: 56px; font-size: 22px; }
+html[data-step="intro"] #frame.tightest { padding-top: max(6px, env(safe-area-inset-top)); padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+html[data-step="intro"] #frame.tightest .chip { padding: 2px 6px 3px; font-size: 12px; }
+html[data-step="intro"] #frame.tightest .wordmark { font-size: 17px; }
+html[data-step="intro"] #frame.tightest .rail { height: 26px; margin-top: 2px; font-size: 12px; }
+html[data-step="intro"] #frame.tightest .title { font-size: 20px; margin: 0 0 2px; }
+html[data-step="intro"] #frame.tightest .ln.warn { font-size: 14px; line-height: 1.2; margin: 2px 0; }
+html[data-step="intro"] #frame.tightest .rows li { font-size: 13px; line-height: 1.18; margin-bottom: 2px; gap: 6px; }
+html[data-step="intro"] #frame.tightest .rows .n { width: 12px; }
+html[data-step="intro"] #frame.tightest .more .small { line-height: 1.2; }
+html[data-step="intro"] #frame.tightest .links { margin-top: 3px; font-size: 12px; }
+html[data-step="intro"] #frame.tightest .more .foot { font-size: 11px; line-height: 1.18; margin-top: 3px; }
+html[data-step="intro"] #frame.tightest .next { font-size: 12px; line-height: 1.2; margin: 3px 0; }
+html[data-step="intro"] #frame.tightest .dock .go { min-height: 48px; font-size: 20px; padding: 4px 12px; }
+html[data-step="intro"] #frame.dense .ln.warn { line-height: 1.15; }
+html[data-step="intro"] #frame.dense .rows li { line-height: 1.12; margin-bottom: 1px; }
+html[data-step="intro"] #frame.dense .more .small { line-height: 1.15; margin-top: 1px; }
+html[data-step="intro"] #frame.dense .links { margin-top: 2px; }
+html[data-step="intro"] #frame.dense .more .foot { line-height: 1.12; margin-top: 2px; }
+html[data-step="intro"] #frame.dense .next { line-height: 1.15; }
+/* The hint under the button (#aside: this browser's passkey manager, or the soft passkey's label) sits outside #screen,
+   so every line it takes is a line #screen loses: the deepest steps draw it smaller and closer too. */
+html[data-step="intro"] #frame.tightest .aside { font-size: 12px; line-height: 1.2; }
+html[data-step="intro"] #frame.tightest .aside p { margin-top: 3px; }
+html[data-step="intro"] #frame.dense .aside { line-height: 1.12; }
+/* .densest: Safari on an iPhone that names iOS 18 or later draws the long hint under the button (the AutoFill path in
+   Settings); with the hint of vaults made in the past hour and M1's line too, a 320 px wide screen needs one step more.
+   The type a size smaller again; no font under 11 px. */
+html[data-step="intro"] #frame.densest .title { font-size: 18px; }
+html[data-step="intro"] #frame.densest .ln.warn { font-size: 13px; }
+html[data-step="intro"] #frame.densest .rows li { font-size: 12px; }
+html[data-step="intro"] #frame.densest .more .small { font-size: 11px; }
+html[data-step="intro"] #frame.densest .aside { font-size: 11px; }
+
+/* ---- the card: why a long wait matters, one sentence, unchanged while it is up */
+.card { margin: 12px 0 4px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--white); font: 500 15px/1.35 var(--sans); color: #D8D8D8; }
+
+/* ---- the refusal bar, from thief.css, sized for one phone column */
+.bar-red { background: var(--red); color: var(--ground); font-weight: 900; letter-spacing: -0.03em; white-space: nowrap; padding: 6px 12px 8px;
+  margin: 12px 0 0; overflow: hidden; }
+.bar-red .b1 { font-size: 64px; line-height: 1; }
+.bar-red .b2 { font-size: 46px; line-height: 1; }
+.bar-red.slide { animation: bar-in 160ms cubic-bezier(.55,0,1,.45) both; }
+@keyframes bar-in { from { transform: translateY(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.caption { font: 800 26px/1.1 var(--sans); letter-spacing: -0.02em; margin: 10px 0 0; }
+.node { margin: 10px 0 0; padding-left: 10px; border-left: 4px solid var(--red); font: 500 14px/1.35 var(--mono); max-height: calc(1.35em * 6 + 1.4em); overflow-y: auto;
+  overflow-wrap: anywhere; overscroll-behavior: contain; }
+.node-label { color: var(--dim); }
+.node-text { color: #CFCFCF; white-space: pre-wrap; }
+.node-text .key-phrase { color: var(--white); font-weight: 700; background: rgba(255, 59, 48, 0.25); }
+
+/* ---- the owner half's block (owner.mjs ownerDrawing): enters once, then only the digits and the fuse change */
+.title:empty { display: none; }
+.owner { animation: req-in 240ms ease-out both; }
+@keyframes req-in { from { opacity: 0; } to { opacity: 1; } }
+.owner .owner-role { font: 800 22px/1.2 var(--sans); margin: 8px 0 6px; }
+.owner .label { font: 500 14px/1.2 var(--mono); color: var(--dim); margin-top: 4px; }
+.owner .addr { font-size: 15px; margin: 2px 0 6px; }
+.owner .sats { font-size: 34px; }
+.owner .wait-label { margin-top: 8px; }
+#clockblock { position: relative; }
+.owner .clockwrap { margin-top: 2px; }
+.owner .stampclip { position: absolute; left: 0; right: 0; top: 50%; margin: 0; z-index: 2; }
+.owner .stamp { font-size: 54px; }
+.owner .reserve { min-height: 1.15em; margin: 6px 0 0; font-size: 24px; }
+/* The stamp lands across the lower half of the digits, so the upper half still reads; on a short screen it reaches past the
+   clock's box, and the first result line's slot starts under it from S4 on, so nothing moves when it lands. */
+.owner #key-line { margin-top: 8px; }
+.owner .notice { font-size: 16px; }
+.textlink, .textbtn { display: inline-block; background: none; border: 0; padding: 6px 0; color: var(--dim); font: 500 15px/1.2 var(--sans);
+  text-decoration: underline; text-underline-offset: 3px; touch-action: manipulation; }
+.dock .textlink { margin-top: 4px; }
+.hashslot { min-height: 44px; }
+.dock .hashslot { min-height: 64px; }
+
+/* ---- S4 to S7 on a short screen (try.mjs fitOwner): measured, step by step, so every line of the owner block is whole
+   in #screen with no scrolling, and none is hidden. The fee line too: phone.css hides it on a short phone, this page
+   does not. While the request waits, the two empty result slots give up their room (CANCELLED has them back); then the
+   digits get smaller; then the small lines close up. A screen the drawing fits as it is gets none of these. */
+.owner .fee:not([hidden]) { display: block; }
+#screen.roomy .owner .reserve:empty { display: none; }
+#screen.small-digits .owner .clock { font-size: var(--owner-clock) !important; }
+#screen.packed { padding-top: 2px; }
+#screen.packed .owner .owner-role { font-size: 18px; margin: 0 0 2px; }
+#screen.packed .owner .label { margin-top: 0; }
+#screen.packed .owner .wait-label { margin-top: 2px; }
+#screen.packed .owner .addr { font-size: 13px; line-height: 1.2; margin: 1px 0 2px; }
+#screen.packed .owner .sats { font-size: 24px; }
+#screen.packed .owner .fee { font-size: 12px; line-height: 1.2; margin-top: 1px; }
+#screen.packed .owner .clockwrap { margin-top: 0; }
+#screen.packed .owner .notice { font-size: 14px; line-height: 1.2; margin-top: 3px; }
+#screen.packed .owner .words { font-size: 12px; line-height: 1.25; margin: 2px 0 0; }
+#screen.packed .owner .stamp { font-size: 36px; padding: 6px var(--gutter) 8px; }
+#screen.packed .owner .reserve { font-size: 18px; margin-top: 4px; }
+
+/* ---- the recap sheet: rises over the lower half, above the Done line; the stamp and the digits above it stay */
+.recap { position: absolute; left: 0; right: 0; bottom: 0; max-height: 62%; overflow-y: auto; overscroll-behavior: contain; background: #141414;
+  border-top: 2px solid var(--white); padding: 12px max(var(--gutter), env(safe-area-inset-right)) 12px max(var(--gutter), env(safe-area-inset-left)); z-index: 5;
+  animation: sheet-up 260ms ease-out both; }
+@keyframes sheet-up { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
+/* A short screen has no room under the stamp: the sheet goes over the request's lines above the clock instead (try.mjs
+   placeRecap), so the stamp, the digits and the Done line still stay in sight. */
+.recap.above { border-top: 0; border-bottom: 2px solid var(--white); animation: sheet-in 260ms ease-out both; }
+@keyframes sheet-in { from { opacity: 0; } to { opacity: 1; } }
+.recap .recap-title { font: 800 24px/1.1 var(--sans); margin: 0 0 6px; }
+.recap .receipts { list-style: none; margin: 0; padding: 0; }
+.recap .receipts li { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.recap .say { font: 700 17px/1.3 var(--sans); margin: 0; }
+.recap .hashline { margin-top: 4px; }
+.recap .hash { font-size: 13px; }
+.recap .words { font-size: 12px; }
+.recap .foot { margin-top: 10px; }
+
+/* ---- the Next line and the dock under the thumb */
+.next { flex: none; font: 600 15px/1.3 var(--sans); color: var(--white); margin: 8px 0 8px; overflow-wrap: anywhere; }
+.next .tag { display: inline-block; margin-right: 6px; padding: 1px 6px; border: 1px solid var(--white); font: 700 12px/1.3 var(--mono); }
+.dock { flex: none; }
+.dock .go { min-height: 64px; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; text-decoration: none; font-size: 24px; padding: 10px 14px; }
+.dock .go.two { padding-top: 8px; padding-bottom: 8px; }
+.dock .go .sub { color: #555555; font-weight: 600; }
+.dock .go.quiet .sub { color: var(--dim); }
+.dock .slot { height: 64px; border-radius: 16px; font: 700 20px/1.15 var(--sans); padding: 8px 12px; color: var(--white); }
+.dock .slot .n { display: inline-block; min-width: 2ch; text-align: right; font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
+.dock .slot .n.one { min-width: 1ch; }
+.dock #cancel { height: 104px; font-size: 52px; flex-direction: column; animation: rise 220ms ease-out both; }
+.dock #cancel .sub { display: block; font: 600 13px/1.2 var(--sans); letter-spacing: 0; color: rgba(255, 255, 255, 0.85); margin-top: 4px; }
+@keyframes rise { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.aside { flex: none; font: 500 14px/1.3 var(--sans); color: var(--dim); }
+.aside:empty { display: none; }
+.aside p { margin: 6px 0 0; }
+.aside a, .aside button.link { color: var(--dim); text-decoration: underline; text-underline-offset: 3px; background: none; border: 0; padding: 4px 0; font: inherit; }
+
+/* ---- a short phone with the browser's bars on screen: the dock keeps its place, the words get smaller */
+@media (max-height: 700px) {
+  .title { font-size: 28px; margin: 6px 0 4px; }
+  .ln { font-size: 17px; margin: 4px 0; }
+  .ln.big { font-size: 34px; }
+  .rows li { font-size: 15px; margin-bottom: 5px; }
+  .card { font-size: 14px; margin-top: 8px; padding: 8px 10px; }
+  .bar-red .b1 { font-size: 52px; }
+  .bar-red .b2 { font-size: 38px; }
+  .caption { font-size: 22px; }
+  .owner .clock { font-size: clamp(56px, 13vh, 120px) !important; }
+  .owner .sats { font-size: 30px; }
+  .owner #key-line { margin-top: 30px; }
+}
+@media (max-height: 600px) {
+  .rail { height: 30px; margin-top: 4px; font-size: 13px; }
+  .title { font-size: 24px; }
+  .ln { font-size: 16px; }
+  .ln.words { font-size: 13px; }
+  .next { font-size: 14px; margin: 6px 0; }
+  .dock .go { min-height: 56px; font-size: 21px; }
+  .dock .slot { height: 56px; font-size: 18px; }
+  .dock #cancel { height: 88px; font-size: 44px; }
+  .bar-red .b1 { font-size: 44px; }
+  .bar-red .b2 { font-size: 32px; }
+  .caption { font-size: 20px; }
+  .node { max-height: calc(1.35em * 4 + 1.4em); }
+  .owner .clock { font-size: clamp(52px, 12vh, 90px) !important; }
+  .owner .sats { font-size: 26px; }
+  .owner .owner-role { font-size: 19px; margin-top: 4px; }
+  .owner .reserve { font-size: 20px; }
+  .owner .stamp { font-size: 44px; }
+}
+@media (max-width: 340px) {
+  .rail { font-size: 12px; gap: 2px; }
+  .rail li { gap: 4px; }
+  .bar-red .b1 { font-size: 46px; }
+  .bar-red .b2 { font-size: 34px; }
+  .dock .slot { font-size: 17px; }
+}
+
+/* ---- a laptop: the same column, in the middle */
+@media (min-width: 700px) {
+  body { max-width: none; margin: 0; }
+  #frame { max-width: 480px; margin: 0 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter, .bar-red.slide, .owner, .dock #cancel, .recap, .recap.above, .stamp.slam { animation: none; }
+  .rail .dot { transition: none; }
+}
