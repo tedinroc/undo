@@ -1,5 +1,6 @@
 // The landing page and the replay. Static checks first: every hash on either page is one proofs/ recorded, under its
-// chain's name, and the replay's record is exactly what tools/replay-run.mjs builds from proofs/. Then one headless
+// chain's name, and the replay's record is exactly what tools/replay-run.mjs builds from proofs/: the final build's
+// runs, with the cancel from the take of the live pages, which is another vault and says so. Then one headless
 // Chrome on a built site: the first screen at 390x844 and 375x667, the film playing muted in its slot, the status line
 // naming the config's contract, the replay stepping through, and no CSP complaint. Screenshots go to UNDO_SHOT_DIR
 // when it is set. Skipped, and it says so, without Chrome.
@@ -21,13 +22,14 @@ const read = (path) => readFileSync(join(PAGES, path), 'utf8');
 const landing = read('index.html');
 const replayHtml = read('replay/index.html');
 const run = JSON.parse(read('replay/run.json'));
-const proofs = ['g2.json', 's2-refusal.json', 'film-take.json'].map((name) => readFileSync(join(REPO, 'proofs', name), 'utf8')).join('\n');
+const proof = (name) => JSON.parse(readFileSync(join(REPO, 'proofs', name), 'utf8'));
+const proofs = ['g2-v1.json', 's2-refusal-v1.json', 'film-take.json', 'g2.json'].map((name) => readFileSync(join(REPO, 'proofs', name), 'utf8')).join('\n');
 const FILM = join(PAGES, 'film/undo-for-bitcoin.mp4');
 const PAGES_FILE_LIMIT = 25 * 1024 * 1024;   // Cloudflare Pages refuses a larger file
 const skip = chromeAvailable() ? false : 'set CHROME_BIN to run this in a real browser';
 const SHOTS = process.env.UNDO_SHOT_DIR ?? null;
 
-const EXPLORER = { 'Mutinynet txid': 'https://mutinynet.com/tx/', 'Mutinynet address': 'https://mutinynet.com/address/', 'NEAR testnet tx': 'https://testnet.nearblocks.io/txns/' };
+const EXPLORER = { 'Mutinynet txid': 'https://mutinynet.com/tx/', 'Mutinynet address': 'https://mutinynet.com/address/', 'NEAR testnet tx': 'https://testnet.near.rocks/tx/' };
 const label = (l) => `${l.chain} ${l.type}`;
 
 /** [{href, chain, hash, what}] for each hash card on the landing page, in page order. */
@@ -36,37 +38,70 @@ function landingHashes(html) {
     .map(([, href, chain, hash, what]) => ({ href, chain, hash, what }));
 }
 
-test('replay: run.json is exactly what tools/replay-run.mjs builds from proofs/, so no hash on it was typed by hand', () => {
+test('replay: run.json is exactly what tools/replay-run.mjs builds from proofs/, so no hash on it was typed by hand; its runs are the final build\'s', () => {
   assert.equal(read('replay/run.json'), runText());
   assert.equal(run.label, 'replay');
   assert.deepEqual(run.steps.map((s) => s.id), ['coin', 'refused', 'wait', 'cancel', 'signed', 'exit']);
+  // The vault of the replay is the final build's: the contract and the wasm deploy/testnet.json names, which is also
+  // the contract this site's config names. The earlier build's run is on the landing page only, under its own heading.
+  const g2 = proof('g2-v1.json');
+  const deploy = JSON.parse(readFileSync(join(REPO, 'deploy/testnet.json'), 'utf8'));
+  assert.equal(run.title, 'Replay of the final build\'s runs');
+  assert.equal(run.vault.contract, deploy.contract);
+  assert.equal(run.vault.wasm_sha256, deploy.wasm_sha256);
+  assert.equal(run.vault.contract, JSON.parse(readFileSync(join(SITE, 'config/testnet.json'), 'utf8')).contract);
+  assert.equal(run.vault.id, g2.vault.id);
+  const hashesOf = (step) => step.lines.filter((l) => l.kind === 'hash').map((l) => l.hash);
+  const byId = Object.fromEntries(run.steps.map((s) => [s.id, s]));
+  assert.deepEqual(hashesOf(byId.wait), [g2.cosigned.propose_tx]);
+  assert.deepEqual(hashesOf(byId.signed), [g2.cosigned.attempts.find((x) => x.outcome === 'signed').execute_tx, g2.cosigned.txid]);
+  assert.deepEqual(hashesOf(byId.exit), [g2.escape.txid]);
+  const earlier = proof('g2.json');
+  for (const s of run.steps) for (const h of hashesOf(s)) assert.equal([earlier.cosigned.txid, earlier.escape.txid, earlier.cosigned.propose_tx, earlier.vault.address].includes(h), false, `${s.id} holds a hash of the earlier build's run`);
+});
+
+test('replay: the cancel step is the take of the live pages, with that take\'s hashes, and says it is another vault, that Chrome\'s authenticator stood in, and that a real phone has not run', () => {
+  const take = proof('film-take.json');
   const cancel = run.steps.find((s) => s.id === 'cancel');
-  assert.equal(cancel.recorded, false, 'neither replayed run holds a cancel, so the replay must not show one of its own');
-  assert.equal(cancel.lines.some((l) => l.kind === 'hash'), false);
-  // The landing page lists the film's cancel on NEAR testnet, so this step may not say that none is recorded: it says
-  // what is true of these runs, names the film's take by its date, and points to that list without borrowing a hash.
+  assert.notEqual(cancel.recorded, false, 'the step is a recorded one now');
+  assert.equal(cancel.run, 'take');
+  assert.equal(run.runs.take.date, take.started_utc.slice(0, 10));
+  assert.match(run.runs.take.label, /another vault/);
+  assert.deepEqual(cancel.lines.filter((l) => l.kind === 'hash').map((l) => l.hash), [take.thief.propose_tx, take.cancel.tx, take.after.execute_after_the_wait_tx, take.coin.mutinynet_txid]);
+  // Another vault than the replay's, on the same contract: the title says so, and so does the page's note.
+  assert.notEqual(take.vault.id, run.vault.id);
+  assert.equal(take.contract, run.vault.contract);
+  assert.match(cancel.title, /^The phone page's Cancel stops a thief's request\. Another test vault of the same contract, (the same day|\d{4}-\d\d-\d\d)\.$/);
+  assert.match(run.note, /the cancel in step 4 is from another vault of that contract and says so/);
+  assert.equal(run.steps.indexOf(cancel), 3, 'the note calls it step 4');
   const said = cancel.lines.filter((l) => l.kind === 'text').map((l) => l.text).join(' ');
-  assert.doesNotMatch(said, /no cancel on NEAR testnet is recorded|stays empty until/);
-  assert.match(said, /^Not in these earlier runs: neither run replayed here holds a cancel/);
-  assert.ok(said.includes(`recorded in the film's take of ${run.film.date}, on another test vault`));
-  assert.match(said, /Chrome's virtual authenticator stood in for a phone's passkey there; from a real phone that path has not yet run\./);
-  assert.deepEqual(cancel.lines.filter((l) => l.kind === 'link').map((l) => l.href), ['/#from-film']);
-  assert.match(landing, /<h2 id="from-film" class="h2">From the film:<\/h2>/, 'the link\'s target is on the landing page');
-  assert.ok(run.film.hashes.some((l) => l.what === 'the phone page\'s cancel'), 'and that list holds the cancel');
+  assert.match(said, /^From the live pages, in the take the film is cut from: /);
+  assert.match(said, /Chrome's virtual authenticator stood in for a phone's passkey; from a real phone that path has not yet run\.$/);
+  const whats = cancel.lines.filter((l) => l.kind === 'hash').map((l) => l.what);
+  assert.equal(whats[0], 'the thief tab\'s request, made to wait 5:00');
+  assert.equal(whats[1], `the phone page's Cancel (${take.cancel.method})`);
+  assert.equal(whats[2], `after the wait, an execute of that request: refused by the contract (${take.after.execute_refusal})`);
+  assert.match(whats[3], /^that vault's coin: 2,000 sats, unspent when read again on \d{4}-\d\d-\d\d$/);
+  // No other step borrows from the take, and the take's step holds nothing of the replay's vault.
+  const takes = new Set([take.thief.propose_tx, take.cancel.tx, take.after.execute_after_the_wait_tx, take.coin.mutinynet_txid, take.vault.address]);
+  for (const s of run.steps.filter((x) => x.id !== 'cancel')) for (const l of s.lines.filter((x) => x.kind === 'hash')) assert.equal(takes.has(l.hash), false, `${s.id} borrows a hash of the take`);
+  // Nowhere does the replay say a phone did it.
+  assert.doesNotMatch(JSON.stringify(run.steps), /[Yy]our phone cancel|a phone cancelled|from a phone,/);
 });
 
 test('replay: a node\'s words are the recorded bytes, untouched', () => {
-  const g2 = JSON.parse(readFileSync(join(REPO, 'proofs/g2.json'), 'utf8'));
-  const s2 = JSON.parse(readFileSync(join(REPO, 'proofs/s2-refusal.json'), 'utf8'));
+  const g2 = proof('g2-v1.json');
+  const s2 = proof('s2-refusal-v1.json');
   const nodes = run.steps.flatMap((s) => s.lines.filter((l) => l.kind === 'node').map((l) => l.text));
   assert.deepEqual(nodes, [s2.node_answer.text_verbatim, g2.escape.early.text]);
 });
 
-test('landing: "From the film:", "From earlier runs:" and "From the same test vault:" are run.json\'s lists, each hash under its chain, linked to that chain\'s explorer', () => {
+test('landing: "From the film:", "From the final build\'s run" and "From an earlier build" are run.json\'s lists, each hash under its chain, linked to that chain\'s explorer', () => {
   const cards = landingHashes(landing);
   const want = [
     ...run.film.hashes.map((l) => ({ ...l, tail: `the film's take, ${run.film.date}` })),
-    ...[...run.earlier, ...run.same_vault].map((l) => ({ ...l, tail: 'earlier run' })),
+    ...run.final.hashes.map((l) => ({ ...l, tail: `final build, ${run.final.date}` })),
+    ...run.earlier.hashes.map((l) => ({ ...l, tail: `earlier build, ${run.earlier.date}` })),
   ];
   assert.equal(cards.length, want.length);
   cards.forEach((card, i) => {
@@ -75,13 +110,28 @@ test('landing: "From the film:", "From earlier runs:" and "From the same test va
     assert.equal(card.href, `${EXPLORER[card.chain]}${card.hash}`);
     assert.equal(card.what, `${want[i].what} · ${want[i].tail}`);
   });
-  assert.ok(landing.indexOf('<h2 id="from-film" class="h2">From the film:</h2>') < landing.indexOf('<h2 id="from-runs" class="h2">From earlier runs:</h2>'), 'the film\'s own take is listed first, then the earlier runs');
-  assert.match(landing, /<h2 id="from-runs" class="h2">From earlier runs:<\/h2>/);
+  // The film's own take first, then the final build's run under its own heading, then the earlier build's, smaller.
+  const film = '<h2 id="from-film" class="h2">From the film:</h2>';
+  // Each date is kept on one line, so a narrow screen does not break it at a hyphen.
+  const final = `<h2 id="from-final" class="h2">From the final build's run, <span class="nb">${run.final.date}</span>:</h2>`;
+  const earlier = `<h3 id="from-earlier" class="h3">From an earlier build, <span class="nb">${run.earlier.date}</span>:</h3>`;
+  for (const heading of [film, final, earlier]) assert.equal(landing.split(heading).length, 2, heading);
+  assert.ok(landing.indexOf(film) < landing.indexOf(final) && landing.indexOf(final) < landing.indexOf(earlier));
+  assert.doesNotMatch(landing, /From earlier runs|earlier run</);
+  // The final build's three are the spend it co-signed, the execute that asked for the signature, and the escape.
+  const g2 = proof('g2-v1.json');
+  assert.deepEqual(run.final.hashes.map((l) => l.hash), [g2.cosigned.txid, g2.cosigned.attempts.find((x) => x.outcome === 'signed').execute_tx, g2.escape.txid]);
+  assert.equal(run.final.hashes[0].what, 'the spend it co-signed after a 10:00 wait');
+  assert.equal(g2.cosigned.check.delay_ms, 600_000);
+  assert.notEqual(run.earlier.contract, run.final.contract);
+  // The words under the replay button and beside the try link say what each is.
+  assert.match(landing, /<p class="small">A replay of the final build's recorded runs, with their real hashes\. Test coins only, on Mutinynet and NEAR testnet\.<\/p>/);
+  assert.match(landing, /<a id="try-link" class="link" href="\/p\/">Try a cancel yourself<\/a>: one laptop or desktop browser with a passkey and two tabs, or a phone and a laptop\. A relay pays the NEAR gas, and its daily limit is shared, so it can be full\.<\/p>/);
 });
 
 test('every hash on both pages is in proofs/, and every long hex or base58 string on them is one of those hashes', () => {
   const hashes = new Set(run.steps.flatMap((s) => s.lines.filter((l) => l.kind === 'hash').map((l) => l.hash)));
-  for (const l of [...run.film.hashes, ...run.earlier, ...run.same_vault]) hashes.add(l.hash);
+  for (const l of [...run.film.hashes, ...run.final.hashes, ...run.earlier.hashes]) hashes.add(l.hash);
   for (const h of hashes) assert.ok(proofs.includes(`"${h}"`) || proofs.includes(h), `${h} is not in proofs/`);
   const text = `${landing}\n${JSON.stringify(run.steps.map((s) => s.lines.filter((l) => l.kind !== 'node')))}`;
   const longStrings = new Set([...text.matchAll(/\b(?:[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{43,44}|tb1q[0-9a-z]{58})\b/g)].map((m) => m[0]));
@@ -303,12 +353,14 @@ test('Chrome, local config: the chip says local, and the recorded hashes still n
   assert.match(await cdp.page("return document.querySelector('.hashes .chain').textContent;"), /^Mutinynet/);
 });
 
-test('Chrome replay: labelled REPLAY, one step at a time on request, every hash under its chain, the cancel step with no hash of its own and a link to the film\'s list, no clock', { skip, timeout: 60_000 }, async () => {
+test('Chrome replay: labelled REPLAY, one step at a time on request, every hash under its chain and linked, each step naming its run, the cancel step marked as the live pages\' take on another vault, no clock', { skip, timeout: 60_000 }, async () => {
   problems.length = 0;
   await viewport(390, 844);
   await cdp.open(`${served.testnet.origin}/replay/`);
   await waitFor("document.documentElement.dataset.state === 'replay'");
   assert.equal(await cdp.page("return document.querySelector('.tag').textContent;"), 'REPLAY');
+  assert.equal(await cdp.page("return document.getElementById('title').textContent;"), run.title);
+  assert.equal(await cdp.page("return document.getElementById('note').textContent;"), run.note);
   assert.equal(await cdp.page('return document.querySelectorAll(".step:not([hidden])").length;'), 1);
   await shot('replay-390x844-step1');
   for (let i = 2; i <= run.steps.length; i += 1) {
@@ -320,11 +372,16 @@ test('Chrome replay: labelled REPLAY, one step at a time on request, every hash 
   const lines = await cdp.page('return [...document.querySelectorAll(".hash-line")].map((l) => [l.querySelector(".chain").textContent, l.dataset.hash, l.querySelector("a")?.href ?? null]);');
   assert.equal(lines.length, run.steps.flatMap((s) => s.lines.filter((l) => l.kind === 'hash')).length);
   for (const [chain, hash, href] of lines) assert.equal(href, `${EXPLORER[chain]}${hash}`);
-  assert.equal(await cdp.page('return document.querySelector("#step-cancel").dataset.recorded;'), 'false');
-  assert.equal(await cdp.page('return document.querySelector("#step-cancel .when").textContent;'), 'not in these runs');
-  assert.equal(await cdp.page('return document.querySelector("#step-cancel a.link").getAttribute("href");'), '/#from-film');
-  assert.doesNotMatch(await cdp.page('return document.querySelector("#step-cancel").textContent;'), /no cancel on NEAR testnet is recorded/);
-  assert.match(await cdp.page('return document.querySelector("#step-refused .when").textContent;'), /^replay · earlier run · 2026-11-01 UTC/);
+  // The cancel is a recorded step with hashes of its own, and its head says whose: the live pages' take, another vault.
+  assert.equal(await cdp.page('return document.querySelector("#step-cancel").dataset.recorded;'), 'true');
+  assert.equal(await cdp.page('return document.querySelector("#step-cancel").dataset.run;'), 'take');
+  assert.equal(await cdp.page('return document.querySelector("#step-cancel .when").textContent;'), `replay · the live pages, another vault · ${run.runs.take.date} UTC ${run.steps[3].at.slice(11, 19)}`);
+  assert.equal(await cdp.page('return document.querySelectorAll("#step-cancel .hash-line").length;'), 4);
+  assert.match(await cdp.page('return document.querySelector("#step-cancel").textContent;'), /Chrome's virtual authenticator stood in for a phone's passkey; from a real phone that path has not yet run\./);
+  assert.equal(await cdp.page('return document.querySelectorAll(".step .when").length;'), run.steps.length);
+  assert.match(await cdp.page('return document.querySelector("#step-refused .when").textContent;'), new RegExp(`^replay · final build · ${run.runs.s2.date} UTC ${run.steps[1].at.slice(11, 19)}$`));
+  assert.equal(await cdp.page('return document.querySelector("#step-signed .when").textContent.startsWith("replay · final build · ");'), true);
+  assert.doesNotMatch(await cdp.page('return document.getElementById("replay").textContent;'), /earlier run|not in these runs/);
   assert.equal(await cdp.page('return document.querySelectorAll("[data-clock], [role=timer]").length;'), 0);
   assert.equal(await cdp.page('return document.documentElement.scrollWidth;'), 390);
   await shot('replay-390x844-all', { full: true });
@@ -335,10 +392,29 @@ test('Chrome replay: labelled REPLAY, one step at a time on request, every hash 
   assert.deepEqual(problems, []);
 });
 
-test('build of the replay record refuses records that are not the live G2 run and a script refusal', () => {
-  const g2 = JSON.parse(readFileSync(join(REPO, 'proofs/g2.json'), 'utf8'));
-  const s2 = JSON.parse(readFileSync(join(REPO, 'proofs/s2-refusal.json'), 'utf8'));
-  assert.throws(() => buildRun({ g2: { ...g2, label: 'rehearsal-regtest-mock-signer' }, s2 }), /not the live G2 record/);
+test('build of the replay record refuses records that are not the final build\'s live run, a script refusal on its vault, a take on the same contract and an earlier build\'s run', () => {
+  const g2 = proof('g2-v1.json');
+  const s2 = proof('s2-refusal-v1.json');
+  const take = proof('film-take.json');
+  const earlier = proof('g2.json');
+  assert.throws(() => buildRun({ g2: { ...g2, label: 'rehearsal-regtest-mock-signer' }, s2 }), /proofs\/g2-v1\.json is not the record of a live run/);
+  assert.throws(() => buildRun({ g2: { ...g2, cosigned: { ...g2.cosigned, readback: undefined } }, s2 }), /holds no mined co-signed spend and escape/);
+  // The earlier build's record in the final build's place: not the wasm deploy/testnet.json names.
+  assert.throws(() => buildRun({ g2: earlier, s2: proof('s2-refusal.json') }), /not a run of the final build/);
+  // Each half on its own: a run of another wasm on the same contract account, or a deploy config that names another wasm.
+  const deploy = JSON.parse(readFileSync(join(REPO, 'deploy/testnet.json'), 'utf8'));
+  assert.throws(() => buildRun({ g2: { ...g2, wasm: { ...g2.wasm, sha256: earlier.wasm.sha256 } } }), /not a run of the final build/);
+  assert.throws(() => buildRun({ deploy: { ...deploy, wasm_sha256: earlier.wasm.sha256 } }), /not a run of the final build/);
+  assert.throws(() => buildRun({ deploy: { ...deploy, contract: earlier.contract.account } }), /not a run of the final build/);
+  assert.throws(() => buildRun({ site: { contract: 'other.testnet' } }), /not a run on the contract this site's config names/);
   assert.throws(() => buildRun({ g2, s2: { ...s2, node_answer: { ...s2.node_answer, refusal: 'transient' } } }), /not a script refusal/);
   assert.throws(() => buildRun({ g2, s2: { ...s2, vault: { ...s2.vault, id: '00' } } }), /not the same test vault/);
+  assert.throws(() => buildRun({ take: { ...take, contract: earlier.contract.account } }), /not another vault of the same contract/);
+  assert.throws(() => buildRun({ take: { ...take, vault: { ...take.vault, id: g2.vault.id } } }), /not another vault of the same contract/);
+  assert.throws(() => buildRun({ take: { ...take, after: { ...take.after, execute_refusal: 'TooEarly' } } }), /not the film's take/);
+  assert.throws(() => buildRun({ earlier: g2 }), /not an earlier build's run/);
+  // A mined spend whose record does not say both signatures verified is not shown as one with two.
+  const oneSig = structuredClone(g2);
+  oneSig.cosigned.readback.signatures[1].verified = false;
+  assert.throws(() => buildRun({ g2: oneSig }), /does not record both signatures of the mined spend as verified/);
 });

@@ -317,7 +317,7 @@ test('build: a page can only reach the hosts its config names', () => {
 test('no production endpoint is written anywhere in site/lib, so test mode has nothing to fall back to', () => {
   for (const f of walk(join(SITE, 'lib'))) {
     const text = readFileSync(f, 'utf8');
-    assert.ok(!/mutinynet\.com|fastnear|near\.org|drpc|nearblocks|pages\.dev|signer-prod/.test(text), f);
+    assert.ok(!/mutinynet\.com|fastnear|near\.org|near\.rocks|drpc|nearblocks|pages\.dev|signer-prod/.test(text), f);
   }
 });
 

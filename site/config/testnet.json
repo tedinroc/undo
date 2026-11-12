@@ -7,7 +7,7 @@
   "funds": "/api/funds",
   "btcTxUrl": "https://mutinynet.com/tx/{}",
   "btcAddressUrl": "https://mutinynet.com/address/{}",
-  "nearTxUrl": "https://testnet.nearblocks.io/txns/{}",
+  "nearTxUrl": "https://testnet.near.rocks/tx/{}",
   "rpId": "undo-btc.pages.dev",
   "softPasskey": false,
   "h7": false

@@ -12,7 +12,7 @@ The relay's daily limits are shared by everyone who uses it, `./demo.sh` runs in
 - the live relay is set higher for the judging window (`CEILING_GENERAL_MICRO=1500000`, `CEILING_FUNDS_SATS=100000`): at most 32 new vaults and 50 test coins a day in all;
 - from one IP address, 3 vaults and 2 test coins an hour, counted from 00:00 UTC.
 
-So it can be full. When it is, the phone page says so in a sentence, and `./demo.sh` prints `SKIP (relay)` and points to `./verify.sh A` and `B`.
+So it can be full. When it is, the phone page says so in a sentence, and `./demo.sh` prints `SKIP demo (relay)` and points to `./verify.sh A` and `B`.
 
 ## When the coin count can run one over
 

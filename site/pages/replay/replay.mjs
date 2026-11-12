@@ -1,12 +1,13 @@
-// The replay: real steps from earlier runs, read from run.json next to this page (built from proofs/ by
-// tools/replay-run.mjs), shown one at a time. Every hash names its chain and links its explorer. There is no clock and
-// no timer: a step appears when the visitor asks for it, and a recorded wait is told as the number it was.
+// The replay: real steps from recorded runs, read from run.json next to this page (built from proofs/ by
+// tools/replay-run.mjs), shown one at a time. Every hash names its chain and links its explorer, and every step says
+// which run it is from. There is no clock and no timer: a step appears when the visitor asks for it, and a recorded
+// wait is told as the number it was.
 import { loadConfig } from '/site/lib/index.mjs';
 
 const $ = (id) => document.getElementById(id);
 const EXPLORERS = {
   Mutinynet: { txid: 'https://mutinynet.com/tx/{}', address: 'https://mutinynet.com/address/{}' },
-  'NEAR testnet': { tx: 'https://testnet.nearblocks.io/txns/{}' },
+  'NEAR testnet': { tx: 'https://testnet.near.rocks/tx/{}' },
 };
 
 function h(tag, attrs = {}, ...children) {
@@ -32,8 +33,9 @@ function line(l) {
 
 function stepCard(step, n, run) {
   const recorded = step.recorded !== false;
-  const when = recorded ? `replay · earlier run · ${run.runs[step.run].date} UTC${step.at ? ` ${step.at.slice(11, 19)}` : ''}` : 'not in these runs';
-  const card = h('li', { class: 'step', id: `step-${step.id}`, 'data-step': step.id, 'data-recorded': String(recorded) },
+  const from = run.runs[step.run];
+  const when = recorded ? `replay · ${from.label} · ${from.date} UTC${step.at ? ` ${step.at.slice(11, 19)}` : ''}` : 'not in these runs';
+  const card = h('li', { class: 'step', id: `step-${step.id}`, 'data-step': step.id, 'data-run': step.run ?? '', 'data-recorded': String(recorded) },
     h('div', { class: 'step-head' }, h('span', {}, `Step ${n} of ${run.steps.length}`), h('span', { class: 'when' }, when)),
     h('h2', { class: 'step-title' }, step.title),
     ...step.lines.map(line));
@@ -62,6 +64,7 @@ async function main() {
     plain(`The replay's record did not load (${err.message}), so there is nothing to show.`);
     return;
   }
+  $('title').textContent = run.title;
   $('note').textContent = run.note;
   const cards = run.steps.map((s, i) => stepCard(s, i + 1, run));
   $('steps').append(...cards);

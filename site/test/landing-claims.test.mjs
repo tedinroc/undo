@@ -53,25 +53,33 @@ test('the film is published with its own capture record: the file that record na
   // The README says the same of the voice, next to the line about AI coding assistance.
   const readme = readFileSync(join(REPO, 'README.md'), 'utf8');
   assert.match(readme, /with AI coding assistance \(Claude\)\. The film's narration is a synthetic voice \(AI text-to-speech\), not a recording of a person\./);
-  // The replay still claims no cancel of its own vault: the film's take is another vault on another day.
-  assert.equal(run.steps.find((s) => s.id === 'cancel').recorded, false);
+  // The replay claims no cancel on its own vault: its cancel step is this take, another vault, and the step says so.
+  const cancel = run.steps.find((s) => s.id === 'cancel');
+  assert.equal(cancel.run, 'take');
+  assert.match(cancel.title, /Another test vault of the same contract/);
   assert.notEqual(take.vault.id, run.vault.id);
 });
 
-test('replay: a step from another run than the refusal says so in its title, with that run\'s date, and that it was the owner\'s test spend', () => {
+test('replay: a step from another run than the refusal says so in its title: the owner\'s own request by its date and time, the take as another vault', () => {
   const refusal = run.steps.find((s) => s.id === 'refused');
   assert.match(refusal.title, /thief/i);
-  const thiefDate = run.runs[refusal.run].date;
   const others = run.steps.filter((s) => s.run && s.run !== refusal.run);
-  assert.deepEqual(others.map((s) => s.id), ['wait', 'signed', 'exit']);
-  for (const s of others.filter((x) => x.id !== 'exit')) {
-    const date = run.runs[s.run].date;
-    assert.notEqual(date, thiefDate);
-    assert.ok(s.title.includes(date), `${s.id}: its title names ${date}`);
-    assert.match(s.title, /^(Another request on this vault|That same request)/, s.id);
+  assert.deepEqual(others.map((s) => s.id), ['wait', 'cancel', 'signed', 'exit']);
+  // The owner's request is named the same way in both of its steps, by a date and a time that are not the refusal's.
+  const request = `${run.runs.g2.date} at ${run.steps.find((s) => s.id === 'wait').at.slice(11, 16)} UTC`;
+  assert.notEqual(request, `${run.runs[refusal.run].date} at ${refusal.at.slice(11, 16)} UTC`);
+  for (const s of others.filter((x) => x.run === 'g2' && x.id !== 'exit')) {
+    assert.ok(s.title.includes(request), `${s.id}: its title names ${request}`);
+    assert.match(s.title, /^(Another request on this vault, |Back on the first vault, the request of )/, s.id);
     assert.match(s.title, /the owner's own test spend/, s.id);
     assert.doesNotMatch(s.title, /thief/i, s.id);
   }
+  // The take's step is the only other one with a thief in it, and its title says it is another vault.
+  const taken = others.filter((x) => x.run === 'take');
+  assert.deepEqual(taken.map((s) => s.id), ['cancel']);
+  assert.match(taken[0].title, /thief's request\. Another test vault of the same contract/);
+  // The step after it says the story is back on the first vault, so a reader does not take its request for the thief's.
+  assert.match(run.steps[run.steps.indexOf(taken[0]) + 1].title, /^Back on the first vault, /);
 });
 
 /** The python3 -c program a status line pipes into. */

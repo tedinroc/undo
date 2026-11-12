@@ -17,7 +17,8 @@ import { fileURLToPath } from 'node:url';
 import { CONFIG_FORMAT, checkWatchConfig, makeTopic, StateStore, Watcher } from '../lib/watch.mjs';
 import { consensusJudge, consensusVerdict } from '../verify/rust.mjs';
 import { sha256 } from '../lib/crypto.mjs';
-import { base58Decode, base58Encode, toHex, utf8 } from '../lib/bytes.mjs';
+import { base58Decode, base58Encode, fromHex, toHex, utf8 } from '../lib/bytes.mjs';
+import { addressToSpk, makeTx, serialize, txid as bitcoinTxid } from '../lib/btc.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p) => readFileSync(join(REPO, p), 'utf8');
@@ -27,6 +28,9 @@ const s2 = JSON.parse(read('proofs/s2-refusal.json'));
 const g2v1 = JSON.parse(read('proofs/g2-v1.json'));
 const s2v1 = JSON.parse(read('proofs/s2-refusal-v1.json'));
 const g2v1Chain = JSON.parse(read('tools/test/fixtures/g2-v1-archival.json'));
+// The take of the live pages: its record, and what NEAR testnet and Mutinynet answered about it.
+const take = JSON.parse(read('proofs/film-take.json'));
+const takeChain = JSON.parse(read('tools/test/fixtures/film-take-archival.json'));
 const REFEREE = process.env.UNDO_TOOLS_CHECK_BIN && existsSync(process.env.UNDO_TOOLS_CHECK_BIN) ? process.env.UNDO_TOOLS_CHECK_BIN : null;
 const noReferee = REFEREE ? false : 'set UNDO_TOOLS_CHECK_BIN to the built tools/rust-check referee';
 
@@ -121,16 +125,18 @@ test('proof checkers, the real referee: the recorded G1 and G2 proofs still pass
 const DEAD = 'http://127.0.0.1:9';
 
 /**
- * A stand-in for mutinynet.com/api that knows both runs' transactions, with the S2 coin's spender chosen per test.
- * `outspendV1` is the same for the later run's key-alone coin: as recorded unless a test says otherwise. `change`
+ * A stand-in for mutinynet.com/api that knows both runs' transactions and the take's coin, with the S2 coin's spender
+ * chosen per test. `outspendV1` is the same for the later run's key-alone coin: as recorded unless a test says
+ * otherwise. `outspendTake` is the take's coin: unspent, as it was captured, unless a test says otherwise. `change`
  * edits what it knows.
  */
-function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.mutinynet_txid, vin: 0 }, change = () => {} }) {
+function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.mutinynet_txid, vin: 0 }, outspendTake = { spent: false }, change = () => {} }) {
   const known = new Map([g2, g2v1].flatMap((p) => [
     [p.cosigned.txid, { hex: p.cosigned.raw, height: p.cosigned.mined_height }],
     [p.escape.txid, { hex: p.escape.raw, height: p.escape.mined_height }],
     [p.escape.coin.split(':')[0], { hex: null, height: p.escape.coin_height }],
   ]));
+  known.set(take.coin.mutinynet_txid, { hex: takeChain.bitcoin[take.coin.mutinynet_txid].hex, height: takeChain.bitcoin[take.coin.mutinynet_txid].status.block_height });
   change(known);
   const server = createServer((req, res) => {
     const m = /^\/api\/tx\/([0-9a-f]{64})\/(hex|status|outspend\/\d+)$/.exec(req.url);
@@ -140,7 +146,7 @@ function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.
     };
     if (!m) return send(404, 'not found');
     const [, txid, what] = m;
-    if (what.startsWith('outspend')) return txid === s2.funding_coin.mutinynet_txid ? send(200, outspend) : txid === s2v1.funding_coin.mutinynet_txid ? send(200, outspendV1) : send(404, 'not found');
+    if (what.startsWith('outspend')) return txid === s2.funding_coin.mutinynet_txid ? send(200, outspend) : txid === s2v1.funding_coin.mutinynet_txid ? send(200, outspendV1) : txid === take.coin.mutinynet_txid ? send(200, outspendTake) : send(404, 'not found');
     const tx = known.get(txid);
     if (!tx) return send(404, 'Transaction not found');
     if (what === 'hex') return tx.hex ? send(200, tx.hex) : send(404, 'no hex here');
@@ -206,6 +212,11 @@ test('tier A with every endpoint dead: no [replay] line passes, and the recorded
   assert.ok(r.lines.some((l) => /^INFO C04 \[live-mutinynet, recorded on the final build, \d{4}-\d\d-\d\d\] Final build \(v1\.s\.undo-btc\.testnet\) escape sent before the coin was CSV old/.test(l)), r.out);
   assert.ok(r.lines.some((l) => l.startsWith(`SKIP C12 [replay] proofs/g2-v1.json execute ${v1.execute}: SKIP (network)`)), r.out);
   assert.ok(r.lines.some((l) => l.startsWith(`SKIP C03 [replay] Mutinynet coin ${s2v1.funding_coin.mutinynet_txid}: SKIP (network)`)), r.out);
+  // The take of the live pages is held to the same: nothing of it was fetched, so nothing of it passes.
+  assert.ok(r.lines.some((l) => l.startsWith(`SKIP C17 [replay] proofs/film-take.json proposal ${take.thief.propose_tx}: SKIP (network)`)), r.out);
+  assert.ok(r.lines.some((l) => l.startsWith('SKIP C17 [replay] 3 more NEAR testnet lines of the live take: SKIP (network)')), r.out);
+  assert.ok(r.lines.some((l) => l.startsWith(`SKIP C17 [replay] Mutinynet coin ${take.coin.mutinynet_txid}:${take.coin.vout}: SKIP (network)`)), r.out);
+  assert.equal(r.lines.filter((l) => /^PASS (C05|C17) /.test(l)).length, 0, r.out);
   // The consensus checks still run on the raw hex in proofs/.
   assert.ok(r.lines.some((l) => /^PASS C02 \[consensus-lib\]/.test(l)), r.out);
   assert.ok(r.lines.some((l) => /^SKIP C12 \[live-testnet\] signer arguments: SKIP \(network\)/.test(l)), r.out);
@@ -599,6 +610,303 @@ test('tier A, the final build\'s run: with no archival answer its NEAR lines say
   everyLineHasAClaim(r.lines);
 });
 
+// ---------------------------------------------------------------- tier A: the take of the live pages, the phone page's Cancel
+
+const tk = {
+  contract: take.contract,
+  create: take.vault.create_tx,
+  propose: take.thief.propose_tx,
+  cancel: take.cancel.tx,
+  execute: take.after.execute_after_the_wait_tx,
+  coin: `${take.coin.mutinynet_txid}:${take.coin.vout}`,
+};
+const takeLines = (r) => r.lines.filter((l) => [tk.propose, tk.cancel, tk.execute, take.coin.mutinynet_txid, 'proofs/film-take.json', 'at the block of that cancel', 'of the live take'].some((w) => l.includes(w)));
+/** The stand-ins for one run of tier A over the take: Esplora, and one node for archival RPC that knows the take alone. */
+async function takeRun({ chain = () => {}, bitcoin = () => {}, outspendTake } = {}) {
+  const api = await esplora({ outspend: { spent: true, txid: s2.coin_return.mutinynet_txid, vin: 0 }, outspendTake, change: bitcoin });
+  const node = await archival(chain, takeChain);
+  try {
+    return await tierA({ esploraUrl: api.url, archivalUrl: node.url, referee: null });
+  } finally {
+    api.close();
+    node.close();
+  }
+}
+const esc = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+test('proofs/film-take.json and its fixture: the take is on the contract deploy/testnet.json names, and the fixture holds its four transactions and no transaction signature', () => {
+  const config = JSON.parse(read('deploy/testnet.json'));
+  assert.equal(take.contract, config.contract);
+  assert.equal(take.origin, config.site_origin);
+  assert.deepEqual(Object.keys(takeChain.tx).sort(), [tk.create, tk.propose, tk.cancel, tk.execute].sort());
+  assert.equal(Object.keys(takeChain.block).length, 3);
+  for (const tx of Object.values(takeChain.tx)) assert.equal('signature' in tx.transaction, false);
+  assert.deepEqual(Object.keys(takeChain.bitcoin), [take.coin.mutinynet_txid]);
+  // The record's own numbers agree with each other, and the cancel is the method the phone page's Cancel sends.
+  assert.equal(take.thief.unlock_ms - take.thief.proposed_at_ms, take.thief.wait_ms);
+  assert.equal(take.cancel.method, 'cancel_all_and_rotate');
+  assert.equal(take.after.execute_refusal, 'RequestNotFound');
+});
+
+test('tier A, the live take: the proposal and its wait, the cancel between the proposal and the unlock with its passkey assertion verified here, the code at its block, the refused execute and the coin are fetched again and pass', { timeout: 150_000 }, async () => {
+  const r = await takeRun();
+  const lines = takeLines(r);
+  assert.equal(lines.filter((l) => !l.startsWith('PASS')).length, 0, r.out);
+  assert.equal(lines.length, 5, r.out);
+  assert.ok(r.out.includes('\n== tier A: replay of the live take in proofs/film-take.json: the phone page\'s Cancel, fetched again from archival RPC\n'), r.out);
+  const one = (re) => {
+    const hits = lines.filter((l) => re.test(l));
+    assert.equal(hits.length, 1, `${re}\n${r.out}`);
+    return hits[0];
+  };
+  one(new RegExp(`^PASS C17 \\[replay\\] NEAR testnet tx ${tk.propose}: propose_btc on ${esc(tk.contract)} made request 0 of vault ${take.vault.id.slice(0, 10)}…, a spend of Mutinynet coin ${take.coin.mutinynet_txid.slice(0, 10)}…:0 to ${take.thief.sent_to}, with its unlock 5:00 after the block it ran in$`));
+  const cancelled = one(new RegExp(`^PASS C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: cancel_all_and_rotate on ${esc(tk.contract)} for vault ${take.vault.id.slice(0, 10)}…, sent by \\S+, the relay's account, which made the vault and is the guard it names, in a block \\d+ s after the proposal's and \\d+ s before request 0's unlock, log "undo:rotating grant=0"\\. `));
+  // The times are the chain's: the block the cancel ran in, against the proposal's block and the unlock in its log.
+  assert.ok(cancelled.includes(' in a block 27 s after the proposal\'s and 272 s before request 0\'s unlock'), cancelled);
+  assert.ok(cancelled.includes(`Its WebAuthn assertion passes here the checks the contract makes: the origin is ${take.origin}, the challenge is the digest of this call's own arguments, user present and verified, and the P-256 signature verifies under the passkey in that vault's create_vault, tx ${tk.create}, whose keys hash to the vault id.`), cancelled);
+  // No chain says which authenticator it was. The line says where that comes from, and never says a phone.
+  assert.ok(cancelled.endsWith('As proofs/film-take.json records, the passkey was Chrome\'s virtual authenticator, not a phone\'s'), cancelled);
+  const config = JSON.parse(read('deploy/testnet.json'));
+  const code = one(/^PASS C05 \[replay\] NEAR testnet account \S+ ran code hash \S+ at the block of that cancel, read from archival RPC: /);
+  // The config here is a copy with stand-in endpoints, so the line names it as the config it was given.
+  assert.ok(code.includes(`account ${tk.contract} ran code hash ${g2v1.contract.code_hash} `) && code.includes(`: the sha256 ${config.wasm_sha256} that `) && code.endsWith(' names: the final build'), code);
+  const refused = one(new RegExp(`^PASS C17 \\[replay\\] NEAR testnet tx ${tk.execute}: an execute of request 0 of that vault, sent by \\S+ in a block \\d+ s after its unlock\\. The contract refused it: Smart contract panicked: RequestNotFound\\. No receipt of it went to the signer ${esc(config.signer)}$`));
+  assert.ok(refused.includes(' in a block 291 s after its unlock'), refused);
+  one(new RegExp(`^PASS C17 \\[replay\\] Mutinynet coin ${tk.coin}: 2,000 sats at ${take.vault.address}, the take's vault, mined at height ${take.coin.height}\\. Still unspent, read now: the cancelled request moved nothing$`));
+  everyLineHasAClaim(r.lines);
+});
+
+/** Edits the JSON arguments of a transaction's one function call, in a fixture copy. */
+const editArgs = (tx, change, action = 0) => {
+  const call = tx.transaction.actions[action].FunctionCall;
+  const args = JSON.parse(Buffer.from(call.args, 'base64').toString('utf8'));
+  change(args);
+  call.args = Buffer.from(JSON.stringify(args)).toString('base64');
+};
+const shiftBlock = (chain, hash, shiftMs) => {
+  const header = chain.block[hash].header;
+  header.timestamp_nanosec = String(BigInt(header.timestamp_nanosec) + BigInt(shiftMs) * 1_000_000n);
+};
+const blockOfLog = (chain, hash, test) => chain.tx[hash].receipts_outcome.find((x) => x.outcome.executor_id === tk.contract && test(x.outcome)).block_hash;
+
+test('tier A, the live take: another signature, origin, call or passkey, a late cancel, another sender, a shorter wait, an execute that ran, ran early or reached the signer, or other code each fail their line', { timeout: 600_000 }, async () => {
+  const cancelIn = (chain) => blockOfLog(chain, tk.cancel, (o) => o.logs.includes(take.cancel.log));
+  const proposedIn = (chain) => blockOfLog(chain, tk.propose, (o) => o.logs.some((l) => l.startsWith('undo:proposed ')));
+  const refusedIn = (chain) => blockOfLog(chain, tk.execute, (o) => Boolean(o.status?.Failure));
+  const accountKey = Object.keys(takeChain.query).find((k) => k.startsWith('view_account '));
+  const failsHere = `^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: its WebAuthn assertion does not pass here the checks the contract makes: `;
+  const runs = [
+    // One bit of the assertion's signature turned.
+    [(chain) => editArgs(chain.tx[tk.cancel], (a) => { a.assertion.signature = `${a.assertion.signature.slice(0, -1)}${a.assertion.signature.endsWith('8') ? '9' : '8'}`; }), new RegExp(`${failsHere}webauthn: bad signature$`)],
+    // The same assertion, said to come from another site.
+    [(chain) => editArgs(chain.tx[tk.cancel], (a) => {
+      const client = JSON.parse(Buffer.from(a.assertion.client_data_json, 'hex').toString('utf8'));
+      client.origin = 'https://undo-btc.pages.dev.example';
+      a.assertion.client_data_json = Buffer.from(JSON.stringify(client)).toString('hex');
+    }), new RegExp(`${failsHere}webauthn: origin not allowed$`)],
+    // The assertion carried by a call that installs another key: it was made for this call's arguments and no other's.
+    [(chain) => editArgs(chain.tx[tk.cancel], (a) => { a.new_k_s = 'ab'.repeat(32); }), new RegExp(`${failsHere}webauthn: wrong challenge$`)],
+    // A user-verified flag cleared in the authenticator data.
+    [(chain) => editArgs(chain.tx[tk.cancel], (a) => { a.assertion.authenticator_data = `${a.assertion.authenticator_data.slice(0, 64)}01${a.assertion.authenticator_data.slice(66)}`; }), new RegExp(`${failsHere}webauthn: user not verified$`)],
+    // The vault made with another passkey: its keys no longer hash to the vault id.
+    [(chain) => editArgs(chain.tx[tk.create], (a) => { a.args.passkey.pubkey = a.args.k_u; }), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.create}: the keys in its arguments hash to vault [0-9a-f]{10}…, not ${take.vault.id.slice(0, 10)}…$`)],
+    // The cancel's block put a second after the unlock.
+    [(chain) => shiftBlock(chain, cancelIn(chain), 273_967), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: it ran 1000 ms after request 0's unlock, not before it$`)],
+    // The cancel sent by another account than the one that made the vault.
+    [(chain) => { chain.tx[tk.cancel].transaction.signer_id = 'someone.testnet'; }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: sent by someone\\.testnet, not by \\S+, the relay's account, which made the vault$`)],
+    // The cancel went to another contract.
+    [(chain) => { chain.tx[tk.cancel].transaction.receiver_id = g2.contract.account; }, new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: sent to ${esc(g2.contract.account)}, not ${esc(tk.contract)}$`)],
+    // The proposal's block a minute later than it says: the wait was 4:00, not the 5:00 on record.
+    [(chain) => shiftBlock(chain, proposedIn(chain), 60_000), new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.propose}: the unlock is 240000 ms after its block, and proofs/film-take\\.json records a wait of 300000 ms$`)],
+    // The proposal asks for another coin.
+    [(chain) => editArgs(chain.tx[tk.propose], (a) => { a.inputs[0].vout = 1; }), new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.propose}: it does not ask to spend the take's coin ${tk.coin} and nothing else$`)],
+    // The execute went through.
+    [(chain) => {
+      const tx = chain.tx[tk.execute];
+      tx.status = { SuccessValue: '' };
+      for (const x of tx.receipts_outcome) x.outcome.status = { SuccessValue: '' };
+    }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.execute}: the contract did not refuse it$`)],
+    // The execute was refused for being early, which says nothing of a cancel.
+    [(chain) => { chain.tx[tk.execute] = JSON.parse(JSON.stringify(chain.tx[tk.execute]).replaceAll('RequestNotFound', 'TooEarly')); }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.execute}: refused, but not with "RequestNotFound": Smart contract panicked: TooEarly$`)],
+    // The execute's block put a second before the unlock.
+    [(chain) => shiftBlock(chain, refusedIn(chain), -292_206), new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.execute}: it ran 1000 ms before request 0's unlock, so it does not show a refusal after the wait$`)],
+    // A receipt of the execute at the signer.
+    [(chain) => { chain.tx[tk.execute].receipts_outcome.push({ block_hash: refusedIn(chain), id: 'x', outcome: { executor_id: 'v1.signer-prod.testnet', gas_burnt: 0, logs: [], receipt_ids: [], status: { SuccessValue: '' }, tokens_burnt: '0' } }); }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.execute}: a receipt of it went to the signer v1\\.signer-prod\\.testnet$`)],
+    // The contract ran other code at the block of the cancel: the first run's build.
+    [(chain) => { chain.query[accountKey].code_hash = g2.contract.code_hash; }, new RegExp(`^FAIL C05 \\[replay\\] ${esc(tk.contract)} ran code ${g2.contract.code_hash} at the block of NEAR testnet tx ${tk.cancel}, not ${g2v1.contract.code_hash}, `)],
+  ];
+  for (const [chain, want] of runs) {
+    const r = await takeRun({ chain });
+    const failed = r.lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(failed.length, 1, `${want}\n${r.out}`);
+    assert.match(failed[0], want);
+    assert.equal(r.code, 1, r.out);
+    // A cancel that did not pass leaves the code at its block unread, and says so: never a PASS for it.
+    if (failed[0].includes(tk.cancel) && !failed[0].includes('ran code')) assert.ok(r.lines.some((l) => l === `SKIP C05 [replay] ${tk.contract}'s code at the block of that cancel: not read, since the cancel did not pass`), r.out);
+    if (failed[0].includes(tk.create)) assert.equal(takeLines(r).filter((l) => l.startsWith('PASS C05')).length, 0, r.out);
+    assertRestsOn(r, failed[0]);
+    everyLineHasAClaim(r.lines);
+  }
+});
+
+/**
+ * What rests on a line that failed is not a pass, and says so. The cancel, the refused execute and the coin's tie to a
+ * cancelled request rest on the proposal; the code at the cancel's block and the coin's tie rest on the cancel.
+ */
+function assertRestsOn(r, failed) {
+  const lines = takeLines(r);
+  const coinSkip = `SKIP C17 [replay] Mutinynet coin ${tk.coin}: not a pass, since the cancel above did not pass, and this line rests on it. Read from the Mutinynet API: 2,000 sats at ${take.vault.address}, the take's vault, mined at height ${take.coin.height}, still unspent, read now`;
+  // The transaction a FAIL line is about is the one it starts with.
+  const about = (hash) => new RegExp(`^FAIL \\S+ \\[replay\\] (NEAR testnet tx|proofs/film-take\\.json \\w+) ${hash}:`).test(failed);
+  if (about(tk.propose)) {
+    assert.deepEqual(lines.filter((l) => l.startsWith('PASS')), [], r.out);
+    assert.ok(lines.includes(`SKIP C05 [replay] proofs/film-take.json cancel ${tk.cancel}: not checked, since the proposal above did not pass, and this line rests on it: the request it cancels, made before it, and that request's unlock, after it`), r.out);
+    assert.ok(lines.includes(`SKIP C17 [replay] proofs/film-take.json execute ${tk.execute}: not checked, since the proposal above did not pass, and this line rests on it: the request this execute names, and its unlock`), r.out);
+    assert.ok(lines.includes(`SKIP C05 [replay] ${tk.contract}'s code at the block of that cancel: not read, since the cancel did not pass`), r.out);
+    assert.ok(lines.includes(coinSkip), r.out);
+  }
+  if (about(tk.cancel) || about(tk.create)) {
+    assert.ok(lines.includes(coinSkip), r.out);
+    assert.equal(lines.filter((l) => l.startsWith(`PASS C17 [replay] Mutinynet coin `)).length, 0, r.out);
+  }
+}
+
+test('tier A, the live take: a proposal, a cancel or a create_vault that failed after its log, a proposal that returned another request, a cancel before the proposal, and a vault passkey for another site each fail their line, and what rests on them is not a pass', { timeout: 600_000 }, async () => {
+  const cancelIn = (chain) => blockOfLog(chain, tk.cancel, (o) => o.logs.includes(take.cancel.log));
+  const proposedIn = (chain) => blockOfLog(chain, tk.propose, (o) => o.logs.some((l) => l.startsWith('undo:proposed ')));
+  /** The transaction failed in the contract's receipt, after the log it wrote there: NEAR keeps the logs of a failed receipt. */
+  const failedAfterItsLog = (hash, words) => (chain) => {
+    const tx = chain.tx[hash];
+    tx.status = { Failure: { ActionError: { index: 0, kind: { FunctionCallError: { ExecutionError: words } } } } };
+    const receipt = tx.receipts_outcome.find((x) => x.outcome.executor_id === tk.contract);
+    assert.ok(receipt.outcome.logs.length > 0, 'the log stays');
+    receipt.outcome.status = tx.status;
+  };
+  const blockAt = (chain, hash, ms) => { chain.block[hash].header.timestamp_nanosec = String(BigInt(ms) * 1_000_000n); };
+  const unlock = take.thief.unlock_ms;
+  const runs = [
+    // propose_btc logs, then the state is written on exit: a failure there (gas, storage) rolls the request back and
+    // keeps the log. The line reads the outcome, not the log alone.
+    [failedAfterItsLog(tk.propose, 'Exceeded the prepaid gas.'), new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.propose}: it did not succeed: Exceeded the prepaid gas\\.$`)],
+    // It succeeded, but the request it made is another one than the record's.
+    [(chain) => {
+      const tx = chain.tx[tk.propose];
+      tx.status = { SuccessValue: Buffer.from('1').toString('base64') };
+      tx.receipts_outcome.find((x) => x.outcome.executor_id === tk.contract).outcome.status = tx.status;
+    }, new RegExp(`^FAIL C17 \\[replay\\] NEAR testnet tx ${tk.propose}: it returned 1, not request 0$`)],
+    // The cancel failed after it logged: it killed nothing.
+    [failedAfterItsLog(tk.cancel, 'Smart contract panicked: x'), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: it did not succeed: Smart contract panicked: x$`)],
+    // The vault's create_vault failed after it logged: the line's "which made the vault" would not hold.
+    [failedAfterItsLog(tk.create, 'Smart contract panicked: x'), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.create}: it did not succeed: Smart contract panicked: x$`)],
+    // The cancel's block put 100 s before the proposal's, so before the request it is said to have cancelled existed.
+    [(chain) => blockAt(chain, cancelIn(chain), unlock - 400_000), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: it ran 100000 ms before the proposal of request 0, tx ${tk.propose}, not after it$`)],
+    // In a block at the proposal's own time: not after it.
+    [(chain) => blockAt(chain, cancelIn(chain), Number(BigInt(chain.block[proposedIn(chain)].header.timestamp_nanosec) / 1_000_000n)), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.cancel}: it ran 0 ms before the proposal of request 0, tx ${tk.propose}, not after it$`)],
+    // The vault's passkey is for another site. Its id does not cover the site, so this line is the one that says so.
+    [(chain) => editArgs(chain.tx[tk.create], (a) => { a.args.passkey.rp_id_hash = toHex(sha256(utf8('undo-btc.pages.dev.example'))); }), new RegExp(`^FAIL C05 \\[replay\\] NEAR testnet tx ${tk.create}: the vault's passkey is for another site than ${esc(take.origin)}$`)],
+  ];
+  for (const [chain, want] of runs) {
+    const r = await takeRun({ chain });
+    const failed = r.lines.filter((l) => l.startsWith('FAIL'));
+    assert.equal(failed.length, 1, `${want}\n${r.out}`);
+    assert.match(failed[0], want);
+    assert.equal(r.code, 1, r.out);
+    assertRestsOn(r, failed[0]);
+    everyLineHasAClaim(r.lines);
+  }
+});
+
+test('tier A, the live take\'s coin: unspent passes; spent by the cold key\'s branch says so and passes; spent by a co-signed spend to the thief\'s address, other bytes or another height fail', { timeout: 600_000 }, async () => {
+  const coin = { txid: take.coin.mutinynet_txid, vout: take.coin.vout };
+  const thief = addressToSpk('mutinynet', take.thief.sent_to);
+  const elsewhere = addressToSpk('mutinynet', take.vault.address);
+  const script = new Uint8Array(111).fill(7);
+  const sig = new Uint8Array(72).fill(9);
+  /** A spend of the take's coin with this witness, paying this script: only its shape is read, so its signatures are filler. */
+  const spend = (witness, to, sequence = 0xfffffffd) => {
+    const tx = makeTx([coin], sequence, [{ value: 1702, spk: to }]);
+    tx.inputs[0].witness = witness;
+    return { txid: bitcoinTxid(tx), hex: toHex(serialize(tx)) };
+  };
+  const thiefSpend = spend([sig, sig, Uint8Array.of(1), script], thief);
+  const coldSpend = spend([sig, new Uint8Array(0), script], elsewhere, 6);
+  const otherSpend = spend([sig, sig, Uint8Array.of(1), script], elsewhere);
+  const oddSpend = spend([sig, script], elsewhere);
+  const held = `Mutinynet coin ${tk.coin}: 2,000 sats at ${take.vault.address}, the take's vault, mined at height ${take.coin.height}\\. `;
+  const knows = (s) => (known) => known.set(s.txid, { hex: s.hex, height: take.coin.height + 10 });
+  const cases = [
+    [{ outspendTake: { spent: true, txid: thiefSpend.txid, vin: 0 }, bitcoin: knows(thiefSpend) }, new RegExp(`^FAIL C17 \\[replay\\] ${held}Spent by Mutinynet txid ${thiefSpend.txid}, a co-signed spend that pays ${take.thief.sent_to}, the address of the cancelled request$`), 1],
+    [{ outspendTake: { spent: true, txid: coldSpend.txid, vin: 0 }, bitcoin: knows(coldSpend) }, new RegExp(`^PASS C17 \\[replay\\] ${held}Spent since by Mutinynet txid ${coldSpend.txid} through the script's cold-key branch, with one signature and none from MPC: not by the cancelled request$`), 0],
+    [{ outspendTake: { spent: true, txid: otherSpend.txid, vin: 0 }, bitcoin: knows(otherSpend) }, new RegExp(`^PASS C17 \\[replay\\] ${held}Spent since by Mutinynet txid ${otherSpend.txid}, a co-signed spend that does not pay ${take.thief.sent_to}: not the cancelled request's spend$`), 0],
+    [{ outspendTake: { spent: true, txid: oddSpend.txid, vin: 0 }, bitcoin: knows(oddSpend) }, new RegExp(`^FAIL C17 \\[replay\\] ${held}Spent by Mutinynet txid ${oddSpend.txid}, with a witness of neither branch of the vault's script$`), 1],
+    // The API names a spender whose bytes spend another coin.
+    [{ outspendTake: { spent: true, txid: g2v1.escape.txid, vin: 0 } }, new RegExp(`^FAIL C17 \\[replay\\] Mutinynet coin ${tk.coin}: the API names Mutinynet txid ${g2v1.escape.txid} as its spender, and the bytes it gives do not spend this coin$`), 1],
+    // The API gives another transaction's bytes for the coin, or another height.
+    [{ bitcoin: (known) => { known.get(take.coin.mutinynet_txid).hex = g2v1.cosigned.raw; } }, new RegExp(`^FAIL C17 \\[replay\\] Mutinynet coin ${tk.coin}: the API's bytes are another transaction's$`), 1],
+    [{ bitcoin: (known) => { known.get(take.coin.mutinynet_txid).height += 1; } }, new RegExp(`^FAIL C17 \\[replay\\] Mutinynet coin ${tk.coin}: mined at ${take.coin.height + 1}, proofs/film-take\\.json says ${take.coin.height}$`), 1],
+  ];
+  for (const [how, want, code] of cases) {
+    const r = await takeRun(how);
+    const lines = r.lines.filter((l) => l.includes(`Mutinynet coin ${tk.coin}`));
+    assert.equal(lines.length, 1, `${want}\n${r.out}`);
+    assert.match(lines[0], want);
+    assert.equal(r.lines.filter((l) => l.startsWith('FAIL')).length, code, r.out);
+    assert.equal(r.code, code, r.out);
+    everyLineHasAClaim(r.lines);
+  }
+});
+
+test('tier A, the live take: with no archival answer its NEAR lines say SKIP (network) and are counted, none passes, and the coin is read but not passed, since it rests on them; a spend to the thief still fails', { timeout: 300_000 }, async () => {
+  const none = await takeRun({ chain: (chain) => { delete chain.tx[tk.propose]; } });
+  let lines = takeLines(none);
+  assert.ok(lines.some((l) => l.startsWith(`SKIP C17 [replay] proofs/film-take.json proposal ${tk.propose}: SKIP (network)`)), none.out);
+  assert.ok(lines.some((l) => l.startsWith('SKIP C17 [replay] 3 more NEAR testnet lines of the live take: SKIP (network), the archival RPC did not answer')), none.out);
+  // The coin's line says what the API answered, and not that a cancelled request moved nothing: nothing checked a cancel.
+  const facts = `2,000 sats at ${take.vault.address}, the take's vault, mined at height ${take.coin.height}`;
+  const untied = `SKIP C17 [replay] Mutinynet coin ${tk.coin}: SKIP (network): the archival RPC did not answer, so the proposal and the cancel this line rests on were not checked. Read from the Mutinynet API: ${facts}`;
+  assert.ok(lines.includes(`${untied}, still unspent, read now`), none.out);
+  assert.deepEqual(lines.filter((l) => l.startsWith('PASS')), [], none.out);
+  assert.equal(lines.filter((l) => l.includes('cancelled request')).length, 0, none.out);
+  assert.equal(none.lines.filter((l) => l.startsWith('FAIL')).length, 0, none.out);
+  // The same with the coin spent: by the cold key's branch it is what was read, not a pass; to the thief's address by a
+  // co-signed spend it fails, with or without a cancel to tie it to.
+  const sig = new Uint8Array(72).fill(9);
+  const script = new Uint8Array(111).fill(7);
+  const spend = (witness, to, sequence) => {
+    const tx = makeTx([{ txid: take.coin.mutinynet_txid, vout: take.coin.vout }], sequence, [{ value: 1702, spk: to }]);
+    tx.inputs[0].witness = witness;
+    return { txid: bitcoinTxid(tx), hex: toHex(serialize(tx)) };
+  };
+  const cold = spend([sig, new Uint8Array(0), script], addressToSpk('mutinynet', take.vault.address), 6);
+  const thief = spend([sig, sig, Uint8Array.of(1), script], addressToSpk('mutinynet', take.thief.sent_to), 0xfffffffd);
+  const silent = (chain) => { delete chain.tx[tk.propose]; };
+  const knows = (s) => (known) => known.set(s.txid, { hex: s.hex, height: take.coin.height + 10 });
+  const coldRun = await takeRun({ chain: silent, outspendTake: { spent: true, txid: cold.txid, vin: 0 }, bitcoin: knows(cold) });
+  assert.ok(takeLines(coldRun).includes(`${untied}, spent since by Mutinynet txid ${cold.txid} through the script's cold-key branch, with one signature and none from MPC`), coldRun.out);
+  assert.deepEqual(takeLines(coldRun).filter((l) => l.startsWith('PASS') || l.startsWith('FAIL')), [], coldRun.out);
+  const thiefRun = await takeRun({ chain: silent, outspendTake: { spent: true, txid: thief.txid, vin: 0 }, bitcoin: knows(thief) });
+  assert.deepEqual(thiefRun.lines.filter((l) => l.startsWith('FAIL')), [`FAIL C17 [replay] Mutinynet coin ${tk.coin}: ${facts}. Spent by Mutinynet txid ${thief.txid}, a co-signed spend that pays ${take.thief.sent_to}, the address of the thief tab's request in proofs/film-take.json`], thiefRun.out);
+  assert.equal(thiefRun.code, 1, thiefRun.out);
+  everyLineHasAClaim(coldRun.lines);
+  everyLineHasAClaim(thiefRun.lines);
+  // The vault's create_vault unanswered: the cancel cannot be checked, so it does not pass, and neither does what follows.
+  const part = await takeRun({ chain: (chain) => { delete chain.tx[tk.create]; } });
+  lines = takeLines(part);
+  assert.equal(lines.filter((l) => l.startsWith('PASS C17 [replay] NEAR testnet tx ')).length, 1, part.out);
+  assert.ok(lines.some((l) => l.startsWith(`SKIP C05 [replay] proofs/film-take.json cancel ${tk.cancel}: SKIP (network)`)), part.out);
+  assert.ok(lines.some((l) => l.startsWith('SKIP C17 [replay] 2 more NEAR testnet lines of the live take: SKIP (network)')), part.out);
+  assert.equal(lines.filter((l) => l.startsWith('PASS C05')).length, 0, part.out);
+  // The proposal passed here, so the line names only the cancel it could not check.
+  const untiedCancel = untied.replace('so the proposal and the cancel this line rests on were not checked', 'so the cancel this line rests on was not checked');
+  assert.notEqual(untiedCancel, untied);
+  assert.ok(lines.includes(`${untiedCancel}, still unspent, read now`), part.out);
+  assert.ok(!lines.includes(`${untied}, still unspent, read now`), part.out);
+  assert.equal(lines.filter((l) => l.startsWith('PASS C17 [replay] Mutinynet coin ')).length, 0, part.out);
+  assert.equal(part.lines.filter((l) => l.startsWith('FAIL')).length, 0, part.out);
+  everyLineHasAClaim(none.lines);
+  everyLineHasAClaim(part.lines);
+});
+
 test('the outward gate reads a named run\'s record too: a verdict past its contents in proofs/g2-NAME.json stops it', { timeout: 120_000 }, () => {
   // A throwaway git folder with this repo's scripts and the proof checker, as the G2 rehearsal makes one. The blocked
   // list is a made-up word: the gate fails closed without one, and this test is about the proofs, not the names.
@@ -843,7 +1151,11 @@ test('README and CLAIMS: no TODO, the agent and watcher are reachable, every has
   assert.match(onTestnet, /with a phone's passkey this has \*\*not yet run\*\*/);
   assert.match(onTestnet, /that near-cli command itself has \*\*not yet run\*\* on testnet/);
   assert.doesNotMatch(agentReadme, /None of it has run against testnet/);
-  assert.match(row('C13')[1], /The deployed code hash equals the wasm this machine built/);
+  assert.match(row('C13')[1], /The deployed code hash equals the wasm the operator's machine built/);
+  // The label is printed on whoever's machine runs the check, so it names the machine that built, and says this run built nothing.
+  assert.match(row('C13')[2], /Label when it runs: "the operator's machine built this hash", since CI does not build the wasm; the run itself rebuilds nothing/);
+  assert.match(read('tools/verify/tier-a.mjs'), /'the operator\\'s machine built this hash \(scripts\/build\.sh; CI does not build the wasm, and this run rebuilds nothing\)'/);
+  assert.doesNotMatch(`${read('tools/verify/tier-a.mjs')}${claims}${read('README.md')}`, /this machine built/);
   assert.doesNotMatch(claims, /current build/, 'every build is named by what it was built from');
   for (const f of ['agent/README.md', 'docs/watch.md']) assert.ok(existsSync(join(REPO, f)), f);
 });
@@ -926,7 +1238,7 @@ test('README: the lead says what only this entry has, with the contract as the o
   // The problem, in three sentences, and each NEAR feature under its own name with its claim rows.
   const problem = readmeBetween('## Problem', '## How NEAR fits (tracks: open, security, defi)').trim();
   assert.equal(problem, 'A stolen Bitcoin spend key means stolen coins, at once and for good. Multisig stops that only if a second key signs every spend. Undo keeps one-key spending and adds a public wait and a cancel.');
-  const fits = readmeBetween('## How NEAR fits (tracks: open, security, defi)', '## Run it');
+  const fits = readmeBetween('## How NEAR fits (tracks: open, security, defi)', '## Not done yet');
   const bullets = fits.split('\n').filter((l) => l.startsWith('- '));
   assert.deepEqual(bullets.map((b) => /^- \*\*([^*]+)\*\*/.exec(b)[1]), ['Chain Signatures.', 'A public contract as referee.', 'Function-call keys.', 'NEAR alone can refuse, not take.', 'Not used:']);
   const rows = new Set(read('CLAIMS.md').split('\n').map((l) => /^\| (C\d\d) \|/.exec(l)?.[1]).filter(Boolean));
@@ -948,6 +1260,10 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; from a real phone: \*\*not yet run\*\*\./);
   assert.match(read('CLAIMS.md'), /Several pending requests killed by one call, on testnet: \*\*not yet run\*\*/, 'C17 says the same of testnet');
   assert.match(bullets[2], /`propose_btc` and `execute` only/);
+  // The agent is a command-line tool, and a script drove the recorded run: no model is in this repository.
+  assert.match(bullets[2], /The agent here is a CLI with `--json` output for a model to call; a test script drove the recorded run, not a model\./);
+  assert.match(read('agent/undo.mjs'), /const wantsJson = process\.argv\.includes\('--json'\);/);
+  assert.ok(existsSync(join(REPO, 'agent/test/testnet-c14.mjs')), 'the script that drove the recorded run');
   assert.match(bullets[3], /All three ran on the final build with Mutinynet test coins, 2026-11-11\./);
   assert.equal(g2v1.cosigned.attempts.at(-1).contract_logs.length > 0 && g2v1.coins[0].recorded_at.slice(0, 10), '2026-11-11');
   assert.equal(bullets[4], '- **Not used:** NEAR Intents, TEE attestation. A NEAR AI model signature checked on testnet is **not yet run** (C08).');
@@ -955,10 +1271,26 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.match(fits, /^\nEach claim number below is a row of \[CLAIMS\.md\]\(CLAIMS\.md\), with its command, its date and the hash it rests on\.\n/);
   // The earlier build's executes are on another contract account than the final build's, as the bullet says.
   assert.notEqual(g2.contract.account, g2v1.contract.account);
+  // What is not done, in one list right after it, so a reader does not collect it from five places. Each line is
+  // said again where it belongs, in the same words where a test already holds them.
+  const notDone = readmeBetween('## Not done yet', '## Run it').split('\n').filter((l) => l.startsWith('- '));
+  assert.deepEqual(notDone, [
+    '- A Cancel from a real phone: **not yet run**. It ran with software passkeys and with Chrome\'s virtual authenticator.',
+    '- The lock: the deploy\'s full-access key is still on the test contract, so its holder could replace the code at once, and C11 fails in `./verify.sh A`.',
+    '- Mainnet: not deployed and not run (C19). Test networks only.',
+    '- An audit: the code is unaudited.',
+    '- A NEAR AI model signature for the guard\'s hold, checked on testnet: **not yet run** (C08).',
+  ]);
+  const claimsText = read('CLAIMS.md');
+  assert.match(claimsText, /\| C11 \|.*`\.\/verify\.sh A` prints FAIL on `v1\.s\.undo-btc\.testnet`, the instance of the final build, which keeps its deployer's full-access key/);
+  assert.match(claimsText, /\| C19 \| On mainnet: .*\*\*not run\*\*: this build has no mainnet deploy/);
+  assert.match(claimsText, /\| C08 \|.*A real NEAR AI signature checked on testnet: \*\*not yet run\*\*/);
+  assert.match(claimsText, /\| C05 \|.*From a real phone: \*\*not yet run\*\*/);
+  assert.match(read('README.md'), /Nothing here runs on NEAR mainnet or holds real bitcoin\. The code is unaudited\./);
+  assert.match(read('tools/verify/tier-a.mjs'), /Its owner could replace the code at once, without the upgrade wait/, 'C11\'s own words when it fails');
 });
 
-test('README, See it on chain: four links, each to a hash its record holds, each saying its build and what signed', () => {
-  const take = JSON.parse(read('proofs/film-take.json'));
+test('README, See it on chain: five links, each to a hash its record holds, each saying its build and what signed, and all five fetched again by ./verify.sh A', () => {
   const section = readmeBetween('### See it on chain', '## Try it');
   const execute = g2v1.cosigned.attempts.find((a) => a.signer_answer).execute_tx;
   const links = [...section.matchAll(/\[`([^`]+)`\]\((https:\/\/[^)]+)\)/g)].map((m) => [m[1], m[2]]);
@@ -967,16 +1299,21 @@ test('README, See it on chain: four links, each to a hash its record holds, each
     [execute, `https://testnet.near.rocks/tx/${execute}`],
     [g2v1.escape.txid, `https://mutinynet.com/tx/${g2v1.escape.txid}`],
     [take.cancel.tx, `https://testnet.near.rocks/tx/${take.cancel.tx}`],
+    [take.after.execute_after_the_wait_tx, `https://testnet.near.rocks/tx/${take.after.execute_after_the_wait_tx}`],
   ]);
+  // The site links NEAR transactions on the same explorer the README does.
+  assert.equal(JSON.parse(read('site/config/testnet.json')).nearTxUrl, 'https://testnet.near.rocks/tx/{}');
+  assert.match(read('site/pages/replay/replay.mjs'), /'NEAR testnet': \{ tx: 'https:\/\/testnet\.near\.rocks\/tx\/\{\}' \}/);
+  for (const f of ['README.md', 'site/config/testnet.json', 'site/pages/index.html', 'site/pages/replay/replay.mjs']) assert.doesNotMatch(read(f), /nearblocks/, `${f} names one NEAR explorer`);
   // No other hash in the section, and none cut short.
   const long = [...section.matchAll(/\b(?:[0-9a-f]{64}|[1-9A-HJ-NP-Za-km-z]{43,44})\b/g)].map((m) => m[0]);
   assert.deepEqual([...new Set(long)], links.map((l) => l[0]));
   assert.doesNotMatch(section.replace('`358c63bf…`', ''), /…/);
   const items = section.split('\n').filter((l) => l.startsWith('- '));
-  assert.equal(items.length, 4);
+  assert.equal(items.length, 5);
   // Its build, from the records: the wasm, the contract, the day.
   assert.ok(g2v1.wasm.sha256.startsWith('358c63bf'));
-  assert.ok(section.includes(`Four transactions of the final build (wasm \`358c63bf…\`, contract \`${g2v1.contract.account}\`), ${take.started_utc.slice(0, 10)}`));
+  assert.ok(section.includes(`Five transactions of the final build (wasm \`358c63bf…\`, contract \`${g2v1.contract.account}\`), ${take.started_utc.slice(0, 10)}`));
   assert.equal(take.contract, g2v1.contract.account);
   assert.equal(g2v1.cosigned.attempts.find((a) => a.signer_answer).tx_status, 'success');
   // What signed each one.
@@ -990,7 +1327,20 @@ test('README, See it on chain: four links, each to a hash its record holds, each
   assert.deepEqual(g2v1.escape.readback.signatures.map((x) => [x.key, x.verified]), [['K_e', true]]);
   assert.ok(items[3].includes(`\`${take.cancel.method}\``) && items[3].includes('The passkey was Chrome\'s virtual authenticator, not a phone\'s'));
   assert.ok(take.labels.includes('virtual authenticator'));
-  assert.match(section, /`\.\/verify\.sh A` fetches the first three again \(`proofs\/g2-v1\.json`\); the fourth is recorded in `proofs\/film-take\.json`\./);
+  // The two times of the take are the chain's: the blocks the cancel and the refused execute ran in, against the unlock.
+  const blockMsOf = (hash, test) => Number(BigInt(takeChain.block[takeChain.tx[hash].receipts_outcome.find((x) => x.outcome.executor_id === take.contract && test(x.outcome)).block_hash].header.timestamp_nanosec) / 1_000_000n);
+  const before = Math.floor((take.thief.unlock_ms - blockMsOf(take.cancel.tx, (o) => o.logs.includes(take.cancel.log))) / 1000);
+  const after = Math.floor((blockMsOf(take.after.execute_after_the_wait_tx, (o) => Boolean(o.status?.Failure)) - take.thief.unlock_ms) / 1000);
+  assert.ok(items[3].includes(`in a block ${before} s before the thief's request would have unlocked`), `${before} s`);
+  assert.ok(items[3].includes('`./verify.sh A` verifies its WebAuthn signature again, under the passkey the vault was made with'));
+  assert.ok(items[4].includes(`in a block ${after} s after its 5:00 wait had run out. The contract refused it, \`${take.after.execute_refusal}\`, and asked the signer for nothing`), `${after} s`);
+  assert.equal(take.thief.wait_ms, 300_000);
+  assert.match(items[4], /the vault's coin read unspent again on \d{4}-\d\d-\d\d: /);
+  // All five are fetched again, and the section says where each record is.
+  assert.match(section, /`\.\/verify\.sh A` fetches all five again: the first three are in `proofs\/g2-v1\.json`, the last two in `proofs\/film-take\.json`\./);
+  const tierA = read('tools/verify/tier-a.mjs');
+  for (const field of ['take.cancel.tx', 'take.vault.create_tx', 't.propose_tx']) assert.ok(tierA.includes(`fetchTx(${field})`), `tier A fetches ${field}`);
+  assert.ok(tierA.includes('const hash = take.after.execute_after_the_wait_tx;\n      const tx = await fetchTx(hash);'), 'and the refused execute');
 });
 
 test('README: the commands are listed once, with what a SKIP means beside them; the relay\'s accounting, the dated tests and the mainnet numbers each rest on a file', () => {
@@ -999,13 +1349,45 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   const run = readmeBetween('## Run it', '### See it on chain');
   assert.deepEqual(run.split('\n').filter((l) => l.startsWith('| `')).map((l) => /^\| (`[^`]+`)/.exec(l)[1]), ['`./verify.sh A`', '`./demo.sh`', '`./verify.sh B`']);
   for (const phrase of [
-    '`SKIP` means the check did not run, and the line says why.', 'those replay lines then print `SKIP (network)`', 'the run prints `SKIP (relay)` and points to `./verify.sh A` and `B`',
+    '`SKIP` means the check did not run, and the line says why.', 'those replay lines then print `SKIP (network)`', 'the run prints `SKIP demo (relay)` and points to `./verify.sh A` and `B`',
     'a throwaway vault with a software passkey, a proposal to a new address, a passkey cancel, and a send back to the vault\'s own address that the live signer signs after its 1:00 wait',
     'No coin moves, but its NEAR calls are real NEAR testnet transactions',
   ]) assert.ok(run.includes(phrase), `beside the Run it table: ${phrase}`);
+  // The words quoted are the words printed: demo.sh's skip line starts `SKIP demo`, and its other lines carry a step.
+  assert.match(read('tools/demo/demo.mjs'), /console\.log\(`SKIP demo \$\{why\}`\);/);
+  assert.match(read('tools/demo/demo.mjs'), /skip\(`\(relay\) no answer from the relay/);
+  assert.ok(read('docs/relay.md').includes('`./demo.sh` prints `SKIP demo (relay)` and points to `./verify.sh A` and `B`'));
+  for (const f of ['README.md', 'docs/relay.md']) assert.doesNotMatch(read(f), /`SKIP \(relay\)`/, `${f} quotes the line as it is printed`);
+  // A claim number is on ./verify.sh's lines; a ./demo.sh line carries its step there, and the paragraph says which is which.
+  const reading = run.split('\n').find((l) => l.startsWith('**Reading the lines.**'));
+  assert.match(reading, /^\*\*Reading the lines\.\*\* Each `\.\/verify\.sh` line is `PASS`, `SKIP` or `FAIL`, a claim number from \[CLAIMS\.md\]\(CLAIMS\.md\), and a label for where it ran; /);
+  assert.ok(reading.includes('A `./demo.sh` line carries its step, `demo-1` to `demo-5`, where the claim number goes.'));
+  for (let i = 1; i <= 5; i += 1) assert.ok(read('tools/demo/demo.mjs').includes(`'demo-${i}'`), `demo-${i} is a line demo.sh prints`);
+  // The first command's row says what to expect, and that its one FAIL is this entry's own report about itself.
+  const rowA = run.split('\n').find((l) => l.startsWith('| `./verify.sh A` |'));
+  assert.match(rowA, /^\| `\.\/verify\.sh A` \| 1 to 3 min, [^|]+ \| Expected today: `TIER A: \d+ PASS, 0 SKIP, 1 FAIL, \d+ INFO`, exit 1\. The one FAIL is C11, which this entry reports about itself: /);
+  assert.ok(rowA.includes('fetch the live phone page\'s Cancel again and verify its passkey signature here'));
+  // The same total is the last one in the row of what was built, so the two cannot drift apart.
+  const total = /Expected today: `TIER A: (\d+) PASS/.exec(rowA)[1];
+  const builtRow = readme.split('\n').find((l) => l.startsWith('| `verify.sh`, `demo.sh`, `CLAIMS.md` |'));
+  assert.ok(builtRow.endsWith(`with the lines for the live phone page's Cancel, ${total} PASS and the same FAIL |`), `the last run named there has ${total} PASS`);
   const tryIt = readmeBetween('## Try it', '### Try a cancel yourself');
   const doCells = tryIt.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Do |')).map((l) => /^\| ([^|]+) \|/.exec(l)[1]);
   assert.equal(doCells[0], 'Open https://undo-btc.pages.dev', 'the site comes first');
+  // Each row says what you will see: the film, the replay's six steps, and your own cancel, which a device's passkey has not run.
+  const seeCells = Object.fromEntries(tryIt.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Do |')).map((l) => l.split(' | ')).map((c) => [c[0].slice(2), c.slice(1).join(' | ')]));
+  assert.deepEqual(doCells.slice(0, 3), ['Open https://undo-btc.pages.dev', 'Press **Watch a recorded run** (`/replay/`)', 'Open `/p/` in a browser that has a passkey, then follow the four steps below']);
+  assert.match(seeCells['Open https://undo-btc.pages.dev'], /^The film, about a minute, muted until you unmute it: /);
+  assert.match(read('site/pages/index.html'), /<video id="film" class="film-video" muted playsinline autoplay loop controls /);
+  assert.match(read('site/pages/index.html'), /<a id="replay-link" class="go" href="\/replay\/">Watch a recorded run<\/a>/);
+  const replayRow = seeCells['Press **Watch a recorded run** (`/replay/`)'];
+  const replay = JSON.parse(read('site/pages/replay/run.json'));
+  assert.match(replayRow, /^Six steps from the final build's recorded runs, each with its real hashes from `proofs\/`: /);
+  assert.equal(replay.steps.length, 6);
+  assert.ok(replayRow.includes('the phone page\'s Cancel (from the film\'s take, another vault of the same contract)') && replay.steps[3].run === 'take');
+  assert.ok(replayRow.includes('a request made to wait 10:00') && replayRow.endsWith('Nothing on that page is live |'));
+  assert.doesNotMatch(tryIt, /\bG2\b/, 'no term before Terms');
+  assert.match(seeCells['Open `/p/` in a browser that has a passkey, then follow the four steps below'], /With a device's own passkey this is \*\*not yet run\*\* \|$/);
   for (const cell of doCells) assert.doesNotMatch(cell, /^`\.\/(verify|demo)\.sh/, 'a command of the Run it table is not listed a second time');
   assert.match(readme, /\n- The agent on a local node: `agent\/test\/run-sandbox\.sh 86 88` /, 'the agent\'s sandbox run is under More');
   // The relay: the paragraph before the steps stops at "So it can be full." and the rest is in the doc it links.
@@ -1016,9 +1398,15 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
     assert.ok(relay.includes(moved), `docs/relay.md holds: ${moved}`);
     assert.equal(readme.includes(moved), false, 'and the README no longer does');
   }
+  // The relay's numbers are in the doc alone now: the README says the limits are shared and points there.
   for (const kept of ['at most 13 new vaults and 20 test coins a day in all', '`CEILING_GENERAL_MICRO=1500000`, `CEILING_FUNDS_SATS=100000`', 'at most 32 new vaults and 50 test coins a day in all', '3 vaults and 2 test coins an hour']) {
-    assert.ok(relay.includes(kept) && readme.includes(kept), `both say: ${kept}`);
+    assert.ok(relay.includes(kept), `docs/relay.md says: ${kept}`);
+    assert.equal(readme.includes(kept), false, `the README leaves it to docs/relay.md: ${kept}`);
   }
+  assert.match(before, /^\nYou need a phone that can make passkeys, and a laptop; or one laptop or desktop browser with a passkey and two tabs \(see "On one device" below\)\. The relay pays the NEAR gas, and its daily limits are shared by everyone who tries this, `\.\/demo\.sh` runs included\. So it can be full\. /);
+  // The cold key, said without "always": what it needs, and when it can move a coin.
+  assert.ok(readme.includes('The cold key in the recovery file needs no relay and, for its exit, no NEAR: it moves a coin only once the coin is older than the timelock.'));
+  assert.doesNotMatch(readme, /always works/);
   // The dated tests: the numbers are the measurements file's, with its date and its label.
   const tests = run.split('\n').find((l) => l.startsWith('**Tests behind these.**'));
   const measured = read('docs/measurements.md');

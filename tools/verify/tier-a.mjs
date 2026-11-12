@@ -17,6 +17,9 @@
 //    the contract's code hash at the block of the execute, the proposal's unlock and the execute's block against
 //    it, the signer's signature against the digest of the mined Bitcoin transaction and against its witness, and
 //    the Mutinynet transactions. With proofs/s2-refusal-NAME.json, the spend key alone on that run's vault.
+//    Then the take of the live pages in proofs/film-take.json: the thief tab's proposal and its wait, the phone
+//    page's cancel_all_and_rotate before that unlock, with its WebAuthn assertion checked again here under the
+//    passkey the vault was made with, the execute the contract refused after the unlock, and the coin, read now.
 // 4. The agent run in proofs/c14-agent.json: the transaction that gave the agent its function-call key,
 //    its proposal, the calls the contract refused, the owner's cancel and rotation, each fetched again
 //    from archival RPC. What NEAR itself refused was never on chain, so that part is INFO.
@@ -31,13 +34,15 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { derSig, makeTx, parseTx, parseWitnessScript, SEQUENCE_COSIGNED, sighash, witnessScript } from '../lib/btc.mjs';
-import { base58Encode, fromBase64, fromHex, toHex } from '../lib/bytes.mjs';
-import { randomBytes, secp256k1 } from '../lib/crypto.mjs';
+import { addressToSpk, derSig, makeTx, p2wshAddress, parseTx, parseWitnessScript, SEQUENCE_COSIGNED, sighash, txid as txidOf, witnessScript } from '../lib/btc.mjs';
+import { base58Encode, fromBase64, fromHex, toHex, utf8 } from '../lib/bytes.mjs';
+import { randomBytes, secp256k1, sha256 } from '../lib/crypto.mjs';
 import { checkCosigned, checkEscape } from '../lib/g2-check.mjs';
+import { argBytes, intentDigest, PASSKEY_TAG, vaultId } from '../lib/intent.mjs';
 import { coldKeys, publicSecp, spendKeys } from '../lib/keys.mjs';
 import { buildRecovery } from '../lib/recovery.mjs';
 import { parseSignerKey } from '../lib/vault-client.mjs';
+import { refusalOf } from '../../site/lib/webauthn.mjs';
 import { buildBin, cargoAvailable, consensusJudge } from './rust.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -223,7 +228,7 @@ async function deployed(config) {
     return;
   }
   const urls = config.rpc;
-  const built = config.wasm_built_by === 'ci' ? 'CI built this hash' : 'this machine built this hash (the operator\'s machine, scripts/build.sh; CI does not build the wasm, and this run rebuilds nothing)';
+  const built = config.wasm_built_by === 'ci' ? 'CI built this hash' : 'the operator\'s machine built this hash (scripts/build.sh; CI does not build the wasm, and this run rebuilds nothing)';
   await guarded('C13', net, 'deployed code hash', async () => {
     const account = await rpc(urls, 'query', { request_type: 'view_account', account_id: config.contract, finality: 'final' });
     if (!config.wasm_sha256) throw new Error(`${shown(configPath)} records no wasm_sha256 to compare with`);
@@ -740,6 +745,214 @@ async function replayLaterRuns(config) {
   for (const run of laterRuns()) await replayLaterRun(config, run);
 }
 
+// ------------------------------------------------------------------ 3c. the take of the live pages: the phone page's Cancel
+
+/** The function call of `method` among a transaction's actions, with its JSON arguments, or null. */
+function callNamed(tx, method) {
+  const call = (tx.transaction?.actions ?? []).map((a) => a.FunctionCall).find((c) => c?.method_name === method);
+  if (!call) return null;
+  try {
+    return JSON.parse(Buffer.from(fromBase64(call.args)).toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** The contract's own words in a failed call, or the failure as it came. */
+const refusalWords = (failure) => {
+  try {
+    return JSON.parse(failure)?.ActionError?.kind?.FunctionCallError?.ExecutionError ?? failure;
+  } catch {
+    return failure;
+  }
+};
+
+/**
+ * proofs/film-take.json against the chains: the one take of the live phone page and thief tab that the film is cut
+ * from. Its NEAR testnet transactions are fetched again from archival RPC, and the cancel's WebAuthn assertion is
+ * checked again here, the way contracts/undo/src/auth.rs checks it, under the passkey in the vault's own create_vault.
+ * The coin is read from the Mutinynet API as it is now. What no chain can say, which authenticator held the passkey,
+ * is read from the record, and the line says so.
+ */
+async function replayTake(config) {
+  const name = 'proofs/film-take.json';
+  const take = proof('film-take.json');
+  console.log(`\n== tier A: replay of the live take in ${name}: the phone page's Cancel, fetched again from archival RPC`);
+  if (!take) return line('SKIP', 'C17', 'replay', `${name} is not in this tree`);
+  const t = take.thief ?? {};
+  const contract = take.contract;
+  const vault = take.vault?.id ?? '';
+  const sound = take.schema === 'undo-film-take-v1' && typeof contract === 'string' && /^[0-9a-f]{64}$/.test(vault) && take.vault.create_tx && take.vault.address
+    && t.propose_tx && Number.isSafeInteger(t.request_id) && Number.isSafeInteger(t.unlock_ms) && Number.isSafeInteger(t.wait_ms) && t.sent_to && take.cancel?.tx && take.cancel.method === 'cancel_all_and_rotate'
+    && take.after?.execute_after_the_wait_tx && take.after.execute_refusal && /^[0-9a-f]{64}$/.test(take.coin?.mutinynet_txid ?? '') && typeof take.origin === 'string';
+  if (!sound) return line('FAIL', 'C17', 'replay', `${name} is not the record of a take of the live pages`);
+  const archival = config.replay.near_archival_rpc;
+  const esplora = config.replay.mutinynet_esplora;
+  const signer = config.replay.signer ?? config.signer;
+  const coinId = `${take.coin.mutinynet_txid}:${take.coin.vout}`;
+  const virtual = (take.labels ?? []).includes('virtual authenticator');
+  const fetchTx = async (hash) => {
+    const tx = await rpc(archival, 'tx', { tx_hash: hash, sender_account_id: contract, wait_until: 'NONE' });
+    if (tx.transaction?.hash !== hash) throw new Error(`NEAR testnet tx ${hash}: the node answered about another transaction`);
+    if (tx.transaction.receiver_id !== contract) throw new Error(`NEAR testnet tx ${hash}: sent to ${tx.transaction.receiver_id}, not ${contract}`);
+    return tx;
+  };
+  const receiptOf = (tx, test) => (tx.receipts_outcome ?? []).find((r) => r.outcome.executor_id === contract && test(r.outcome));
+  // The wasm this contract account is recorded to run: the config's, or a later run's record of the same account.
+  const sha = contract === config.contract ? config.wasm_sha256 : laterRuns().map((r) => r.p).find((p) => p?.contract?.account === contract)?.wasm?.sha256;
+  // What a later line rests on, set only when the line that checks it passes: the proposal's block time (the request
+  // exists, with its unlock), and the cancel's block (it ran after that proposal and before the unlock). A line that
+  // rests on one of them is not checked without it, and says so.
+  let proposedMs = null;
+  let cancelBlock = null;
+  let archivalDown = false;
+  const restsOnProposal = (what, on) => ({ status: 'SKIP', text: `${what}: not checked, since the proposal above did not pass, and this line rests on it: ${on}` });
+
+  const checks = [
+    ['C17', `${name} proposal ${t.propose_tx}`, async () => {
+      const tx = await fetchTx(t.propose_tx);
+      const call = onlyCall(tx);
+      if (call?.method !== 'propose_btc' || call.args?.vault !== vault) throw new Error(`NEAR testnet tx ${t.propose_tx}: not one propose_btc for vault ${short(vault)}`);
+      const spends = (call.args.inputs ?? []).map((c) => `${c.txid}:${c.vout}`);
+      if (spends.length !== 1 || spends[0] !== coinId) throw new Error(`NEAR testnet tx ${t.propose_tx}: it does not ask to spend the take's coin ${coinId} and nothing else`);
+      if (call.args.to !== toHex(addressToSpk('mutinynet', t.sent_to))) throw new Error(`NEAR testnet tx ${t.propose_tx}: it pays another address than ${t.sent_to}, the one ${name} records`);
+      // propose_btc logs as its last statement, before the state is written on exit: a failure after the log rolls the
+      // request back and keeps the log. So the request exists only if the call succeeded and returned its id.
+      const ended = outcomeOf(tx);
+      if (!ended.ok) throw new Error(`NEAR testnet tx ${t.propose_tx}: it did not succeed: ${ended.failure ? refusalWords(ended.failure) : 'no outcome yet'}`);
+      if (ended.value !== t.request_id) throw new Error(`NEAR testnet tx ${t.propose_tx}: it returned ${JSON.stringify(ended.value)}, not request ${t.request_id}`);
+      const said = `undo:proposed request=${t.request_id} unlock=${t.unlock_ms}`;
+      const receipt = receiptOf(tx, (o) => o.logs.includes(said));
+      if (!receipt) throw new Error(`NEAR testnet tx ${t.propose_tx}: no log "${said}" from ${contract}`);
+      const proposedAt = await blockMs(archival, receipt.block_hash);
+      const wait = t.unlock_ms - proposedAt;
+      if (wait !== t.wait_ms) throw new Error(`NEAR testnet tx ${t.propose_tx}: the unlock is ${wait} ms after its block, and ${name} records a wait of ${t.wait_ms} ms`);
+      proposedMs = proposedAt;
+      return `NEAR testnet tx ${t.propose_tx}: propose_btc on ${contract} made request ${t.request_id} of vault ${short(vault)}, a spend of Mutinynet coin ${short(take.coin.mutinynet_txid)}:${take.coin.vout} to ${t.sent_to}, with its unlock ${clock(wait)} after the block it ran in`;
+    }],
+    ['C05', `${name} cancel ${take.cancel.tx}`, async () => {
+      if (proposedMs === null) return restsOnProposal(`${name} cancel ${take.cancel.tx}`, `the request it cancels, made before it, and that request's unlock, after it`);
+      // The vault's own create_vault: the passkey it was made with, bound to the vault id by the id's hash.
+      const made = await fetchTx(take.vault.create_tx);
+      const a = callNamed(made, 'create_vault')?.args;
+      if (!a?.passkey?.pubkey || !logsIn(made, contract).includes(`undo:created vault=${vault}`)) throw new Error(`NEAR testnet tx ${take.vault.create_tx}: not the create_vault of vault ${short(vault)}`);
+      // The line says the relay's account made the vault: its create_vault, logged, must also have succeeded.
+      if (!outcomeOf(made).ok) throw new Error(`NEAR testnet tx ${take.vault.create_tx}: it did not succeed: ${outcomeOf(made).failure ? refusalWords(outcomeOf(made).failure) : 'no outcome yet'}`);
+      const kp = fromHex(a.passkey.pubkey);
+      const id = toHex(vaultId({ contract, ks: fromHex(a.k_s), ku: fromHex(a.k_u), keLeaf: fromHex(a.k_e_leaf), keIntent: fromHex(a.k_e_intent), kp, csv: a.csv }));
+      if (id !== vault) throw new Error(`NEAR testnet tx ${take.vault.create_tx}: the keys in its arguments hash to vault ${short(id)}, not ${short(vault)}`);
+      if (p2wshAddress('mutinynet', witnessScript(fromHex(a.k_u), fromHex(a.k_m), fromHex(a.k_e_leaf), a.csv)) !== take.vault.address) throw new Error(`NEAR testnet tx ${take.vault.create_tx}: the script of its keys is not the address ${take.vault.address} that ${name} records`);
+      if (a.passkey.rp_id_hash !== toHex(sha256(utf8(new URL(take.origin).hostname)))) throw new Error(`NEAR testnet tx ${take.vault.create_tx}: the vault's passkey is for another site than ${take.origin}`);
+
+      const tx = await fetchTx(take.cancel.tx);
+      const call = onlyCall(tx);
+      if (call?.method !== take.cancel.method || call.args?.vault !== vault) throw new Error(`NEAR testnet tx ${take.cancel.tx}: not one ${take.cancel.method} for vault ${short(vault)}`);
+      const sender = tx.transaction.signer_id;
+      if (sender !== made.transaction.signer_id || sender !== a.guard) throw new Error(`NEAR testnet tx ${take.cancel.tx}: sent by ${sender}, not by ${made.transaction.signer_id}, the relay's account, which made the vault`);
+      const receipt = receiptOf(tx, (o) => o.logs.includes(take.cancel.log));
+      if (!outcomeOf(tx).ok || !receipt) throw new Error(`NEAR testnet tx ${take.cancel.tx}: ${outcomeOf(tx).ok ? `no log "${take.cancel.log}" from ${contract}` : `it did not succeed: ${outcomeOf(tx).failure ? refusalWords(outcomeOf(tx).failure) : 'no outcome yet'}`}`);
+      const ranAt = await blockMs(archival, receipt.block_hash);
+      const before = t.unlock_ms - ranAt;
+      if (before <= 0) throw new Error(`NEAR testnet tx ${take.cancel.tx}: it ran ${-before} ms after request ${t.request_id}'s unlock, not before it`);
+      // A cancel kills the requests pending when it runs: one that ran before the proposal says nothing of that request.
+      const since = ranAt - proposedMs;
+      if (since <= 0) throw new Error(`NEAR testnet tx ${take.cancel.tx}: it ran ${-since} ms before the proposal of request ${t.request_id}, tx ${t.propose_tx}, not after it`);
+      // The challenge a passkey signs is the digest of the call's own arguments, so an assertion made for one call fits no other.
+      const digest = intentDigest({ tag: PASSKEY_TAG, contract, vault: fromHex(vault), method: call.method, args: argBytes.cancel_all_and_rotate({ newKs: fromHex(call.args.new_k_s) }), expiresAt: call.args.expires_at, nonce: call.args.nonce });
+      const refusal = refusalOf({ assertion: call.args.assertion, digest, pubkey: kp, rpIdHash: fromHex(a.passkey.rp_id_hash), origins: [take.origin] });
+      if (refusal) throw new Error(`NEAR testnet tx ${take.cancel.tx}: its WebAuthn assertion does not pass here the checks the contract makes: ${refusal}`);
+      cancelBlock = receipt.block_hash;
+      return `NEAR testnet tx ${take.cancel.tx}: ${call.method} on ${contract} for vault ${short(vault)}, sent by ${sender}, the relay's account, which made the vault and is the guard it names, in a block ${Math.floor(since / 1000)} s after the proposal's and ${Math.floor(before / 1000)} s before request ${t.request_id}'s unlock, log "${take.cancel.log}". Its WebAuthn assertion passes here the checks the contract makes: the origin is ${take.origin}, the challenge is the digest of this call's own arguments, user present and verified, and the P-256 signature verifies under the passkey in that vault's create_vault, tx ${take.vault.create_tx}, whose keys hash to the vault id. ${virtual ? `As ${name} records, the passkey was Chrome's virtual authenticator, not a phone's` : `Which authenticator held the passkey, no chain says: see ${name}`}`;
+    }],
+    ['C05', `${contract} code at the cancel`, async () => {
+      if (!cancelBlock) return { status: 'SKIP', text: `${contract}'s code at the block of that cancel: not read, since the cancel did not pass` };
+      if (!sha) return { status: 'SKIP', text: `${contract}'s code at the block of that cancel: not read, since no record in this tree names the wasm ${contract} runs` };
+      const account = await rpc(archival, 'query', { request_type: 'view_account', account_id: contract, block_id: cancelBlock });
+      const want = base58Encode(fromHex(sha));
+      if (account.code_hash !== want) throw new Error(`${contract} ran code ${account.code_hash} at the block of NEAR testnet tx ${take.cancel.tx}, not ${want}, the hash of the wasm ${sha}`);
+      return `NEAR testnet account ${contract} ran code hash ${account.code_hash} at the block of that cancel, read from archival RPC: the sha256 ${sha}${sha === config.wasm_sha256 ? ` that ${shown(configPath)} names: the final build` : ''}`;
+    }],
+    ['C17', `${name} execute ${take.after.execute_after_the_wait_tx}`, async () => {
+      if (proposedMs === null) return restsOnProposal(`${name} execute ${take.after.execute_after_the_wait_tx}`, 'the request this execute names, and its unlock');
+      const hash = take.after.execute_after_the_wait_tx;
+      const tx = await fetchTx(hash);
+      const call = onlyCall(tx);
+      if (call?.method !== 'execute' || call.args?.vault !== vault || call.args.request !== t.request_id) throw new Error(`NEAR testnet tx ${hash}: not one execute of request ${t.request_id} of vault ${short(vault)}`);
+      const out = outcomeOf(tx);
+      const receipt = receiptOf(tx, (o) => Boolean(o.status?.Failure));
+      if (out.ok || !out.failure || !receipt) throw new Error(`NEAR testnet tx ${hash}: the contract did not refuse it`);
+      if (!out.failure.includes(take.after.execute_refusal)) throw new Error(`NEAR testnet tx ${hash}: refused, but not with "${take.after.execute_refusal}": ${refusalWords(out.failure)}`);
+      const after = (await blockMs(archival, receipt.block_hash)) - t.unlock_ms;
+      if (after <= 0) throw new Error(`NEAR testnet tx ${hash}: it ran ${-after} ms before request ${t.request_id}'s unlock, so it does not show a refusal after the wait`);
+      if ((tx.receipts_outcome ?? []).some((r) => r.outcome.executor_id === signer)) throw new Error(`NEAR testnet tx ${hash}: a receipt of it went to the signer ${signer}`);
+      return `NEAR testnet tx ${hash}: an execute of request ${t.request_id} of that vault, sent by ${tx.transaction.signer_id} in a block ${Math.floor(after / 1000)} s after its unlock. The contract refused it: ${refusalWords(out.failure)}. No receipt of it went to the signer ${signer}`;
+    }],
+  ];
+  // One at a time, in story order. When the archival RPC stops answering it says so once, and the rest are counted.
+  for (const [i, [id, what, check]] of checks.entries()) {
+    try {
+      const out = await check();
+      if (typeof out === 'string') line('PASS', id, 'replay', out);
+      else line(out.status, id, 'replay', out.text);
+    } catch (err) {
+      if (err instanceof NetworkDown) {
+        archivalDown = true;
+        line('SKIP', id, 'replay', `${what}: SKIP (network): ${err.message}`);
+        const left = checks.length - i - 1;
+        if (left > 0) line('SKIP', 'C17', 'replay', `${left} more NEAR testnet lines of the live take: SKIP (network), the archival RPC did not answer`);
+        break;
+      }
+      line('FAIL', id, 'replay', err instanceof ChainAnswer ? `${what}: the node answered ${err.message}` : err.message);
+    }
+  }
+
+  // The coin, as the Mutinynet API has it now. The cancelled request's own spend would be a co-signed spend to the thief's address.
+  // That this coin was a cancelled request's rests on the proposal and the cancel above: the cancel passes only after
+  // the proposal did. Without it the line is not a pass, says why, and says only what the API answered; a spend to
+  // the thief's address still fails it.
+  const coin = `Mutinynet coin ${coinId}`;
+  const cancelled = cancelBlock !== null;
+  const notTied = archivalDown ? `SKIP (network): the archival RPC did not answer, so ${proposedMs === null ? 'the proposal and the cancel' : 'the cancel'} this line rests on ${proposedMs === null ? 'were' : 'was'} not checked`
+    : 'not a pass, since the cancel above did not pass, and this line rests on it';
+  try {
+    const hex = await getText(`${esplora}/tx/${take.coin.mutinynet_txid}/hex`);
+    if (hex.status === 404) throw new Error(`${coin}: the API does not know its transaction`);
+    const funding = parseTx(fromHex(hex.text.trim()));
+    if (txidOf(funding) !== take.coin.mutinynet_txid) throw new Error(`${coin}: the API's bytes are another transaction's`);
+    const output = funding.outputs[take.coin.vout];
+    if (!output || Number(output.value) !== take.coin.value_sats || toHex(output.spk) !== toHex(addressToSpk('mutinynet', take.vault.address))) throw new Error(`${coin}: it is not ${take.coin.value_sats} sats at ${take.vault.address}, the take's vault`);
+    const status = JSON.parse((await getText(`${esplora}/tx/${take.coin.mutinynet_txid}/status`)).text);
+    if (!status.confirmed || status.block_height !== take.coin.height) throw new Error(`${coin}: mined at ${status.confirmed ? status.block_height : 'no height'}, ${name} says ${take.coin.height}`);
+    const facts = `${take.coin.value_sats.toLocaleString('en-US')} sats at ${take.vault.address}, the take's vault, mined at height ${status.block_height}`;
+    const held = `${coin}: ${facts}`;
+    /** A coin the cancelled request did not move: a pass with the clause that says so, or, untied to a cancel, what was read. */
+    const kept = (read, clause) => (cancelled ? line('PASS', 'C17', 'replay', `${held}. ${read[0].toUpperCase()}${read.slice(1)}${clause}`)
+      : line('SKIP', 'C17', 'replay', `${coin}: ${notTied}. Read from the Mutinynet API: ${facts}, ${read}`));
+    const out = JSON.parse((await getText(`${esplora}/tx/${take.coin.mutinynet_txid}/outspend/${take.coin.vout}`)).text);
+    if (!out.spent) kept('still unspent, read now', ': the cancelled request moved nothing');
+    else {
+      const spent = await getText(`${esplora}/tx/${out.txid}/hex`);
+      if (spent.status === 404) throw new Error(`${coin}: the API names Mutinynet txid ${out.txid} as its spender and does not know that transaction`);
+      const spender = parseTx(fromHex(spent.text.trim()));
+      const input = spender.inputs.find((x) => x.coin.txid === take.coin.mutinynet_txid && x.coin.vout === take.coin.vout);
+      if (txidOf(spender) !== out.txid || !input) throw new Error(`${coin}: the API names Mutinynet txid ${out.txid} as its spender, and the bytes it gives do not spend this coin`);
+      // The script's two branches leave different witnesses: [K_m sig, K_u sig, 01, script] and [K_e sig, empty, script].
+      const w = input.witness;
+      const cosigned = w.length === 4 && w[2].length === 1 && w[2][0] === 1;
+      const cold = w.length === 3 && w[1].length === 0;
+      const thief = toHex(addressToSpk('mutinynet', t.sent_to));
+      if (cosigned && spender.outputs.some((o) => toHex(o.spk) === thief)) line('FAIL', 'C17', 'replay', `${held}. Spent by Mutinynet txid ${out.txid}, a co-signed spend that pays ${t.sent_to}, ${cancelled ? 'the address of the cancelled request' : `the address of the thief tab's request in ${name}`}`);
+      else if (cold) kept(`spent since by Mutinynet txid ${out.txid} through the script's cold-key branch, with one signature and none from MPC`, ': not by the cancelled request');
+      else if (cosigned) kept(`spent since by Mutinynet txid ${out.txid}, a co-signed spend that does not pay ${t.sent_to}`, ': not the cancelled request\'s spend');
+      else line('FAIL', 'C17', 'replay', `${held}. Spent by Mutinynet txid ${out.txid}, with a witness of neither branch of the vault's script`);
+    }
+  } catch (err) {
+    if (err instanceof NetworkDown) line('SKIP', 'C17', 'replay', `${coin}: SKIP (network): ${err.message}`);
+    else line('FAIL', 'C17', 'replay', err.message.startsWith(coin) ? err.message : `${coin}: ${err.message}`);
+  }
+  return undefined;
+}
+
 // ------------------------------------------------------------------ 5. recovery file, 6. static
 
 function recoveryDryRun() {
@@ -817,6 +1030,7 @@ await replayNear(config);
 await replayAgent(config);
 await replayMutinynet(config);
 await replayLaterRuns(config);
+await replayTake(config);
 recoveryDryRun();
 staticChecks();
 console.log(`\nTIER A: ${tally.PASS} PASS, ${tally.SKIP} SKIP, ${tally.FAIL} FAIL${tally.INFO ? `, ${tally.INFO} INFO` : ''} in ${Math.round((Date.now() - started) / 1000)} s${config.placeholder ? '. The deployed-contract lines are SKIP because the config is a placeholder' : ''}`);
