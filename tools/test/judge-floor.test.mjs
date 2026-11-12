@@ -998,8 +998,8 @@ test('proofs/phone-take.json and its fixture: a real device\'s take on the contr
   assert.deepEqual([client.type, client.origin, client.crossOrigin], [phone.assertion_as_read.type, phone.assertion_as_read.origin, phone.assertion_as_read.cross_origin]);
   // What no chain holds is the author's report, and the record says so: the device, and the browser, as reported.
   for (const k of ['device', 'os', 'by', 'browser', 'browser_by', 'tabs']) assert.equal(typeof phone.device_as_reported[k], 'string', k);
-  // How the phone verified its user, the author did not say: the assertion's flags say only that the authenticator did
-  // (user verified), not how, and the record names no way of its own.
+  // How the phone verified its user, the record names no way: the assertion's flags say only that the authenticator did
+  // (user verified), not how, and the record adds no way of its own.
   assert.equal('user_verification' in phone.device_as_reported, false);
   assert.doesNotMatch(JSON.stringify(phone), /Face ID|face_id|Touch ID/);
   assert.match(phone.device_as_reported.what_the_chain_says_of_it, /user verified says the authenticator verified the user, not how/);
@@ -1531,7 +1531,7 @@ test('the real phone\'s device and browser: every sentence that names them says 
   const row17 = read('tests/REGRESSION-MAP.md').split('\n').find((l) => l.startsWith('| 17 |'));
   assert.ok(row17.includes(`one real phone's assertion, from its NEAR testnet cancel \`${phone.cancel.tx}\` (\`proofs/phone-take.json\`; which phone it was is the author's report)`), row17);
   assert.ok(row17.endsWith('| Assertions from other phones and authenticators. The sandbox tests here use a software authenticator only. |'), row17);
-  // The author named no way the phone verified its user; the assertion says only that it did (user verified).
+  // The record names no way the phone verified its user; the assertion says only that it did (user verified).
   for (const f of ['README.md', 'CLAIMS.md', 'proofs/phone-take.json', 'site/pages/index.html', 'site/pages/replay/run.json']) assert.doesNotMatch(read(f), /Face ID|Touch ID/, f);
   assert.doesNotMatch(PHONE_WHO, /Face ID/);
 });
