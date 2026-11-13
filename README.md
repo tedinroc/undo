@@ -4,7 +4,7 @@ A cancel button for native Bitcoin, on test networks: Bitcoin itself refuses a s
 
 [<img src="site/pages/film/poster.png" width="200" alt="The film's opening frame, large type on black: Your Bitcoin key was just stolen. Under it, the thief tab, its stolen-key field blurred, set to send everything, 2,000 sats.">](https://undo-btc.pages.dev/)
 
-[The film](https://undo-btc.pages.dev/): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device. The narration is a synthetic voice.
+[The film](https://undo-btc.pages.dev/): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device. The drawn tiles after the cancel show the final build's run of 2026-11-11. The narration is a synthetic voice.
 
 ## Problem
 

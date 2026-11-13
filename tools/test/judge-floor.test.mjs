@@ -1118,6 +1118,13 @@ test('proofs/film-take.json and its fixture: the film\'s take is a real device\'
   assert.deepEqual([filmTake.device_as_reported.device, filmTake.device_as_reported.browser, filmTake.device_as_reported.user_verification], ['an iPhone', 'Safari', 'Face ID']);
   assert.match(filmTake.device_as_reported.what_the_chain_says_of_it, /user verified says the authenticator verified the user, not how/);
   assert.match(filmTake.what, /device_as_reported is the author's report, not the chain's: an iPhone, in Safari, with Face ID\./);
+  // The record says which of its values the chains gave and which came from the node's refusal, the thief tab's screen,
+  // the Mac's clock and the recordings: the refused txid was never mined, and the cancel's timings are the recordings'.
+  assert.doesNotMatch(filmTake.what, /under vault, coin, thief, cancel/);
+  assert.match(filmTake.what, /node_answer_verbatim and refused_txid are the Mutinynet node's answer to the thief's send, which it refused and which was never mined/);
+  assert.match(filmTake.what, /block_T_s is the cancel's block time minus the time of the Send click on the Mac's clock/);
+  for (const k of ['node_answer_verbatim', 'refused_txid', 'page_wait_text', 'page_clock_first_reading']) assert.ok(k in filmTake.thief && filmTake.what.includes(k), k);
+  for (const k of Object.keys(filmTake.cancel).filter((k) => k === 'block_T_s' || (k.endsWith('_ms') && !k.startsWith('block_')))) assert.ok(filmTake.what.includes(k), k);
   // The thief tab ran on a second device: headless Chrome on a Mac, and the record says so in its own words.
   assert.match(filmTake.device_as_reported.tabs, /the thief tab \/t\/ ran in headless Chrome on a Mac, a second device/);
   assert.equal(filmTake.thief_cam.method, 'headless Chrome on a Mac, clicked by the capture script');
@@ -1588,7 +1595,7 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.doesNotMatch(lead, /\b(first|always|every|never)\b/i);
   // The film: its poster, small, linked to the page that plays it, and a caption that says what it is.
   const film = readmeBetween(lead, '## Problem');
-  assert.match(film, /^\n\[<img src="site\/pages\/film\/poster\.png" width="200" alt="The film's opening frame, large type on black: Your Bitcoin key was just stolen\. Under it, the thief tab, its stolen-key field blurred, set to send everything, 2,000 sats\.">\]\(https:\/\/undo-btc\.pages\.dev\/\)\n\n\[The film\]\(https:\/\/undo-btc\.pages\.dev\/\): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device\. The narration is a synthetic voice\.\n$/);
+  assert.match(film, /^\n\[<img src="site\/pages\/film\/poster\.png" width="200" alt="The film's opening frame, large type on black: Your Bitcoin key was just stolen\. Under it, the thief tab, its stolen-key field blurred, set to send everything, 2,000 sats\.">\]\(https:\/\/undo-btc\.pages\.dev\/\)\n\n\[The film\]\(https:\/\/undo-btc\.pages\.dev\/\): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device\. The drawn tiles after the cancel show the final build's run of 2026-11-11\. The narration is a synthetic voice\.\n$/);
   // That is the film's own record: a real device's take, Face ID the author's report, the thief tab on a second device.
   assert.equal(filmTake.device_as_reported.user_verification, 'Face ID');
   assert.match(filmTake.device_as_reported.tabs, /headless Chrome on a Mac, a second device/);

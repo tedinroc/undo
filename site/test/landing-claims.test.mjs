@@ -62,6 +62,9 @@ test('the film is published with its own capture record: the file that record na
   // author's report.
   const phone = JSON.parse(readFileSync(join(REPO, 'proofs', 'phone-take.json'), 'utf8'));
   assert.ok(note.includes(`${run.film.note}. From the thief's Send to the phone page's CANCELLED it runs in real time, but for two cuts of under 0.2 s. A Cancel from a real phone also ran ${phone.vault_made_block_utc.slice(0, 10)}, on another vault: one iPhone, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it; the README links its hash.`), note);
+  // The drawn tiles after CANCELLED show the final build's run, the one listed under the note, not the take's.
+  assert.ok(note.includes(`The drawn tiles after the phone's CANCELLED show the final build's run of ${run.final.date}, below: NEAR's signature alone refused by Bitcoin, both signatures mined, and the cold key's exit.`), note);
+  assert.ok(landing.includes(`From the final build's run, <span class="nb">${run.final.date}</span>:`));
   // The two cuts are the record's, each under 0.2 s.
   assert.equal(take.film.cut_for_time.length, 2);
   for (const cut of take.film.cut_for_time) assert.ok(Number(/^(\d+\.\d+) s /.exec(cut)[1]) < 0.2, cut);
