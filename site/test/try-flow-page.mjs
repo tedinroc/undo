@@ -544,6 +544,8 @@ globalThis.fetch = async (url, init = {}) => {
     // `hideCoin`: the coin is sent, and the node does not list it until the scenario says so.
     if (path.endsWith('/utxo')) return json(coinThere && !coinSpent && !live.hideCoin ? [{ ...COIN, status: { confirmed: false } }] : []);
     // `fee`: the node's fee estimate in sat/vB, which the scenario can raise and drop (T1 with a fee that takes the coin).
+    // `feeDown`: the fee read alone fails (a busy node), while the address reads answer.
+    if (path === '/fee-estimates' && live.feeDown) return new Response('busy', { status: 503 });
     if (path === '/fee-estimates') return json({ 1: live.fee ?? 1.0, 6: live.fee ?? 1.0 });
     if (path === `/tx/${COIN.txid}`) return json({ txid: COIN.txid, vout: [{ value: COIN.value }] });
     if (path.startsWith(`/tx/${COIN.txid}/outspend/`)) return json({ spent: coinSpent });

@@ -104,8 +104,11 @@ function whenVisible() {
   });
 }
 
-/** A pause that ends early when the page comes back on screen, so every loop reads the chain first (L1). */
-function nap(ms) {
+/**
+ * A pause that ends early when the page comes back on screen, so every loop reads the chain first (L1). `onWake`, when
+ * given, is handed the function that ends this pause now.
+ */
+function nap(ms, onWake = null) {
   return new Promise((resolve) => {
     let timer = null;
     const done = () => {
@@ -115,6 +118,7 @@ function nap(ms) {
     };
     timer = setTimeout(done, ms);
     waiters.add(done);
+    onWake?.(done);
   });
 }
 
@@ -1063,6 +1067,8 @@ function coinListed(coins) {
   line('balance', 'big', satsText(total), { id: 'balance' });
   T.card = null;
   paint();
+  // A step-2 read of the script or the fee that failed is waiting out its pause: it reads again now (prepTheft).
+  T.prepWake?.();
   armSteal();
 }
 
@@ -1077,7 +1083,10 @@ async function prepTheft() {
     } catch (err) {
       if (err.code === 'script_mismatch') return err;
       if (T.listed) return err;
-      await nap(RETRY_EVERY_MS);
+      // coinListed ends this pause, so step 3's checks read again the moment the coin is listed: step 2's Next line
+      // says step 3 starts by itself then, and it does not sit out the rest of these 5 s first.
+      await nap(RETRY_EVERY_MS, (wake) => { T.prepWake = wake; });
+      T.prepWake = null;
     }
   }
 }

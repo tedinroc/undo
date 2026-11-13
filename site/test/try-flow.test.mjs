@@ -106,6 +106,9 @@ const RUNS = {
   feeTakesAll: later({ fee: 20, steps: [...MADE, { until: { fail: 'T1' }, max: 30_000 }, { snap: 't1' }, { wait: 10_000 }, { snap: 't1Later' }, { set: { fee: 1 } }, { until: { state: 'count' }, max: 15_000 }, { snap: 'count' }] }),
   // The fee is high when step 2 reads it and low by the time the coin is listed: the rate is read again before T1 is said.
   feeDropped: later({ fee: 20, hideCoin: true, steps: [...MADE, { until: { step: 'fund' }, max: 20_000 }, { wait: 3000 }, { set: { fee: 1, hideCoin: false } }, { until: { state: 'count' }, max: 15_000 }, { snap: 'count' }] }),
+  // Step 2's read of the fee fails (it fails again 5 s later), and Mutinynet lists the coin 1.5 s into that pause; the
+  // fee read keeps failing until T1 is up, then answers.
+  listedFeeDown: later({ feeDown: true, hideCoin: true, steps: [...MADE, { until: { step: 'fund' }, max: 20_000 }, { wait: 1500 }, { set: { hideCoin: false } }, { until: { id: 'balance' }, max: 10_000 }, { snap: 'listed' }, { until: { fail: 'T1' }, max: 15_000 }, { snap: 't1' }, { set: { feeDown: false } }, { until: { state: 'count' }, max: 15_000 }, { snap: 'count' }] }),
   // No answer from the relay for the coin (D2), and a short rate_limited on every ask (D5).
   fundNoAnswer: later({ fund: ['fail'], steps: [...MADE, { until: { text: UNSURE_COIN }, max: 20_000 }, { snap: 'unsure' }, { wait: 2500 }, { snap: 'later' }] }),
   fundLimited: later({ fund: [{ status: 429, body: { ok: false, code: 'rate_limited', message: 'another funding holds the coin', retry_after_s: 1 } }], steps: [...MADE, { until: { text: UNSURE_COIN }, max: 30_000 }, { snap: 'unsure' }] }),
@@ -424,6 +427,34 @@ test('W3 R10: hidden the moment the thief starts asking NEAR, nothing goes to th
     if (CANCEL_HERE) assert.equal(page.snap('end').step, 'recap', name);
     else assert.equal(page.went.length, 1, name);
   }
+});
+
+test('T1 by a fee read that failed at step 2: when Mutinynet lists the coin the fee is read again at once, and step 2\'s Next line goes as soon as that read answers', T, async () => {
+  const page = await RUNS.listedFeeDown;
+  assert.deepEqual(page.missed, []);
+  const fundAt = firstAt(page, (t) => t.startsWith('fund/'));
+  const listedAt = firstAt(page, (t) => /2,000 sats \|\| NEXT/.test(t));
+  const stealAt = page.drawn.find((d) => d.at > listedAt && d.text.startsWith('steal/'))?.at;
+  assert.ok(fundAt !== null && listedAt !== null && stealAt !== undefined, JSON.stringify({ fundAt, listedAt, stealAt }));
+  const feeReads = (from, to) => page.fetches.filter((f) => f.at >= from && f.at < to && f.url.endsWith('/fee-estimates')).map((f) => f.at);
+  // Before the listing: step 2's one try (a read and its one retry), then its 5 s pause; no reads in a loop.
+  assert.ok(feeReads(fundAt, listedAt).length <= 2, `fee reads before the listing: ${feeReads(fundAt, listedAt)}`);
+  // The listing ends the pause: the fee is read again at once, not when the 5 s are up.
+  assert.ok(feeReads(listedAt - 50, listedAt + 400).length >= 1, `no fee read right after the listing at ${listedAt}: ${feeReads(listedAt - 50, stealAt)}`);
+  // So step 2's "Step 3 starts by itself when Mutinynet lists the coin." stays beside the listed coin only while that
+  // read and the check's own read again are under way (each a try and a retry 0.3 s and 0.6 s apart: about 2 s here),
+  // not for the rest of a 5 s pause on top (at least 3.4 s more here).
+  assert.ok(stealAt - listedAt < 4000, `step 2 stayed ${stealAt - listedAt} ms beside a listed coin`);
+  assert.ok(page.drawn.every((d) => d.at < stealAt || !d.text.includes('Step 3 starts by itself')), 'said step 3 waits for a coin Mutinynet lists');
+  const t1 = page.snap('t1');
+  assert.equal(t1.fail, 'T1');
+  assert.match(t1.text, /2,000 sats Can't read Mutinynet right now\./);
+  assert.equal(t1.next, 'Nothing to tap. This page tries again every 5 s.');
+  assert.ok(feeReads(listedAt, t1.at).length <= 4, `fee reads from the listing to T1: ${feeReads(listedAt, t1.at)}`);
+  // The fee read answers: the next try goes on to the count, from 3, with nothing sent before it.
+  assert.equal(page.snap('count').count, '3');
+  assert.ok(feeReads(t1.at, page.snap('count').at).length <= 3, 'the fee read in a loop while T1 was up');
+  assert.equal(page.posts('tx').length, 0);
 });
 
 test('M8: two reads that cross, a Check again the node answers late and a later one that fails: the later read draws the line', T, async () => {
