@@ -1,59 +1,210 @@
 {
-  "schema": "undo-film-take-v1",
-  "what": "The one live take the film on the landing page is cut from: the phone page and the thief tab of https://undo-btc.pages.dev, driven in headless Chrome, against the NEAR testnet contract below and Mutinynet. The passkey was Chrome's virtual authenticator, not a phone's. This record never held the vault's spend key.",
+  "schema": "undo-film-take-v2",
+  "what": "The take film v3, the film on the landing page, is cut from, 2026-11-13: the phone page of https://undo-btc.pages.dev on a real phone, and the thief tab of the same site in headless Chrome on a Mac, a second device, opened from the thief link the phone page copied and clicked by the capture script; against the NEAR testnet contract below and Mutinynet. Every hash and number under vault, coin, thief, cancel, assertion_as_read and chain_read was read from the chains: the NEAR testnet transactions from archival RPC and the coin from the Mutinynet API. Which device and browser held the passkey, and how it verified its user, no chain shows: device_as_reported is the author's report, not the chain's: an iPhone, in Safari, with Face ID. The film's phone shots are the iPhone's own screen recording; the file says it is an iOS screen recording, and it shows the passkey sheet and the Face ID glyph. No execute after the wait is recorded for this take. The passkey's credential id is left out: no chain holds it. This record never held the vault's spend key, the thief link or any secret.",
   "labels": [
     "live-testnet",
     "live-mutinynet",
-    "virtual authenticator"
+    "real device",
+    "iPhone screen recording",
+    "thief tab: headless Chrome on a Mac"
   ],
-  "started_utc": "2026-11-11T05:00:29.968Z",
+  "started_utc": "2026-11-13T15:00:07.669Z",
   "origin": "https://undo-btc.pages.dev",
   "contract": "v1.s.undo-btc.testnet",
   "near_chain": "NEAR testnet",
   "bitcoin_chain": "Mutinynet (a Bitcoin signet)",
   "vault": {
-    "id": "1155802f3cec20ee02b514cbb12b3bda404d7f04886602e0fbbbbbff7311d82d",
-    "address": "tb1q6k53g2t69l0r8hrgqlf5am3ct2685zx0qmv9vuuxnkshmepfv99qmlk5az",
-    "create_tx": "9xf6SoyfykZXsgd57sEhw1kPJwrnH1aDussJcPZJdZ4h"
+    "id": "5ceb47457e509bdd2f0d7faa83a32f93fd57789b3e235ba6f6c240d67d610c53",
+    "address": "tb1qxdsx4tfxvxadcccl4zx77nss8tlj99tzfs5nhnh85gp4ku47qhfqc5yx09",
+    "create_tx": "DvqsVvvVV4w67D83QRsKjiEba6hYyrx4w79smRMX8jHD",
+    "create_logs": [
+      "undo:created vault=5ceb47457e509bdd2f0d7faa83a32f93fd57789b3e235ba6f6c240d67d610c53",
+      "undo:active vault=5ceb47457e509bdd2f0d7faa83a32f93fd57789b3e235ba6f6c240d67d610c53"
+    ]
   },
   "coin": {
-    "mutinynet_txid": "864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd",
+    "mutinynet_txid": "bd0a7951d8f091de17e293e6fd5bd3cfda3d90a589d75b45e11633b73a413de0",
     "vout": 0,
     "value_sats": 2000,
-    "height": 3580379
+    "height": 3587105
   },
   "thief": {
-    "sent_to": "tb1qud4w04ety4s6zxq0v9lpxu66xhc406rkqksue2",
-    "node_answer_verbatim": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), input 0 of 16671e8ae0fa6b91a6e15e9dcb6781a04140e47c44012f6481752adfa9a4fcc5 (wtxid 46aa86c2ecbe1930f1850f6a4787b03ad8871a52254b6c9fe695a85b3b585e7b), spending 864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd:0\"}",
-    "propose_tx": "FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq",
+    "sent_to": "tb1q5l8vp06wyjmsw5k6spupz6l7kgssed3jpced3x",
+    "node_answer_verbatim": "sendrawtransaction RPC error: {\"code\":-26,\"message\":\"mempool-script-verify-flag-failed (Script evaluated without error but finished with a false/empty top stack element), input 0 of 3f271e5a3c8a7342a83dbfb5c65e4aa4f53837c6343205833206d5c33029b1c1 (wtxid c00f4dd652675bd67448e8a3c990b60e1b68fcd26a7e20185d7dacc8c3cf4aa7), spending bd0a7951d8f091de17e293e6fd5bd3cfda3d90a589d75b45e11633b73a413de0:0\"}",
+    "refused_txid": "3f271e5a3c8a7342a83dbfb5c65e4aa4f53837c6343205833206d5c33029b1c1",
+    "refused_txid_on_mutinynet": "not found (HTTP 404): never mined, as the node refused it",
+    "propose_tx": "CqtSuSE4uksdgzvikW54H4i8oPSGkkbVqYNiYWVcSJdP",
     "request_id": 0,
-    "proposed_at_ms": 1794373291428,
-    "unlock_ms": 1794373591428,
-    "wait_ms": 300000
+    "proposed_at_ms": 1794582078329,
+    "unlock_ms": 1794582378329,
+    "wait_ms": 300000,
+    "page_wait_text": "5:00",
+    "page_clock_first_reading": "4:56.9"
   },
   "cancel": {
     "method": "cancel_all_and_rotate",
-    "tx": "HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL",
+    "tx": "7KkMUMoEuuHNSzCkZEHN7NfYcjzqC9zprHtrN3FrKNnD",
+    "status": "SuccessValue",
     "log": "undo:rotating grant=0",
-    "tap_to_page_reading_cancelled_ms": 3598,
-    "thief_tab_read_it_after_the_phone_ms": 657
+    "block_after_the_proposal_ms": 28786,
+    "block_before_the_unlock_ms": 271214,
+    "block_T_s": 35.35,
+    "block_T_note": "the cancel's block time minus the Send click (both wall clocks)",
+    "tap_to_page_reading_cancelled_ms": 12333,
+    "sheet_up_to_continue_ms": 3900,
+    "sending_to_cancelled_ms": 7333,
+    "thief_tab_read_it_before_the_phone_ms": 3743,
+    "note": "the thief tab showed CANCELLED before the phone page: its poll read the chain first, while the phone page waited for its own relay call to return"
+  },
+  "assertion_as_read": {
+    "type": "webauthn.get",
+    "origin": "https://undo-btc.pages.dev",
+    "cross_origin": false,
+    "authenticator_data_bytes": 37,
+    "user_present": true,
+    "user_verified": true,
+    "backup_eligible": true,
+    "backed_up": true,
+    "sign_count": 0,
+    "flags_byte": "0x1d",
+    "rp_id_hash_is_sha256_of": "undo-btc.pages.dev"
+  },
+  "device_as_reported": {
+    "by": "the author, who ran the phone side of this take, 2026-11-13",
+    "device": "an iPhone",
+    "os": "iOS",
+    "browser": "Safari",
+    "user_verification": "Face ID",
+    "model_and_os_version": "not recorded for this take: the screen recording holds no model or iOS version field",
+    "tabs": "the phone page /p/ ran in Safari on the iPhone; the thief tab /t/ ran in headless Chrome on a Mac, a second device, opened from the thief link the phone page copied",
+    "what_the_recording_shows": "the iOS passkey sheet for the passkey \"test vault\" on pages.dev, then the Face ID glyph and its check, then the page's Sending and CANCELLED",
+    "what_the_chain_says_of_it": "nothing of the device: the assertion's flags say user present, user verified, backup eligible and backed up, with sign count 0; user verified says the authenticator verified the user, not how, and a backed-up passkey can be synced to other devices, so they do not name one device"
   },
   "after": {
-    "execute_after_the_wait_tx": "DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f",
-    "execute_refusal": "RequestNotFound",
-    "coin_unspent_read_utc": "2026-11-11T18:57Z"
+    "no_execute": "NearBlocks v3 /v1/account/v1.s.undo-btc.testnet/txns (newest first), read 2026-11-13T15:15:02.428Z and again at this file's writing: the newest transaction is the cancel; no execute after the propose",
+    "coin_unspent": {
+      "spent": false
+    },
+    "coin_unspent_first_read_utc": "2026-11-13T15:15Z",
+    "coin_unspent_read_utc": "2026-11-13T20:46Z"
   },
-  "read_again_utc": "2026-11-11T18:57Z",
-  "read_again": "The four NEAR testnet transactions were fetched again from archival RPC and the coin from the Mutinynet explorer API: create_vault and heartbeat (undo:created, undo:active for this vault), propose_btc (undo:proposed request=0 unlock=1794373591428), cancel_all_and_rotate (undo:rotating grant=0), execute failing with RequestNotFound; the coin 2,000 sats at height 3580379, unspent.",
+  "read_again_utc": "2026-11-13T20:46Z",
+  "read_again": "The three NEAR testnet transactions were fetched again from archival RPC and the coin from the Mutinynet API, after the request's unlock: create_vault and heartbeat (undo:created, undo:active for this vault), propose_btc (undo:proposed request=0 unlock=1794582378329, returning request 0), cancel_all_and_rotate (undo:rotating grant=0), all three sent by s.undo-relay.testnet, the relay's account, and all three succeeded; the contract's code hash at the cancel's block 4c2mcuJj2EA4vZ6v9tNPaoRvvzN4YNRinqj31voAm2P1; the coin 2,000 sats at the vault's address, height 3587105, unspent.",
+  "marks_T_s": {
+    "request_first_frame": 9.209,
+    "cancel_tap": 28.875,
+    "waiting_for_passkey": 28.975,
+    "sheet_up": 29.142,
+    "sheet_settled": 29.642,
+    "continue_tap": 33.042,
+    "faceid_square": 33.575,
+    "faceid_glyph": 33.742,
+    "sheet_gone": 33.909,
+    "sending": 33.875,
+    "faceid_check": 34.475,
+    "faceid_glyph_gone": 34.842,
+    "cancelled": 41.209,
+    "coin_never_moved_line": 41.642,
+    "relayout_start": 42.809,
+    "relayout_settled": 43.242
+  },
+  "marks_T_note": "seconds since the thief tab's Send click (the capture script's Chrome DevTools Protocol time), phone marks through the clock sync below",
+  "thief_marks_T_s": {
+    "thief_armed": -11.933,
+    "send_enabled": -7.016,
+    "pointer_rest": -7.016,
+    "glide_start": -1.917,
+    "send_tap": 0.0,
+    "direct": 0.1,
+    "refused": 0.4,
+    "asking": 2.817,
+    "waiting": 10.516,
+    "clock_landed": 10.916,
+    "clock_settled": 11.166,
+    "frozen": 37.465
+  },
+  "clock_readings": {
+    "how": "Clock readings from F 23 to 28 only (T 20-25 s since the theft; 150 thief and 150 phone frames), least squares over each frame's reading + its capture time (thief: the CDP time of the screencast frame shown; phone: the raw recording time of the frame shown). Both pages round the remaining time up to 0.1 s, so the rounding bias cancels.",
+    "step": {
+      "at_phone_s": 117.0,
+      "at_T": 21.8,
+      "step_s": -0.341,
+      "display": "4:46.3 at 3509 -> 4:45.9 at 3510",
+      "segments_Z_phone_s": [
+        403.1767,
+        402.8358
+      ],
+      "thief_Z_cdp_s": 1794582379.7514
+    },
+    "thief_clock": "one constant clock all take (+-0.016 s)"
+  },
+  "sync": {
+    "offset_s": -1794581976.7776713,
+    "definition": "phone.mp4 seconds minus thief CDP seconds at the same instant (phone_s = cdp_s + offset_s)",
+    "residual_s": 0.1296,
+    "residual_note": "RMS of the one-offset fit over the window. It is over 0.1 s because the PHONE page's clock stepped by -0.341 s at phone 117.0 s (T 21.80), inside the window (its SkewTracker took a fresher chain-time sample). Each side of the step alone fits to 0.03 s RMS (thief: one constant clock for the whole take, +-0.016 s).",
+    "independent_check": {
+      "phone_file_udta_date_epoch_s": 1794581976.785,
+      "sync_says_phone_frame0_at_cdp_s": 1794581976.7777,
+      "difference_s": -0.0073,
+      "note": "the iPhone file's own date (ReplayKit, ms precision) put frame 0 within 0.007 s of where the clock sync puts it, if that date marks the first frame; thief CDP times are this Mac's wall clock"
+    },
+    "t2": "residual over 0.1 s by the letter; accepted by the lead on 2026-11-14: the chip equals floor(T) on every running frame of every cut, and the frozen 0:41 is at T 41.209 by the sync and 41.216 by the iPhone file's own date",
+    "t12": {
+      "pass": true,
+      "max_diff_s": 0.2,
+      "at_threshold": true
+    }
+  },
+  "chain_read": {
+    "rpc": "NEAR testnet public RPC (read-only), NearBlocks v3, Mutinynet esplora",
+    "read_utc": "2026-11-13T15:15:02.428Z",
+    "txs": {
+      "create_vault+heartbeat": "DvqsVvvVV4w67D83QRsKjiEba6hYyrx4w79smRMX8jHD",
+      "propose_btc": "CqtSuSE4uksdgzvikW54H4i8oPSGkkbVqYNiYWVcSJdP",
+      "cancel_all_and_rotate": "7KkMUMoEuuHNSzCkZEHN7NfYcjzqC9zprHtrN3FrKNnD"
+    },
+    "T1_unlock_minus_block_ms": 300000
+  },
+  "thief_cam": {
+    "method": "headless Chrome on a Mac, clicked by the capture script",
+    "page_title": "Undo thief tab",
+    "page_url_no_fragment": "https://undo-btc.pages.dev/t/",
+    "video": {
+      "frames": 1934,
+      "fps": 30,
+      "seconds": 64.467,
+      "sha256": "c3eb0f4f3e5a58a8d19aa16b5547b9bed14f79ecd0e632a433f7f4d144fba26a",
+      "encode": "sample-and-hold CFR 30 from CDP screencast JPEG q93; libx264 crf 16 medium yuv420p"
+    },
+    "pointer": "the page's own pointer, drawn where the capture's mouse events land; the click is a real CDP click at a countdown's zero"
+  },
+  "redaction": {
+    "method": "key glyphs never painted (transparent text, no shadow, caret or selection colour); a blurred row of random characters (never the key) drawn in the field while it holds a value",
+    "asserted_before_recording": true,
+    "checked": "370 armed frames of the thief recording, read by text recognition in the key field's rectangle: 0 with any text, 0 hex runs; a positive control, a made-up hex string (not a key) drawn at the field's size, read back as hex"
+  },
+  "phone_recording": {
+    "device": "the author's iPhone, as the author reported it; the file is an iOS screen recording (ReplayKit) of Safari, 1320x2868 px",
+    "ingest": "constant 30 fps, status bar cropped, audio dropped, metadata stripped",
+    "frames": 5099,
+    "sha256_ingested": "feeba04685631e402b8f522e2e8c0e217694a45170d1c54effec6c0a20d812a4",
+    "face_id": "3 in the recording, each passed the first time",
+    "privacy": "every used frame looked at: no notification, account, e-mail, name or handle"
+  },
   "film": {
     "file": "site/pages/film/undo-for-bitcoin.mp4",
-    "sha256": "f8d81500680c840bd39deafcf92b1a52a381642bc46ccbd9bce02ac9b2b0b649",
-    "seconds": 64.9667,
+    "sha256": "e779a40e2cf2113739aab761c9190e154a8c72ce11733b6110bae9a01d78f696",
+    "seconds": 68.4,
     "frame": "1080x1350, 30 fps",
-    "from_the_take": "every picture of the thief tab and the phone page, with their hashes, clocks and the node's words: cut for time, cropped and scaled, nothing in them redrawn. The first shot crops the thief tab below its key field",
-    "cut_for_time": "where the recording was cut, the next shot carries a label: 2.3 s of the thief tab between the node's refusal and its request ('2.3 s CUT BEFORE THIS SHOT'); the phone page's clock 11.6 s further on than the thief tab's in the shot before it, which the label gives to the nearest second ('12 s LATER': 4:51.0, then 4:39.4); the thief tab reading the cancel 0.7 s after the phone page ('0.7 s LATER'). Where the thief tab prints 5:00 and then draws its clock at 4:58, nothing is cut ('NO CUT'): the page's clock is the contract's unlock less the block time, and the wait was already running. Just before the tap the phone page's clock steps from 4:36.5 back to 4:36.9: that step is in the recording itself, between two consecutive frames of the take, not a cut",
-    "added_in_the_edit": "the title, the captions and cards, the labels that say where time was cut, tap rings, a highlight box, an underline, a flash on the stamp and the corner tag, some of them drawn over empty parts of the recording; and the sound",
+    "from_the_take": "every picture of the thief tab and the phone page, with their clocks, hashes and the node's words, in real time from the Send click to the phone's CANCELLED except for the two short cuts listed under cut_for_time: cropped and scaled, nothing in them redrawn. The thief tab's stolen-key field is blurred at capture (its glyphs never painted)",
+    "cut_for_time": [
+      "0.14 s at the cut from the thief tab to the phone, where the corner clock jumps",
+      "0.17 s of the thief page's full-screen red flash before REFUSED lands"
+    ],
+    "chip": "\"0:NN since the theft\" is computed per frame from the Send click through the sync; it freezes on \"Cancelled at 0:41\" (41.209 s, the phone page's first CANCELLED frame; the cancel's block came earlier, at T 35.35 s)",
+    "added_in_the_edit": "the captions, labels, chip, tiles and diagrams, the drawn browser window and phone body, tap rings, the end card and QR, and the sound",
     "narration": "a synthetic voice (AI text-to-speech, VoxCPM2 run locally), not a person's recording",
-    "sound": "effects and music synthesised for the film; no samples"
+    "sound": "music and effects synthesised for the film from code; no samples"
   }
 }

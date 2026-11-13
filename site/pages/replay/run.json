@@ -29,7 +29,7 @@
       "bitcoin": "Mutinynet (a signet)"
     },
     "take": {
-      "date": "2026-11-11",
+      "date": "2026-11-13",
       "label": "the live pages, another vault",
       "what": "the take of the live phone page and thief tab that the film is cut from",
       "near": "NEAR testnet",
@@ -109,8 +109,8 @@
     {
       "id": "cancel",
       "run": "take",
-      "at": "2026-11-11T05:01:31.428Z",
-      "title": "The phone page's Cancel stops a thief's request. Another test vault of the same contract, the same day.",
+      "at": "2026-11-13T15:01:18.329Z",
+      "title": "The phone page's Cancel stops a thief's request. Another test vault of the same contract, 2026-11-13.",
       "lines": [
         {
           "kind": "text",
@@ -120,33 +120,26 @@
           "kind": "hash",
           "chain": "NEAR testnet",
           "type": "tx",
-          "hash": "FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq",
+          "hash": "CqtSuSE4uksdgzvikW54H4i8oPSGkkbVqYNiYWVcSJdP",
           "what": "the thief tab's request, made to wait 5:00"
         },
         {
           "kind": "hash",
           "chain": "NEAR testnet",
           "type": "tx",
-          "hash": "HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL",
-          "what": "the phone page's Cancel (cancel_all_and_rotate)"
-        },
-        {
-          "kind": "hash",
-          "chain": "NEAR testnet",
-          "type": "tx",
-          "hash": "DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f",
-          "what": "after the wait, an execute of that request: refused by the contract (RequestNotFound)"
+          "hash": "7KkMUMoEuuHNSzCkZEHN7NfYcjzqC9zprHtrN3FrKNnD",
+          "what": "the phone page's Cancel (cancel_all_and_rotate), in a block 271 s before the request would have unlocked"
         },
         {
           "kind": "hash",
           "chain": "Mutinynet",
           "type": "txid",
-          "hash": "864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd",
-          "what": "that vault's coin: 2,000 sats, unspent when read again on 2026-11-11"
+          "hash": "bd0a7951d8f091de17e293e6fd5bd3cfda3d90a589d75b45e11633b73a413de0",
+          "what": "that vault's coin: 2,000 sats, unspent when read again on 2026-11-13"
         },
         {
           "kind": "text",
-          "text": "Chrome's virtual authenticator stood in for a phone's passkey. A Cancel from a real phone ran once, 2026-11-12, on another vault of the same contract: one iPhone 13 Pro Max, with the phone page and the thief tab as two Safari tabs on it, as the author reported it."
+          "text": "The phone page ran in Safari on an iPhone, as the author reported it, and the film's phone shots are that phone's own screen recording; the thief tab ran in headless Chrome on a Mac, a second device. A Cancel from a real phone also ran 2026-11-12, on another vault of the same contract: one iPhone 13 Pro Max, with the phone page and the thief tab as two Safari tabs on it, as the author reported it."
         }
       ]
     },
@@ -206,43 +199,36 @@
     }
   ],
   "film": {
-    "date": "2026-11-11",
-    "note": "Chrome's virtual authenticator stood in for a phone's passkey",
+    "date": "2026-11-13",
+    "note": "The phone page ran in Safari on an iPhone, as the author reported it, and the film's phone shots are that phone's own screen recording; the thief tab ran in headless Chrome on a Mac, a second device",
     "hashes": [
       {
         "kind": "hash",
         "chain": "Mutinynet",
         "type": "address",
-        "hash": "tb1q6k53g2t69l0r8hrgqlf5am3ct2685zx0qmv9vuuxnkshmepfv99qmlk5az",
+        "hash": "tb1qxdsx4tfxvxadcccl4zx77nss8tlj99tzfs5nhnh85gp4ku47qhfqc5yx09",
         "what": "the film's test vault"
       },
       {
         "kind": "hash",
         "chain": "Mutinynet",
         "type": "txid",
-        "hash": "864093472ce7872bc119d96a688a57224f195c6bf94814956de6f2373b1382bd",
-        "what": "its coin: 2,000 sats, unspent when read again on 2026-11-11"
+        "hash": "bd0a7951d8f091de17e293e6fd5bd3cfda3d90a589d75b45e11633b73a413de0",
+        "what": "its coin: 2,000 sats, unspent when read again on 2026-11-13"
       },
       {
         "kind": "hash",
         "chain": "NEAR testnet",
         "type": "tx",
-        "hash": "FAts9p2z2puKXPNMQFmWiJHps5UFQNnXYTMjoe4NBXxq",
+        "hash": "CqtSuSE4uksdgzvikW54H4i8oPSGkkbVqYNiYWVcSJdP",
         "what": "the thief's request, made to wait 5:00"
       },
       {
         "kind": "hash",
         "chain": "NEAR testnet",
         "type": "tx",
-        "hash": "HkxHDQDrs6tXuDqKfJNnjs6T4gAUvgGgnT4Dsc8RbpCL",
-        "what": "the phone page's cancel"
-      },
-      {
-        "kind": "hash",
-        "chain": "NEAR testnet",
-        "type": "tx",
-        "hash": "DPVhY5jWqiVjomPHmEgsDYEVqgSse1W8WcmaEabE1n5f",
-        "what": "after the wait, an execute of that request: refused by the contract"
+        "hash": "7KkMUMoEuuHNSzCkZEHN7NfYcjzqC9zprHtrN3FrKNnD",
+        "what": "the phone page's cancel, in a block 271 s before that request would have unlocked"
       }
     ]
   },

@@ -2,8 +2,9 @@
 // Builds site/pages/replay/run.json, the replay page's only data, from the real records in proofs/: the final build's
 // live run on Mutinynet and NEAR testnet (proofs/g2-v1.json), the refused key-alone spend on the same test vault
 // (proofs/s2-refusal-v1.json), and, for the cancel, the take of the live pages the film is cut from
-// (proofs/film-take.json), which is another vault of the same contract and says so on its step; that step also says,
-// from proofs/phone-take.json, that a Cancel from a real phone has since run, with the device as its author reported it.
+// (proofs/film-take.json), which is another vault of the same contract and says so on its step, with the device as
+// its author reported it; that step also says, from proofs/phone-take.json, that a Cancel from a real phone ran on one
+// device the day before, on another vault again.
 // Nothing here is typed by hand: every hash, time, amount and node answer is copied from those files, so the page
 // cannot show a hash that did not happen. site/test/landing.test.mjs rebuilds it and compares, so the file cannot drift from its sources. The
 // landing page's three lists come from here too: "From the film:" (the take), "From the final build's run" and, from
@@ -52,7 +53,12 @@ export function buildRun({
   g2 = read('g2-v1.json'), s2 = read('s2-refusal-v1.json'), take = read('film-take.json'), phone = read('phone-take.json'), earlier = read('g2.json'),
   deploy = json('deploy', 'testnet.json'), site = json('site', 'config', 'testnet.json'),
 } = {}) {
-  if (take.schema !== 'undo-film-take-v1' || take.cancel.method !== 'cancel_all_and_rotate' || take.after.execute_refusal !== 'RequestNotFound') throw new Error('proofs/film-take.json is not the film\'s take');
+  // The film's take: the phone page on a real phone, whose device and browser are its author's report, and the thief
+  // tab on a second device. It records no execute after the wait, so the step names none.
+  const filmBy = take.device_as_reported ?? {};
+  if (take.schema !== 'undo-film-take-v2' || take.cancel?.method !== 'cancel_all_and_rotate' || !take.labels?.includes('real device') || take.labels.includes('virtual authenticator')) throw new Error('proofs/film-take.json is not the film\'s take');
+  if (typeof filmBy.device !== 'string' || typeof filmBy.browser !== 'string' || !/^the author, /.test(filmBy.by ?? '') || !Number.isSafeInteger(take.cancel.block_before_the_unlock_ms)) throw new Error('proofs/film-take.json does not say what its author reported');
+  if (take.after?.execute_after_the_wait_tx || take.after?.execute_refusal) throw new Error('proofs/film-take.json records an execute, and this step names none');
   const executed = liveRun(g2, 'g2-v1.json');
   if (g2.wasm.sha256 !== deploy.wasm_sha256 || g2.contract.account !== deploy.contract) throw new Error('proofs/g2-v1.json is not a run of the final build, the wasm and contract deploy/testnet.json names');
   if (g2.contract.account !== site.contract) throw new Error('proofs/g2-v1.json is not a run on the contract this site\'s config names');
@@ -74,6 +80,8 @@ export function buildRun({
   const g2Date = dateOf(g2.coins[0].recorded_at);
   const s2Date = dateOf(s2.node_answer.at_utc);
   const takeDate = dateOf(take.started_utc);
+  // Where the film's take ran, said once and used on the replay and the landing page alike.
+  const filmNote = `The phone page ran in ${filmBy.browser} on ${filmBy.device}, as the author reported it, and the film's phone shots are that phone's own screen recording; the thief tab ran in headless Chrome on a Mac, a second device`;
   const earlierDate = dateOf(earlier.coins[0].recorded_at);
   const proposed = isoOf(c.proposed_at);
   // The request of steps 3 and 5, named the same way both times so a reader can tell it from the take's.
@@ -128,10 +136,9 @@ export function buildRun({
         lines: [
           say(`From the live pages, in the take the film is cut from: the thief tab asked to send that vault's coin away, and the phone page cancelled.`),
           nearTx(t.propose_tx, `the thief tab's request, made to wait ${mmss(t.wait_ms)}`),
-          nearTx(take.cancel.tx, `the phone page's Cancel (${take.cancel.method})`),
-          nearTx(take.after.execute_after_the_wait_tx, `after the wait, an execute of that request: refused by the contract (${take.after.execute_refusal})`),
+          nearTx(take.cancel.tx, `the phone page's Cancel (${take.cancel.method}), in a block ${Math.floor(take.cancel.block_before_the_unlock_ms / 1000)} s before the request would have unlocked`),
           btcTx(take.coin.mutinynet_txid, `that vault's coin: ${sats(take.coin.value_sats)}, unspent when read again on ${dateOf(take.after.coin_unspent_read_utc)}`),
-          say(`Chrome's virtual authenticator stood in for a phone's passkey. A Cancel from a real phone ran once, ${phoneDate === takeDate ? 'the same day' : phoneDate}, on another vault of the same contract: one ${reported.device}, with the phone page and the thief tab as two ${reported.browser} tabs on it, as the author reported it.`),
+          say(`${filmNote}. A Cancel from a real phone also ran ${phoneDate === takeDate ? 'the same day' : phoneDate}, on another vault of the same contract: one ${reported.device}, with the phone page and the thief tab as two ${reported.browser} tabs on it, as the author reported it.`),
         ],
       },
       {
@@ -158,13 +165,12 @@ export function buildRun({
     // the final build's run below, so it is a list of its own.
     film: {
       date: takeDate,
-      note: 'Chrome\'s virtual authenticator stood in for a phone\'s passkey',
+      note: filmNote,
       hashes: [
         btcAddress(take.vault.address, 'the film\'s test vault'),
         btcTx(take.coin.mutinynet_txid, `its coin: ${sats(take.coin.value_sats)}, unspent when read again on ${dateOf(take.after.coin_unspent_read_utc)}`),
         nearTx(t.propose_tx, `the thief's request, made to wait ${mmss(t.wait_ms)}`),
-        nearTx(take.cancel.tx, 'the phone page\'s cancel'),
-        nearTx(take.after.execute_after_the_wait_tx, 'after the wait, an execute of that request: refused by the contract'),
+        nearTx(take.cancel.tx, `the phone page's cancel, in a block ${Math.floor(take.cancel.block_before_the_unlock_ms / 1000)} s before that request would have unlocked`),
       ],
     },
     // What the landing page links "From the final build's run": the spend the contract co-signed and the cold key's exit.

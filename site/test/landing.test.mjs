@@ -60,14 +60,17 @@ test('replay: run.json is exactly what tools/replay-run.mjs builds from proofs/,
   for (const s of run.steps) for (const h of hashesOf(s)) assert.equal([earlier.cosigned.txid, earlier.escape.txid, earlier.cosigned.propose_tx, earlier.vault.address].includes(h), false, `${s.id} holds a hash of the earlier build's run`);
 });
 
-test('replay: the cancel step is the take of the live pages, with that take\'s hashes, and says it is another vault, that Chrome\'s authenticator stood in, and that a real phone\'s Cancel, on another vault, is the author\'s report', () => {
+test('replay: the cancel step is the take of the live pages the film is cut from, with that take\'s hashes, and says it is another vault, that its phone and browser are the author\'s report with the thief tab on a second device, and that the one-device run from a real phone, on another vault, is the author\'s report too', () => {
   const take = proof('film-take.json');
   const cancel = run.steps.find((s) => s.id === 'cancel');
   assert.notEqual(cancel.recorded, false, 'the step is a recorded one now');
   assert.equal(cancel.run, 'take');
   assert.equal(run.runs.take.date, take.started_utc.slice(0, 10));
   assert.match(run.runs.take.label, /another vault/);
-  assert.deepEqual(cancel.lines.filter((l) => l.kind === 'hash').map((l) => l.hash), [take.thief.propose_tx, take.cancel.tx, take.after.execute_after_the_wait_tx, take.coin.mutinynet_txid]);
+  // The film's take records no execute after its wait, so the step names none.
+  assert.deepEqual(cancel.lines.filter((l) => l.kind === 'hash').map((l) => l.hash), [take.thief.propose_tx, take.cancel.tx, take.coin.mutinynet_txid]);
+  assert.equal(take.schema, 'undo-film-take-v2');
+  assert.equal(JSON.stringify(take).includes('execute_after_the_wait_tx'), false);
   // Another vault than the replay's, on the same contract: the title says so, and so does the page's note.
   assert.notEqual(take.vault.id, run.vault.id);
   assert.equal(take.contract, run.vault.contract);
@@ -76,21 +79,26 @@ test('replay: the cancel step is the take of the live pages, with that take\'s h
   assert.equal(run.steps.indexOf(cancel), 3, 'the note calls it step 4');
   const said = cancel.lines.filter((l) => l.kind === 'text').map((l) => l.text).join(' ');
   assert.match(said, /^From the live pages, in the take the film is cut from: /);
-  // The take's cancel was Chrome's virtual authenticator; a real phone's ran later, on another vault, and the device and
-  // the browser are what its author reported, from proofs/phone-take.json. Its hash is not a line of this step.
+  // The take's phone and browser are what its author reported, with the thief tab on a second device; the one-device run
+  // from a real phone ran the day before, on another vault, from proofs/phone-take.json. Its hash is not a line of this step.
   const phone = proof('phone-take.json');
-  assert.ok(said.endsWith(`Chrome's virtual authenticator stood in for a phone's passkey. A Cancel from a real phone ran once, ${phone.vault_made_block_utc.slice(0, 10)}, on another vault of the same contract: one ${phone.device_as_reported.device}, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it.`), said);
+  assert.deepEqual([take.device_as_reported.device, take.device_as_reported.browser], ['an iPhone', 'Safari']);
+  assert.ok(take.labels.includes('real device') && !take.labels.includes('virtual authenticator'));
+  assert.ok(said.endsWith(`The phone page ran in Safari on an iPhone, as the author reported it, and the film's phone shots are that phone's own screen recording; the thief tab ran in headless Chrome on a Mac, a second device. A Cancel from a real phone also ran ${phone.vault_made_block_utc.slice(0, 10)}, on another vault of the same contract: one ${phone.device_as_reported.device}, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it.`), said);
+  assert.doesNotMatch(said, /virtual authenticator|Face ID/);
   assert.deepEqual([phone.device_as_reported.device, phone.device_as_reported.browser], ['iPhone 13 Pro Max', 'Safari']);
   assert.ok(![take.vault.id, run.vault.id].includes(phone.vault.id) && phone.contract === run.vault.contract);
   assert.doesNotMatch(said, /not yet run/);
   assert.equal(JSON.stringify(run).includes(phone.cancel.tx), false, 'the real phone\'s cancel is not a hash line of the replay');
   const whats = cancel.lines.filter((l) => l.kind === 'hash').map((l) => l.what);
   assert.equal(whats[0], 'the thief tab\'s request, made to wait 5:00');
-  assert.equal(whats[1], `the phone page's Cancel (${take.cancel.method})`);
-  assert.equal(whats[2], `after the wait, an execute of that request: refused by the contract (${take.after.execute_refusal})`);
-  assert.match(whats[3], /^that vault's coin: 2,000 sats, unspent when read again on \d{4}-\d\d-\d\d$/);
+  // The time is the chain's: the cancel's block against the unlock in the proposal's log, as the record holds it.
+  assert.equal(take.thief.unlock_ms - take.cancel.block_before_the_unlock_ms - take.cancel.block_after_the_proposal_ms, take.thief.proposed_at_ms);
+  assert.equal(whats[1], `the phone page's Cancel (${take.cancel.method}), in a block ${Math.floor(take.cancel.block_before_the_unlock_ms / 1000)} s before the request would have unlocked`);
+  assert.equal(Math.floor(take.cancel.block_before_the_unlock_ms / 1000), 271);
+  assert.match(whats[2], /^that vault's coin: 2,000 sats, unspent when read again on \d{4}-\d\d-\d\d$/);
   // No other step borrows from the take, and the take's step holds nothing of the replay's vault.
-  const takes = new Set([take.thief.propose_tx, take.cancel.tx, take.after.execute_after_the_wait_tx, take.coin.mutinynet_txid, take.vault.address]);
+  const takes = new Set([take.thief.propose_tx, take.cancel.tx, take.coin.mutinynet_txid, take.vault.address]);
   for (const s of run.steps.filter((x) => x.id !== 'cancel')) for (const l of s.lines.filter((x) => x.kind === 'hash')) assert.equal(takes.has(l.hash), false, `${s.id} borrows a hash of the take`);
   // Nowhere does the replay say a phone did it.
   assert.doesNotMatch(JSON.stringify(run.steps), /[Yy]our phone cancel|a phone cancelled|from a phone,/);
@@ -402,8 +410,8 @@ test('Chrome replay: labelled REPLAY, one step at a time on request, every hash 
   assert.equal(await cdp.page('return document.querySelector("#step-cancel").dataset.recorded;'), 'true');
   assert.equal(await cdp.page('return document.querySelector("#step-cancel").dataset.run;'), 'take');
   assert.equal(await cdp.page('return document.querySelector("#step-cancel .when").textContent;'), `replay · the live pages, another vault · ${run.runs.take.date} UTC ${run.steps[3].at.slice(11, 19)}`);
-  assert.equal(await cdp.page('return document.querySelectorAll("#step-cancel .hash-line").length;'), 4);
-  assert.match(await cdp.page('return document.querySelector("#step-cancel").textContent;'), /Chrome's virtual authenticator stood in for a phone's passkey\. A Cancel from a real phone ran once, \d{4}-\d\d-\d\d, on another vault of the same contract: one iPhone 13 Pro Max, with the phone page and the thief tab as two Safari tabs on it, as the author reported it\./);
+  assert.equal(await cdp.page('return document.querySelectorAll("#step-cancel .hash-line").length;'), 3);
+  assert.match(await cdp.page('return document.querySelector("#step-cancel").textContent;'), /The phone page ran in Safari on an iPhone, as the author reported it, and the film's phone shots are that phone's own screen recording; the thief tab ran in headless Chrome on a Mac, a second device\. A Cancel from a real phone also ran \d{4}-\d\d-\d\d, on another vault of the same contract: one iPhone 13 Pro Max, with the phone page and the thief tab as two Safari tabs on it, as the author reported it\./);
   assert.equal(await cdp.page('return document.querySelectorAll(".step .when").length;'), run.steps.length);
   assert.match(await cdp.page('return document.querySelector("#step-refused .when").textContent;'), new RegExp(`^replay · final build · ${run.runs.s2.date} UTC ${run.steps[1].at.slice(11, 19)}$`));
   assert.equal(await cdp.page('return document.querySelector("#step-signed .when").textContent.startsWith("replay · final build · ");'), true);
@@ -437,7 +445,13 @@ test('build of the replay record refuses records that are not the final build\'s
   assert.throws(() => buildRun({ g2, s2: { ...s2, vault: { ...s2.vault, id: '00' } } }), /not the same test vault/);
   assert.throws(() => buildRun({ take: { ...take, contract: earlier.contract.account } }), /not another vault of the same contract/);
   assert.throws(() => buildRun({ take: { ...take, vault: { ...take.vault, id: g2.vault.id } } }), /not another vault of the same contract/);
-  assert.throws(() => buildRun({ take: { ...take, after: { ...take.after, execute_refusal: 'TooEarly' } } }), /not the film's take/);
+  // The film's take is a real device's, with its author's report, and names no execute the step would leave out.
+  assert.throws(() => buildRun({ take: proof('chrome-take.json') }), /not the film's take/);
+  assert.throws(() => buildRun({ take: { ...take, labels: [...take.labels, 'virtual authenticator'] } }), /not the film's take/);
+  assert.throws(() => buildRun({ take: { ...take, labels: take.labels.filter((l) => l !== 'real device') } }), /not the film's take/);
+  assert.throws(() => buildRun({ take: { ...take, device_as_reported: { ...take.device_as_reported, by: 'the chain' } } }), /film-take\.json does not say what its author reported/);
+  assert.throws(() => buildRun({ take: { ...take, cancel: { ...take.cancel, block_before_the_unlock_ms: undefined } } }), /film-take\.json does not say what its author reported/);
+  assert.throws(() => buildRun({ take: { ...take, after: { ...take.after, execute_refusal: 'RequestNotFound' } } }), /records an execute, and this step names none/);
   assert.throws(() => buildRun({ earlier: g2 }), /not an earlier build's run/);
   // The real phone's record: a real device's take, on another vault of the same contract, with its author's report.
   const phone = proof('phone-take.json');

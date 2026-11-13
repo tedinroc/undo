@@ -25,39 +25,61 @@ test('the film is published with its own capture record: the file that record na
   assert.equal(take.film.file, 'site/pages/film/undo-for-bitcoin.mp4');
   assert.equal(createHash('sha256').update(film).digest('hex'), take.film.sha256, 'proofs/film-take.json names another cut: after a new cut, write its sha256 and its length there');
   assert.ok(take.film.seconds >= 60 && take.film.seconds <= 75);
-  // What the take was, said the same way everywhere: test networks, Chrome's virtual authenticator, a synthetic voice.
-  assert.deepEqual(take.labels, ['live-testnet', 'live-mutinynet', 'virtual authenticator']);
-  assert.match(take.what, /virtual authenticator, not a phone's/);
+  assert.equal(take.film.sha256, 'e779a40e2cf2113739aab761c9190e154a8c72ce11733b6110bae9a01d78f696', 'film v3, the cut e1 its author approved');
+  // What the take was, said the same way everywhere: test networks, a real phone whose device and browser are its
+  // author's report, the thief tab in headless Chrome on a second device, a synthetic voice.
+  assert.deepEqual(take.labels, ['live-testnet', 'live-mutinynet', 'real device', 'iPhone screen recording', 'thief tab: headless Chrome on a Mac']);
+  assert.match(take.what, /device_as_reported is the author's report, not the chain's: an iPhone, in Safari, with Face ID\./);
+  assert.match(take.what, /the thief tab of the same site in headless Chrome on a Mac, a second device/);
+  assert.match(take.device_as_reported.by, /^the author, /);
+  assert.match(take.device_as_reported.what_the_chain_says_of_it, /user verified says the authenticator verified the user, not how/);
   assert.match(take.film.narration, /synthetic voice/);
-  // The record holds no key: every 64-hex string in it is the vault id, the film's hash, or a Bitcoin txid it names.
-  const named = new Set([take.vault.id, take.film.sha256, take.coin.mutinynet_txid, ...take.thief.node_answer_verbatim.match(/\b[0-9a-f]{64}\b/g)]);
+  // The film's corner clock stops on the phone page's CANCELLED; the cancel's block came earlier, and the record says so.
+  assert.match(take.film.chip, /the cancel's block came earlier/);
+  // The earlier film's take is kept, renamed, and says it is no longer the film on the landing page.
+  const earlierTake = JSON.parse(readFileSync(join(REPO, 'proofs', 'chrome-take.json'), 'utf8'));
+  assert.match(earlierTake.what, /^The live take film v2 was cut from, 2026-11-11\. Film v2 was the film on the landing page until film v3 replaced it; /);
+  assert.notEqual(earlierTake.film.sha256, take.film.sha256);
+  assert.notEqual(earlierTake.vault.id, take.vault.id);
+  // The record holds no key: every 64-hex string in it is the vault id, the film's hash, a recording's hash, or a
+  // Bitcoin txid it names.
+  const named = new Set([take.vault.id, take.film.sha256, take.thief_cam.video.sha256, take.phone_recording.sha256_ingested, take.coin.mutinynet_txid, ...take.thief.node_answer_verbatim.match(/\b[0-9a-f]{64}\b/g)]);
   for (const h of JSON.stringify(take).match(/\b[0-9a-f]{64}\b/g)) assert.ok(named.has(h), `an unnamed 32-byte hex string in the record: ${h.slice(0, 8)}…`);
   assert.doesNotMatch(JSON.stringify(take), /"[^"]*(seed|secret|private|spend_key)[^"]*":/i);
   assert.ok(take.thief.node_answer_verbatim.includes(take.coin.mutinynet_txid), 'the node refused a spend of the film\'s coin');
   assert.equal(take.thief.unlock_ms - take.thief.proposed_at_ms, take.thief.wait_ms);
   // The landing page's list is the record's, in the film's order, and nothing else on the page is named for the film.
-  assert.deepEqual(run.film.hashes.map((l) => l.hash), [take.vault.address, take.coin.mutinynet_txid, take.thief.propose_tx, take.cancel.tx, take.after.execute_after_the_wait_tx]);
+  assert.deepEqual(run.film.hashes.map((l) => l.hash), [take.vault.address, take.coin.mutinynet_txid, take.thief.propose_tx, take.cancel.tx]);
   assert.equal(run.film.date, take.started_utc.slice(0, 10));
   assert.equal(landing.match(/From the film/g).length, 1);
   assert.match(landing, /<h2 id="from-film" class="h2">From the film:<\/h2>/);
   const note = /<p id="film-note" class="small">([^<]+)<\/p>/.exec(landing)[1];
   assert.ok(note.includes(`one take of these pages, ${run.film.date}, on NEAR testnet and Mutinynet`));
-  assert.ok(note.includes(run.film.note), 'the note says a virtual authenticator stood in for the phone');
-  // A real phone has since run the Cancel, on another vault: the note says so, with the device and the browser as the
-  // author's report, never as what the film shows; the film itself is still the virtual authenticator's take.
+  assert.ok(note.includes(`${run.film.note}.`), 'the note says where the phone page and the thief tab ran');
+  assert.equal(run.film.note, 'The phone page ran in Safari on an iPhone, as the author reported it, and the film\'s phone shots are that phone\'s own screen recording; the thief tab ran in headless Chrome on a Mac, a second device');
+  assert.doesNotMatch(note, /virtual authenticator|Face ID|\b41 s\b/);
+  // The one-device run from a real phone, on another vault: the note says so, with the device and the browser as the
+  // author's report.
   const phone = JSON.parse(readFileSync(join(REPO, 'proofs', 'phone-take.json'), 'utf8'));
-  assert.ok(note.includes(`${run.film.note}. A Cancel from a real phone ran once, ${phone.vault_made_block_utc.slice(0, 10)}, on another vault: one iPhone, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it; the README links its hash.`), note);
+  assert.ok(note.includes(`${run.film.note}. From the thief's Send to the phone page's CANCELLED it runs in real time, but for two cuts of under 0.2 s. A Cancel from a real phone also ran ${phone.vault_made_block_utc.slice(0, 10)}, on another vault: one iPhone, with the phone page and the thief tab as two ${phone.device_as_reported.browser} tabs on it, as the author reported it; the README links its hash.`), note);
+  // The two cuts are the record's, each under 0.2 s.
+  assert.equal(take.film.cut_for_time.length, 2);
+  for (const cut of take.film.cut_for_time) assert.ok(Number(/^(\d+\.\d+) s /.exec(cut)[1]) < 0.2, cut);
   assert.equal(phone.device_as_reported.browser, 'Safari');
   assert.notEqual(phone.vault.id, take.vault.id);
   assert.doesNotMatch(note, /not yet run/);
   assert.match(readme0(), new RegExp(`\\[\`${phone.cancel.tx}\`\\]\\(https://testnet\\.near\\.rocks/tx/${phone.cancel.tx}\\)`), 'the README links that hash');
-  assert.match(note, /Where the recording was cut for time, the film says so on that shot\./);
   assert.match(note, /The narration is a synthetic voice \(AI text-to-speech\)\./);
   // The slot's label says what plays, and that it starts muted with its words on screen; no script has to correct it.
   assert.match(landing, /<video id="film"[^>]*aria-label="The film, about a minute: [^"]*It starts muted, and every spoken line is also on screen\."/);
   assert.doesNotMatch(landing, /not published yet/);
   assert.doesNotMatch(landingJs, /setAttribute\('aria-label'/);
-  assert.match(landing, /<meta property="og:image:alt" content="The film's headline, large type on black: Your Bitcoin key was just stolen\. Under it: Undo for Bitcoin, a cancel button for Bitcoin\.">/);
+  // The link card's words and the poster's, as they are drawn: the card is the headline, the name and the line under it;
+  // the poster, the film's first frame, is the headline over the thief tab with the stolen key blurred.
+  for (const prop of ['property="og:image:alt"', 'name="twitter:image:alt"']) {
+    assert.match(landing, new RegExp(`<meta ${prop} content="The film's headline, large type on black: Your Bitcoin key was just stolen\\. Under it: Undo for Bitcoin\\. A cancel button for Bitcoin\\. NEAR can refuse; it can't take\\.">`));
+  }
+  assert.match(landing, /aria-label="The film, about a minute: [^"]*Its first frame is the headline over the thief tab, the stolen key blurred\. /);
   // The README says the same of the voice, next to the line about AI coding assistance.
   const readme = readFileSync(join(REPO, 'README.md'), 'utf8');
   assert.match(readme, /with AI coding assistance \(Claude\)\. The film's narration is a synthetic voice \(AI text-to-speech\), not a recording of a person\./);

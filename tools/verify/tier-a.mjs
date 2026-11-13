@@ -17,11 +17,12 @@
 //    the contract's code hash at the block of the execute, the proposal's unlock and the execute's block against
 //    it, the signer's signature against the digest of the mined Bitcoin transaction and against its witness, and
 //    the Mutinynet transactions. With proofs/s2-refusal-NAME.json, the spend key alone on that run's vault.
-//    Then the take of the live pages in proofs/film-take.json: the thief tab's proposal and its wait, the phone
-//    page's cancel_all_and_rotate before that unlock, with its WebAuthn assertion checked again here under the
-//    passkey the vault was made with, the execute the contract refused after the unlock, and the coin, read now.
-//    The same for every other take, proofs/NAME-take.json, such as the run from a real phone in
-//    proofs/phone-take.json; the execute line only where the record has an execute after the wait.
+//    Then the take of the live pages the film is cut from, proofs/film-take.json: the thief tab's proposal and its
+//    wait, the phone page's cancel_all_and_rotate before that unlock, with its WebAuthn assertion checked again here
+//    under the passkey the vault was made with, and the coin, read now. The same for every other take,
+//    proofs/NAME-take.json: the take of the earlier film in proofs/chrome-take.json, with the execute the contract
+//    refused after its unlock, and the run from a real phone on one device in proofs/phone-take.json; the execute
+//    line only where the record has an execute after the wait.
 // 4. The agent run in proofs/c14-agent.json: the transaction that gave the agent its function-call key,
 //    its proposal, the calls the contract refused, the owner's cancel and rotation, each fetched again
 //    from archival RPC. What NEAR itself refused was never on chain, so that part is INFO.
@@ -777,11 +778,13 @@ function takeFiles() {
 }
 
 /**
- * What each kind of take record must hold. The film's take has an execute after the wait, and must. A take from a
- * real device may have one; it names the device as its author reported it, and the authenticator data as read.
+ * What each kind of take record must hold. The earlier film's take, in Chrome with its virtual authenticator, has an
+ * execute after the wait, and must. A take from a real device, the film's from film v3 on and the one-device run,
+ * may have one; it names the device as its author reported it, and the authenticator data as read.
  */
 const TAKE_KINDS = {
   'undo-film-take-v1': { execute: 'required', device: false },
+  'undo-film-take-v2': { execute: 'optional', device: true },
   'undo-phone-take-v1': { execute: 'optional', device: true },
 };
 
@@ -805,7 +808,8 @@ async function replayTakes(config) {
 
 /**
  * A take record against the chains: proofs/film-take.json is the one take of the live phone page and thief tab that
- * the film is cut from; proofs/phone-take.json is a run of the same pages with a real phone's passkey. Its NEAR
+ * the film is cut from, with a real phone's passkey; proofs/chrome-take.json is the take the earlier film was cut
+ * from, in headless Chrome; proofs/phone-take.json is a run of the same pages on one real phone. Its NEAR
  * testnet transactions are fetched again from archival RPC, and the cancel's WebAuthn assertion is checked again
  * here, the way contracts/undo/src/auth.rs checks it, under the passkey in the vault's own create_vault. The coin is
  * read from the Mutinynet API as it is now. What no chain can say, which authenticator held the passkey, is read from
