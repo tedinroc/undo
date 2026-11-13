@@ -392,11 +392,12 @@ function noteRead(id, row) {
 async function tick() {
   P.timer = null;
   try {
+    // Awaited only after the vault reads, so marked handled now: when those fail first, it is never awaited.
     const skewing = Date.now() - P.skewAt >= SKEW_MS
-      ? ctx.reader.blockTime().then((sample) => {
+      ? started(ctx.reader.blockTime().then((sample) => {
         ctx.skew.add(sample);
         P.skewAt = Date.now();
-      })
+      }))
       : null;
     const known = idsToRead();
     const reading = Promise.all([readOnce('vault', () => ctx.views.vault(P.v)), ...known.map((id) => readOnce(`request:${id}`, () => ctx.views.request(P.v, id)))]);

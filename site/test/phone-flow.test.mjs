@@ -298,6 +298,12 @@ const SCENARIOS = {
   // K_m in after the line, the clock read later still: the line goes when K_m is in, before Confirm
   kmAfterLine: { steps: [{ set: { kmMs: 5000, blockMs: 6500 } }, { tap: 'make' }, { until: { id: 'confirm' }, max: 15_000 }, { snap: 'confirm' }] },
 
+  // ---- B9e: the network goes while the vault is idle, so a tick's vault read fails before its clock read
+  nearDownIdle: {
+    hash: LINK, stored: true,
+    steps: [{ until: { state: 'idle' } }, { wait: 5200 }, { set: { nearDown: true } }, { until: { id: 'read-down' }, max: 15_000 }, { wait: 6000 }, { snap: 'down' }],
+  },
+
   // ---- B10: sent, and not read active
   notActive: {
     neverActive: true, clockWarp: 12,
@@ -1012,6 +1018,18 @@ test('B9c: the line that says the second key is being read is on screen only whi
   assert.equal(making.slice(lineAt + 1).filter((d) => READING.test(d)).length, 0);
   assert.match(making.at(-1), /Second key read from the signer\./);
   assert.deepEqual(after.calls.map((c) => c.call), ['create']);
+});
+
+// ---------------------------------------------------------------- B9e
+
+test('B9e: while no node answers an idle vault\'s reads, the clock read a tick sends with them is never left failing unwatched', T, async () => {
+  const got = await page('nearDownIdle');
+  assert.equal(got.snap('down').texts['read-down'], 'Can\'t read the NEAR contract right now.');
+  assert.deepEqual(got.unhandled, []);
+});
+
+test('no scenario leaves a failed promise with no one waiting on it', T, async () => {
+  for (const name of Object.keys(SCENARIOS)) assert.deepEqual((await results[name]).unhandled, [], name);
 });
 
 // ---------------------------------------------------------------- B10

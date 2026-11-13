@@ -11,6 +11,9 @@ import { register } from 'node:module';
 register('./page-hooks.mjs', import.meta.url);
 
 const opts = JSON.parse(process.argv[2] ?? '{}');
+// A promise the page lets fail with no one waiting on it: a browser logs it, and this run says so instead of dying.
+const unhandled = [];
+process.on('unhandledRejection', (reason) => { unhandled.push(String(reason?.stack ?? reason).split('\n').slice(0, 3).join(' | ')); });
 // `clockWarp`: this machine's clock runs that many times faster for the page, and its timers do not, which is what a
 // page sees when it is put to sleep between two of its own steps.
 const wall = Date.now.bind(Date);
@@ -311,6 +314,8 @@ globalThis.fetch = async (url, init = {}) => {
     return json({ ok: true, hash: 'H'.repeat(44), method });
   }
   if (u.startsWith('https://rpc.example.test')) {
+    // `nearDown`: no NEAR node answers anything.
+    if (live.nearDown) throw new TypeError('Load failed');
     const { method, params } = JSON.parse(init.body);
     // `blockMs`: the chain's clock read takes this long, as on a slow node.
     if (method === 'block') {
@@ -392,5 +397,5 @@ for (const step of opts.steps ?? []) {
   if (step.wait) await sleep(step.wait);
   if (step.snap) snap(step.snap);
 }
-process.stdout.write(`${JSON.stringify({ snaps, calls, posts, relayGets, kmReads, missed, assigned, platformAsked, drawn: drawn.filter((d, i) => d !== drawn[i - 1]).slice(-400), stored: globalThis.localStorage.keys(), session: globalThis.sessionStorage.keys() })}\n`);
+process.stdout.write(`${JSON.stringify({ snaps, calls, posts, relayGets, kmReads, unhandled, missed, assigned, platformAsked, drawn: drawn.filter((d, i) => d !== drawn[i - 1]).slice(-400), stored: globalThis.localStorage.keys(), session: globalThis.sessionStorage.keys() })}\n`);
 process.exit(0);
