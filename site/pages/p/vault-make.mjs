@@ -26,13 +26,15 @@ export const chainNowOf = (skew) => {
  * the vault. When the page already holds a clock reading (the boot reads gave one), the new one is waited for only
  * CLOCK_GRACE_MS past K_m, and the vault is made without it if it fails. Throws the K_m read's error (RpcDown,
  * StaleRead, ViewRefused), or the clock read's when the page holds none; nothing has gone to the relay by then.
+ * `onKm` is called once K_m is in, before that wait for the clock, so a screen that says K_m is being read can stop.
  */
-export async function prepareVault(ctx, passkey, { keys = newVaultKeys(), patience = {} } = {}) {
+export async function prepareVault(ctx, passkey, { keys = newVaultKeys(), patience = {}, onKm = () => {} } = {}) {
   const { config, reader, instance } = ctx;
   const vaultHex = toHex(vaultIdOf({ contract: config.contract, keys, passkeyPub: passkey.pubkey, csv: CSV }));
   const clockRead = readPatiently(() => reader.blockTime(), patience);
   clockRead.catch(() => {});
   const km = await readPatiently(() => derivedKey(reader, { signer: instance.signer, domainId: instance.domain_id, contract: config.contract, vaultHex }), patience);
+  onKm();
   const block = ctx.skew.sample() ? await answerWithin(clockRead, CLOCK_GRACE_MS) : await clockRead;
   if (block) ctx.skew.add(block);
   return { keys, vaultHex, km, passkey };

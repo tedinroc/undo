@@ -312,7 +312,11 @@ globalThis.fetch = async (url, init = {}) => {
   }
   if (u.startsWith('https://rpc.example.test')) {
     const { method, params } = JSON.parse(init.body);
-    if (method === 'block') return rpc({ header: { hash: '1'.repeat(32), height: 1000, timestamp_nanosec: `${Date.now()}000000` } });
+    // `blockMs`: the chain's clock read takes this long, as on a slow node.
+    if (method === 'block') {
+      if (live.blockMs) await sleep(live.blockMs);
+      return rpc({ header: { hash: '1'.repeat(32), height: 1000, timestamp_nanosec: `${Date.now()}000000` } });
+    }
     if (method === 'tx') return rpc({ final_execution_status: 'EXECUTED_OPTIMISTIC', status: { SuccessValue: '' }, receipts_outcome: [] });
     if (method === 'query' && params.request_type === 'view_access_key_list') return rpc({ keys: [], block_height: 1000, block_hash: '1'.repeat(32) });
     if (method === 'query' && params.request_type === 'call_function') {
@@ -328,6 +332,8 @@ globalThis.fetch = async (url, init = {}) => {
         kmReads.push(wall() - t0);
         // `kmDown`: no node answers the signer's view, as on a phone network that dropped after the first sheet.
         if (live.kmDown) throw new TypeError('Load failed');
+        // `kmMs`: the signer's view answers after this long.
+        if (live.kmMs) await sleep(live.kmMs);
         return view(`secp256k1:${base58Encode(new Uint8Array(64).fill(5))}`);
       }
     }

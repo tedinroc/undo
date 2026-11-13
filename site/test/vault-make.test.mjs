@@ -191,3 +191,24 @@ test('prepareVault: a clock read that fails or is late does not hold up K_m when
   const none = makeWorld({ clock: () => new RpcDown('block', []), sampled: false });
   await assert.rejects(prepareVault(none.ctx, PASSKEY, { patience: none.patience }), RpcDown);
 });
+
+test('prepareVault says K_m is in as soon as it is, before it waits on the clock read sent with it, and never when K_m fails', async () => {
+  const tick = () => new Promise((r) => { setImmediate(r); });
+  const w = makeWorld({ km: () => 'hold', clock: () => 'hold' });
+  let said = 0;
+  let done = false;
+  const p = prepareVault(w.ctx, PASSKEY, { patience: w.patience, onKm: () => { said += 1; } }).then((v) => { done = true; return v; });
+  await tick();
+  assert.equal(said, 0, 'not before K_m');
+  w.held.km(SIGNER_KEY);
+  await tick();
+  assert.equal(said, 1, 'K_m in, the clock read still out');
+  assert.equal(done, false, 'prepareVault itself still waits on the clock read');
+  w.held.clock({ blockMs: 1_700_000_000_000, height: 7, localMs: 5, rttMs: 1 });
+  assert.equal((await p).km.length, 33);
+  assert.equal(said, 1);
+  const down = makeWorld({ km: () => new RpcDown('query', []) });
+  let saidDown = 0;
+  await assert.rejects(prepareVault(down.ctx, PASSKEY, { patience: down.patience, onKm: () => { saidDown += 1; } }), RpcDown);
+  assert.equal(saidDown, 0);
+});

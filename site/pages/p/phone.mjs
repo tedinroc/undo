@@ -1475,13 +1475,21 @@ async function continueMake(asking, call) {
  */
 async function readSecondKey(passkey, keys, lines, call) {
   creating(lines);
-  // A read that is not quick says so, while it reads. A quick one never shows the line.
+  // A read that is not quick says so, while it reads. A quick one never shows the line. The line is about K_m alone, so
+  // it goes once K_m is in, though prepareVault may wait a moment more for the clock read sent with it.
+  let shown = false;
   const slow = setTimeout(() => {
-    if (P.making === call) creating([...lines, READING_KM]);
+    if (P.making !== call) return;
+    shown = true;
+    creating([...lines, READING_KM]);
   }, READING_KM_MS);
+  const onKm = () => {
+    clearTimeout(slow);
+    if (shown && P.making === call) creating(lines);
+  };
   let prepared;
   try {
-    prepared = await prepareVault(ctx, passkey, { keys });
+    prepared = await prepareVault(ctx, passkey, { keys, onKm });
   } catch (err) {
     clearTimeout(slow);
     if (P.making !== call) return;

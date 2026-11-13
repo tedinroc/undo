@@ -286,6 +286,11 @@ const SCENARIOS = {
       { set: { kmDown: false } }, { tap: 'read-again' }, { until: { id: 'confirm' } }, { snap: 'confirm' }, { tap: 'confirm' }, { until: { state: 'idle' }, max: 12_000 }, { snap: 'idle' }],
   },
 
+  // ---- B9c: K_m in before the 4 s line is due, the clock read sent with it later: the line never shows
+  kmBeforeLine: { steps: [{ set: { kmMs: 3000, blockMs: 6500 } }, { tap: 'make' }, { until: { id: 'confirm' }, max: 15_000 }, { snap: 'confirm' }] },
+  // K_m in after the line, the clock read later still: the line goes when K_m is in, before Confirm
+  kmAfterLine: { steps: [{ set: { kmMs: 5000, blockMs: 6500 } }, { tap: 'make' }, { until: { id: 'confirm' }, max: 15_000 }, { snap: 'confirm' }] },
+
   // ---- B10: sent, and not read active
   notActive: {
     neverActive: true, clockWarp: 12,
@@ -957,6 +962,32 @@ test('B9b: no node answers the read between the two sheets: no vault was made, t
   assert.equal(got.snap('idle').state, 'idle');
   assert.deepEqual(got.calls.map((c) => c.call), ['create', 'get'], 'one passkey made, one signature: Read again asked for no sheet');
   assert.deepEqual(got.posts, ['create_vault'], 'nothing went to the relay until the key was read');
+});
+
+// ---------------------------------------------------------------- B9c
+
+test('B9c: the line that says the second key is being read is on screen only while it is: never once K_m is in, though the clock read sent with it is still out', T, async () => {
+  const READING = /Reading the second key from the signer\./;
+  const before = await page('kmBeforeLine');
+  assert.deepEqual(before.missed, []);
+  // K_m at about 3 s, the clock read waited for 2 s past it: Confirm about 5 s after the tap, past the 4 s the line waits.
+  const tapAt = before.kmReads[0];
+  assert.ok(before.snap('confirm').at - tapAt >= 4500, `Confirm ${before.snap('confirm').at - tapAt} ms after the K_m read went out`);
+  assert.equal(before.drawn.filter((d) => READING.test(d)).length, 0, `never drawn: ${before.drawn.filter((d) => d.startsWith('creating')).join(' // ')}`);
+  assert.match(before.snap('confirm').text, /Passkey made\..*Second key read from the signer\./);
+
+  const after = await page('kmAfterLine');
+  assert.deepEqual(after.missed, []);
+  const making = after.drawn.filter((d) => d.startsWith('creating'));
+  const lineAt = making.findIndex((d) => READING.test(d));
+  assert.ok(lineAt >= 0, `the line while K_m is out: ${making.join(' // ')}`);
+  // Then, K_m in and the clock read still out: the same lines without it, and only after that the Confirm screen.
+  const next = making[lineAt + 1];
+  assert.doesNotMatch(next, READING);
+  assert.doesNotMatch(next, /Second key read from the signer/);
+  assert.equal(making.slice(lineAt + 1).filter((d) => READING.test(d)).length, 0);
+  assert.match(making.at(-1), /Second key read from the signer\./);
+  assert.deepEqual(after.calls.map((c) => c.call), ['create']);
 });
 
 // ---------------------------------------------------------------- B10
