@@ -419,9 +419,11 @@ test('W3 R10: hidden the moment the thief starts asking NEAR, nothing goes to th
     const expires = JSON.parse(proposals[0].body).args.expires_at;
     const left = expires - (page.t0 + proposals[0].at);
     assert.ok(left > 30 * 60_000 - 2500, `${name}: the proposal expires ${left} ms after it was sent, from a clock read before the page was hidden`);
-    // While hidden no reads in a loop: only the ones under way when the page went.
+    // While hidden no reads in a loop: only the ones under way when the page went (the ask's vault and clock, and the
+    // owner watch's last read, whose timer was set before the hide: its vault, and the clock when that is due). A loop
+    // makes over a hundred in these 5 s at 20 ms a read.
     const hiddenReads = page.sent.filter((p) => p.hidden && p.url.startsWith('https://rpc.example.test')).map(rpcOf);
-    assert.ok(hiddenReads.length <= 3, `${name}: ${hiddenReads.length} reads while hidden ${JSON.stringify(hiddenReads)}`);
+    assert.ok(hiddenReads.length <= 6, `${name}: ${hiddenReads.length} reads while hidden ${JSON.stringify(hiddenReads)}`);
     // And the run goes on as on any other: the request, then Cancel and the recap (v2) or the phone page (v1).
     assert.ok(allInTap(page), name);
     if (CANCEL_HERE) assert.equal(page.snap('end').step, 'recap', name);
