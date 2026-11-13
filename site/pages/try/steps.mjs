@@ -6,7 +6,7 @@
 // half (readOwner) reads only the contract: what it says of a request comes from views.vault and views.request, never
 // from what the thief half sent (R4).
 import {
-  keyAloneSpend, postTxOnce, RelayRefused, requestState, advanceState, scriptMatchesVault, sendEverything, buildPropose, spkToAddress,
+  keyAloneSpend, postTxOnce, readPatiently, RelayRefused, requestState, advanceState, scriptMatchesVault, sendEverything, buildPropose, spkToAddress,
 } from '/site/lib/index.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
 import { randomBytes } from '/tools/lib/crypto.mjs';
@@ -146,9 +146,9 @@ export async function sendKeyAlone(ctx, { address, seed, script, to, feeRate, vi
 export async function proposeTheft(ctx, { vaultHex, script, seed, spend, to, visible = () => true, whenVisible = async () => {} }) {
   for (;;) {
     await whenVisible();
-    const vault = await ctx.views.vault(vaultHex);
+    // Both at once, each asked again while no node answers: nothing goes to the relay until both are in.
+    const [vault, block] = await Promise.all([readPatiently(() => ctx.views.vault(vaultHex)), readPatiently(() => ctx.reader.blockTime())]);
     const seenBefore = new Set(vault.pending);
-    const block = await ctx.reader.blockTime();
     ctx.skew.add(block);
     if (!visible()) continue;
     const args = buildPropose({

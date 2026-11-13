@@ -11,7 +11,7 @@
 // <html data-step data-state data-fail>, #next, #dock and window.undoTimings / window.undoRun are what tests wait on.
 import {
   bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, configWords, contractViews, contractWords, credentialsFor, credentialToFragment,
-  fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, newVaultKeys, noNodeWords, nodeRefusalWords, RelayClient, RelayRefused,
+  fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, newVaultKeys, noNodeWords, nodeRefusalWords, PAGE_READS, RelayClient, RelayRefused,
   relayClause, relaySentNothing, relayWords, resetWords, RpcDown, SkewTracker, solvePow, StaleRead, unreadRelayWords, upgradeWords, ViewRefused,
 } from '/site/lib/index.mjs';
 import { addressPrefix } from '/tools/lib/btc.mjs';
@@ -371,7 +371,7 @@ async function main() {
   }
   $('chip').textContent = config.labels.chip;
   fitWordmark();
-  const reader = new NearReader({ urls: config.rpc, timeoutMs: 6000 });
+  const reader = new NearReader({ urls: config.rpc, ...PAGE_READS });
   const views = contractViews(reader, config.contract);
   const relay = new RelayClient({ relay: config.relay, funds: config.funds });
   const fragment = parsePhoneFragment(location.hash);

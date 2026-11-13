@@ -241,6 +241,46 @@ test('R10: the thief\'s proposal is posted only while the page is on screen; hid
   assert.deepEqual(order, ['visible?', 'vault 2', 'block', `propose_btc shown nonce 2 expires ${1_700_000_000_000 + 2 * 60_000 + 30 * 60_000}`]);
 });
 
+test('the thief\'s two reads before the relay go out at once; a read no node answered is asked again, a refusal is not, and nothing is posted before both are in', async () => {
+  const { p2wshSpk, spendKeys, RpcDown, ViewRefused } = await import('../lib/index.mjs');
+  const { toHex } = await import('../../tools/lib/bytes.mjs');
+  const seed = new Uint8Array(32).fill(7);
+  const script = Uint8Array.of(0x51);
+  const order = [];
+  let fail = null;
+  let reads = 0;
+  const ctx = {
+    config: { contract: 'c.testnet' },
+    views: {
+      vault: async () => {
+        reads += 1;
+        order.push(`vault ${reads}`);
+        await new Promise((r) => { setImmediate(r); });
+        if (reads > 5) throw new Error('the vault was read in a loop');
+        const err = fail?.(reads);
+        if (err) throw err;
+        return { id: VAULT, k_s: toHex(spendKeys(seed).ks.pub), script_pubkey: toHex(p2wshSpk(script)), spend_nonce: 4, pending: [3] };
+      },
+    },
+    reader: { blockTime: async () => { order.push('block'); return { blockMs: 1_700_000_000_000 }; } },
+    skew: { add: () => { order.push('skew'); } },
+    relay: { call: async (method) => { order.push(method); return { hash: 'h' }; } },
+  };
+  const propose = () => steps.proposeTheft(ctx, { vaultHex: VAULT, script, seed, spend: { inputs: [{ txid: 'aa'.repeat(32), vout: 0, value: 5000 }], amount: 4000 }, to: Uint8Array.of(0, 20, ...new Uint8Array(20)) });
+  // The first vault read reaches no node: the clock read is already out beside it; the vault is read again after the
+  // first pause, and only then the POST.
+  fail = (n) => (n === 1 ? new RpcDown('query', []) : null);
+  const sent = await propose();
+  assert.deepEqual(order, ['vault 1', 'block', 'vault 2', 'skew', 'propose_btc']);
+  assert.deepEqual([...sent.seenBefore], [3]);
+  // The contract refused the view: thrown at once, not asked again, nothing posted.
+  order.length = 0;
+  reads = 0;
+  fail = () => new ViewRefused('get_vault', 'no such vault');
+  await assert.rejects(propose(), (err) => err instanceof ViewRefused);
+  assert.deepEqual(order, ['vault 1', 'block']);
+});
+
 test('R4: the owner half reads only the contract; a null is believed after three; a second request is not its to handle', async () => {
   const NOW = Date.now();
   const vault = (pending, epoch = 2) => ({ pending, spend_epoch: epoch, frozen_until: null });
