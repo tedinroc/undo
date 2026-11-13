@@ -1,6 +1,6 @@
 // A test vault as a phone makes it: passkey, K_m from the signer, a second tap over the creation digest, proof of
 // work, relay. Two real taps, because the first sheet uses up the user gesture and K_m is a network read between them.
-import { buildCreateArgs, derivedKey, newVaultKeys, rpIdHashOf, solvePow, vaultIdOf } from '/site/lib/index.mjs';
+import { buildCreateArgs, derivedKey, newVaultKeys, readPatiently, rpIdHashOf, solvePow, vaultIdOf } from '/site/lib/index.mjs';
 import { toHex } from '/tools/lib/bytes.mjs';
 import { askAssertion } from './passkey-ask.mjs';
 
@@ -12,19 +12,36 @@ const CREATE_WINDOW_MS = 30 * 60_000;
 export const ACTIVE_WAIT_MS = 45_000;
 export const STEP_COUNTS_MS = 8000;
 const READ_EVERY_MS = 600;
+// Once K_m is in, how much longer the clock read sent with it is waited for when the page already holds a clock reading.
+const CLOCK_GRACE_MS = 2000;
 
 export const chainNowOf = (skew) => {
   const s = skew.sample();
   return s ? s.blockMs + (Date.now() - s.localMs) : null;
 };
 
-/** After the first tap: the keys, and K_m as the signer derives it for this vault. */
-export async function prepareVault(ctx, passkey, { keys = newVaultKeys() } = {}) {
+/**
+ * After the first tap: the keys, and K_m as the signer derives it for this vault. K_m and the chain's clock are read at
+ * once, each asked again while no node answers (readPatiently), so a slow or briefly dropped network costs time and not
+ * the vault. When the page already holds a clock reading (the boot reads gave one), the new one is waited for only
+ * CLOCK_GRACE_MS past K_m, and the vault is made without it if it fails. Throws the K_m read's error (RpcDown,
+ * StaleRead, ViewRefused), or the clock read's when the page holds none; nothing has gone to the relay by then.
+ */
+export async function prepareVault(ctx, passkey, { keys = newVaultKeys(), patience = {} } = {}) {
   const { config, reader, instance } = ctx;
   const vaultHex = toHex(vaultIdOf({ contract: config.contract, keys, passkeyPub: passkey.pubkey, csv: CSV }));
-  const km = await derivedKey(reader, { signer: instance.signer, domainId: instance.domain_id, contract: config.contract, vaultHex });
-  ctx.skew.add(await reader.blockTime());
+  const clockRead = readPatiently(() => reader.blockTime(), patience);
+  clockRead.catch(() => {});
+  const km = await readPatiently(() => derivedKey(reader, { signer: instance.signer, domainId: instance.domain_id, contract: config.contract, vaultHex }), patience);
+  const block = ctx.skew.sample() ? await answerWithin(clockRead, CLOCK_GRACE_MS) : await clockRead;
+  if (block) ctx.skew.add(block);
   return { keys, vaultHex, km, passkey };
+}
+
+/** A read's answer, or null when it failed or is not here after `ms`. */
+function answerWithin(promise, ms) {
+  let timer;
+  return Promise.race([promise.catch(() => null), new Promise((r) => { timer = setTimeout(() => r(null), ms); })]).finally(() => clearTimeout(timer));
 }
 
 /**

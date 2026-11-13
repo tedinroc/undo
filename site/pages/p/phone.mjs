@@ -5,7 +5,7 @@
 import {
   bitcoinReader, configWords, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, contractWords,
   credentialToFragment, advanceState, credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, passkeyErrorWords,
-  PAGE_READS, passkeyWords, refusalOf, RELAY_METHODS, RelayClient, RelayRefused, relayClause, relaySentNothing, relayWords, requestState, resetWords, rotateArgs, rotateDigest, RpcDown,
+  newVaultKeys, PAGE_READS, passkeyWords, refusalOf, RELAY_METHODS, RelayClient, RelayRefused, relayClause, relaySentNothing, relayWords, requestState, resetWords, rotateArgs, rotateDigest, RpcDown,
   rpIdHashOf, SkewTracker, solvePow, spendKeys, spkToAddress, StaleRead, triedWords, unreadRelayWords, upgradeWords, ViewRefused, waitWords,
 } from '/site/lib/index.mjs';
 import { addressPrefix, parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
@@ -1413,6 +1413,9 @@ const beforeSheet = (text) => (ctx.config.softPasskey ? null : h('p', { class: '
 
 const WAITING_FOR_PASSKEY = 'Waiting for your passkey';
 const WORKING = 'Working: a small proof of work.';
+// The line while K_m is read, shown only once the read has taken this long.
+const READING_KM = 'Reading the second key from the signer.';
+const READING_KM_MS = 4000;
 const makeButton = () => h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault');
 
 /**
@@ -1462,14 +1465,35 @@ async function continueMake(asking, call) {
   passkeyAnswered();
   lines.push('Passkey made.');
   if (passkey.flags?.backupEligible) lines.push('It can sync to your other devices.');
+  readSecondKey(passkey, newVaultKeys(), lines, call);
+}
+
+/**
+ * K_m for the passkey the first tap made: a read between the two sheets. When no node answers it in the time
+ * prepareVault gives it, nothing has gone to the relay, and the passkey and the keys made for it still stand: the page
+ * stays on this screen and Read again reads with the same ones, so no second sheet and no second passkey.
+ */
+async function readSecondKey(passkey, keys, lines, call) {
   creating(lines);
+  // A read that is not quick says so, while it reads. A quick one never shows the line.
+  const slow = setTimeout(() => {
+    if (P.making === call) creating([...lines, READING_KM]);
+  }, READING_KM_MS);
   let prepared;
   try {
-    prepared = await prepareVault(ctx, passkey);
+    prepared = await prepareVault(ctx, passkey, { keys });
   } catch (err) {
-    if (P.making === call) makeFailed(err);
+    clearTimeout(slow);
+    if (P.making !== call) return;
+    if (err instanceof RpcDown || err instanceof StaleRead) {
+      logRaw('reading the second key', rawWords(err));
+      creating(lines, h('button', { class: 'go', type: 'button', id: 'read-again', onclick: () => readSecondKey(passkey, keys, lines, call) }, 'Read again'), { note: `No vault was made. ${failureWords(err)}` });
+      return;
+    }
+    makeFailed(err);
     return;
   }
+  clearTimeout(slow);
   if (P.making !== call) return;
   lines.push('Second key read from the signer.');
   drawConfirm(prepared, lines);

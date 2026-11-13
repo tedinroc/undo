@@ -279,6 +279,13 @@ const SCENARIOS = {
   },
   closedMake: { create: ['dismiss'], steps: [{ tap: 'make' }, { until: { id: 'made-why' } }, { snap: 'closed' }] },
 
+  // ---- B9b: the read between the sheets gets no answer: the passkey stays, and Read again reads with it
+  kmDown: {
+    kmDown: true,
+    steps: [{ tap: 'make' }, { until: { id: 'read-again' }, max: 30_000 }, { snap: 'stuck' }, { tap: 'read-again' }, { wait: 300 }, { snap: 'reading' }, { until: { id: 'read-again' }, max: 30_000 }, { snap: 'stuck again' },
+      { set: { kmDown: false } }, { tap: 'read-again' }, { until: { id: 'confirm' } }, { snap: 'confirm' }, { tap: 'confirm' }, { until: { state: 'idle' }, max: 12_000 }, { snap: 'idle' }],
+  },
+
   // ---- B10: sent, and not read active
   notActive: {
     neverActive: true, clockWarp: 12,
@@ -921,6 +928,35 @@ test('B9: closing the second sheet keeps the Confirm screen and its keys; the re
   assert.equal(first.texts['made-why'], 'No passkey came back, so nothing was made.');
   for (const s of [closed, first]) assert.doesNotMatch(s.text, /sheet closed/);
   assert.ok(first.buttons.includes('make'));
+});
+
+// ---------------------------------------------------------------- B9b
+
+test('B9b: no node answers the read between the two sheets: no vault was made, the passkey stays, and Read again reads with it; no second passkey', T, async () => {
+  const got = await page('kmDown');
+  const stuck = got.snap('stuck');
+  assert.equal(stuck.state, 'creating', 'the vault in the making is kept');
+  assert.equal(stuck.texts['made-note'], 'No vault was made. Can\'t read the NEAR contract right now.');
+  assert.deepEqual(stuck.buttons, ['read-again']);
+  assert.equal(stuck.texts['read-again'], 'Read again');
+  assert.match(stuck.text, /Passkey made\./);
+  assert.doesNotMatch(stuck.text, /Second key read from the signer/);
+  assert.equal(stuck.ids.includes('before-sheet'), false, 'Read again opens no sheet, so nothing says one is next');
+  // The read was asked again on its own before the page said so: four passes, about 10 s.
+  assert.equal(got.kmReads.filter((at) => at < stuck.at).length, 4);
+  assert.ok(stuck.at - got.kmReads[0] >= 9000, `the page waited out the passes: ${stuck.at - got.kmReads[0]} ms`);
+  // While it reads again: no notice and no button, and after 4 s the line that says what it is doing.
+  const reading = got.snap('reading');
+  assert.equal(reading.ids.includes('made-note'), false);
+  assert.deepEqual(reading.buttons, []);
+  assert.ok(got.drawn.some((d) => /^creating: .*Passkey made\..* \| Reading the second key from the signer\. \| $/.test(d)), 'the reading line after 4 s');
+  assert.equal(got.snap('stuck again').texts['made-note'], 'No vault was made. Can\'t read the NEAR contract right now.');
+  const confirm = got.snap('confirm');
+  assert.match(confirm.text, /Passkey made\..*Second key read from the signer\./);
+  assert.doesNotMatch(confirm.text, /Reading the second key|No vault was made/);
+  assert.equal(got.snap('idle').state, 'idle');
+  assert.deepEqual(got.calls.map((c) => c.call), ['create', 'get'], 'one passkey made, one signature: Read again asked for no sheet');
+  assert.deepEqual(got.posts, ['create_vault'], 'nothing went to the relay until the key was read');
 });
 
 // ---------------------------------------------------------------- B10

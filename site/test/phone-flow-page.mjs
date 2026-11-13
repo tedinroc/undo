@@ -231,6 +231,7 @@ const POLICY = { t_known_ms: 60_000, t_new_ms: 300_000, t_new_unguarded_ms: 600_
 const { p256FromSpki } = await import('/site/lib/webauthn.mjs');
 const { base58Encode } = await import('/tools/lib/bytes.mjs');
 const live = { ...opts };
+const kmReads = [];
 // Vaults this page made through the relay, by id. The relay's create_vault names no id, so the id is learned from the
 // first read of a vault nobody knows that comes after a creation was taken.
 const made = new Map();
@@ -323,7 +324,12 @@ globalThis.fetch = async (url, init = {}) => {
         if (args.request === 2) return view(live.second ? request(2) : null);
         return view(args.request === 1 && (pendingFor(args.vault) || rotation()) ? request() : null);
       }
-      if (params.method_name === 'derived_public_key') return view(`secp256k1:${base58Encode(new Uint8Array(64).fill(5))}`);
+      if (params.method_name === 'derived_public_key') {
+        kmReads.push(wall() - t0);
+        // `kmDown`: no node answers the signer's view, as on a phone network that dropped after the first sheet.
+        if (live.kmDown) throw new TypeError('Load failed');
+        return view(`secp256k1:${base58Encode(new Uint8Array(64).fill(5))}`);
+      }
     }
     return rpc(null);
   }
@@ -380,5 +386,5 @@ for (const step of opts.steps ?? []) {
   if (step.wait) await sleep(step.wait);
   if (step.snap) snap(step.snap);
 }
-process.stdout.write(`${JSON.stringify({ snaps, calls, posts, relayGets, missed, assigned, platformAsked, drawn: drawn.filter((d, i) => d !== drawn[i - 1]).slice(-400), stored: globalThis.localStorage.keys(), session: globalThis.sessionStorage.keys() })}\n`);
+process.stdout.write(`${JSON.stringify({ snaps, calls, posts, relayGets, kmReads, missed, assigned, platformAsked, drawn: drawn.filter((d, i) => d !== drawn[i - 1]).slice(-400), stored: globalThis.localStorage.keys(), session: globalThis.sessionStorage.keys() })}\n`);
 process.exit(0);
