@@ -251,6 +251,36 @@ test('hedged: blockTime is hedged as well, and its round trip is the one that an
   assert.deepEqual(log.map((e) => e.url), ['a', 'b']);
 });
 
+test('withBudget: the same reader with a longer budget: hosts past 15 s answer, and it shares the host that answered and the newest block', async () => {
+  const clock = new Clock();
+  const slow = (url) => (url === 'a' ? () => ({ never: true }) : () => ({ ms: 13_000, body: view('k', 120) }));
+  const { fetchFn, log } = hosts(clock, { a: slow('a'), b: slow('b'), c: slow('c') });
+  const reader = page(clock, fetchFn);
+  // A first host that never answers and two that take 13 s: past what 15 s holds, as the hedge starts b at 2.5 s.
+  const short = reader.view('c.testnet', 'k').then(() => null, (e) => e);
+  await clock.run(16_000);
+  assert.ok((await short) instanceof RpcDown);
+  assert.equal(reader.first, 0, 'nothing answered, so the next read starts at a again');
+  const long = reader.withBudget(30_000);
+  assert.equal(long.budgetMs, 30_000);
+  assert.equal(reader.budgetMs, 15_000, 'the reader itself keeps its budget');
+  const t0 = clock.t;
+  let got = null;
+  long.view('c.testnet', 'k').then((v) => { got = { v, at: clock.t - t0 }; });
+  await clock.run(16_000);
+  assert.deepEqual(got, { v: 'k', at: 15_500 }, 'b, started at 2.5 s, answers at 15.5 s');
+  assert.equal(reader.first, 1, 'the host that answered is the reader\'s next first');
+  assert.equal(reader.maxHeight, 120, 'and the block it read is the reader\'s newest');
+  assert.equal(clock.pending(), 0, 'no timer left behind');
+  // An answer from behind that block is still passed over, through either.
+  const behind = page(clock, hosts(clock, { a: () => ({ ms: 100, body: view('old', 110) }), b: () => ({ ms: 100, body: view('old', 110) }), c: () => ({ ms: 100, body: view('old', 110) }) }).fetchFn);
+  behind.maxHeight = 120;
+  const stale = behind.withBudget(30_000).view('c.testnet', 'k').then(() => null, (e) => e);
+  await clock.run(1000);
+  assert.ok((await stale) instanceof StaleRead);
+  assert.deepEqual(log.filter((e) => e.at >= t0).map((e) => [e.url, e.at - t0]), [['a', 0], ['b', 2500], ['c', 5000]], 'hedged as before, only longer');
+});
+
 test('a page reader still reads a tx in turn: a call held by wait_until is never doubled', async () => {
   const clock = new Clock();
   const { fetchFn, log } = hosts(clock, { a: () => ({ ms: 4000, body: tx }), b: () => ({ ms: 100, body: tx }), c: () => ({ ms: 100, body: tx }) });

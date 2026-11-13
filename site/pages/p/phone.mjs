@@ -1416,6 +1416,10 @@ const WORKING = 'Working: a small proof of work.';
 // The line while K_m is read, shown only once the read has taken this long.
 const READING_KM = 'Reading the second key from the signer.';
 const READING_KM_MS = 4000;
+// Read again gives each read 30 s, where a first try's reads get PAGE_READS' 15 s, so hosts slower than a first try allows
+// (the first never answering, the others 13 s or more) still answer while the network stays that slow. A new pass starts
+// only in the first 15 s, so Read again, like a first try, ends within 45 s.
+const READ_AGAIN = { budgetMs: 30_000, patience: { deadlineMs: 15_000 } };
 const makeButton = () => h('button', { class: 'go', type: 'button', id: 'make', onclick: onMakeVault }, 'Make a test vault');
 
 /**
@@ -1473,7 +1477,7 @@ async function continueMake(asking, call) {
  * prepareVault gives it, nothing has gone to the relay, and the passkey and the keys made for it still stand: the page
  * stays on this screen and Read again reads with the same ones, so no second sheet and no second passkey.
  */
-async function readSecondKey(passkey, keys, lines, call) {
+async function readSecondKey(passkey, keys, lines, call, { again = false } = {}) {
   creating(lines);
   // A read that is not quick says so, while it reads. A quick one never shows the line. The line is about K_m alone, so
   // it goes once K_m is in, though prepareVault may wait a moment more for the clock read sent with it.
@@ -1489,13 +1493,15 @@ async function readSecondKey(passkey, keys, lines, call) {
   };
   let prepared;
   try {
-    prepared = await prepareVault(ctx, passkey, { keys, onKm });
+    prepared = again
+      ? await prepareVault({ ...ctx, reader: ctx.reader.withBudget(READ_AGAIN.budgetMs) }, passkey, { keys, onKm, patience: READ_AGAIN.patience })
+      : await prepareVault(ctx, passkey, { keys, onKm });
   } catch (err) {
     clearTimeout(slow);
     if (P.making !== call) return;
     if (err instanceof RpcDown || err instanceof StaleRead) {
       logRaw('reading the second key', rawWords(err));
-      creating(lines, h('button', { class: 'go', type: 'button', id: 'read-again', onclick: () => readSecondKey(passkey, keys, lines, call) }, 'Read again'), { note: `No vault was made. ${failureWords(err)}` });
+      creating(lines, h('button', { class: 'go', type: 'button', id: 'read-again', onclick: () => readSecondKey(passkey, keys, lines, call, { again: true }) }, 'Read again'), { note: `No vault was made. ${failureWords(err)}` });
       return;
     }
     makeFailed(err);

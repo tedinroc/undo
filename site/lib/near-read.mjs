@@ -39,6 +39,14 @@ export class NearReader {
     this.id = 0;
   }
 
+  /**
+   * This reader with each hedged read given `budgetMs` in all, in place of its own. It is still this reader: the same
+   * hosts, the host that answered last, and the newest block read, so what it takes is held to the same staleness rule.
+   */
+  withBudget(budgetMs) {
+    return new Proxy(this, { get: (reader, key) => (key === 'budgetMs' ? budgetMs : Reflect.get(reader, key)) });
+  }
+
   async once(url, method, params, signal = AbortSignal.timeout(this.timeoutMs)) {
     const res = await this.fetchFn(url, {
       method: 'POST',

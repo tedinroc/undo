@@ -286,6 +286,13 @@ const SCENARIOS = {
       { set: { kmDown: false } }, { tap: 'read-again' }, { until: { id: 'confirm' } }, { snap: 'confirm' }, { tap: 'confirm' }, { until: { state: 'idle' }, max: 12_000 }, { snap: 'idle' }],
   },
 
+  // ---- B9d: Read again on a network still slower than a first try's 15 s allows: the signer's view takes 16 s
+  kmSlowAgain: {
+    kmDown: true,
+    steps: [{ tap: 'make' }, { until: { id: 'read-again' }, max: 30_000 }, { snap: 'stuck' }, { set: { kmDown: false, kmMs: 16_000 } }, { tap: 'read-again' },
+      { until: { id: 'confirm' }, max: 28_000 }, { snap: 'confirm' }],
+  },
+
   // ---- B9c: K_m in before the 4 s line is due, the clock read sent with it later: the line never shows
   kmBeforeLine: { steps: [{ set: { kmMs: 3000, blockMs: 6500 } }, { tap: 'make' }, { until: { id: 'confirm' }, max: 15_000 }, { snap: 'confirm' }] },
   // K_m in after the line, the clock read later still: the line goes when K_m is in, before Confirm
@@ -962,6 +969,23 @@ test('B9b: no node answers the read between the two sheets: no vault was made, t
   assert.equal(got.snap('idle').state, 'idle');
   assert.deepEqual(got.calls.map((c) => c.call), ['create', 'get'], 'one passkey made, one signature: Read again asked for no sheet');
   assert.deepEqual(got.posts, ['create_vault'], 'nothing went to the relay until the key was read');
+});
+
+// ---------------------------------------------------------------- B9d
+
+test('B9d: Read again gives the read 30 s, so a signer view that takes 16 s, past a first try\'s 15 s, still gets to Confirm', T, async () => {
+  const got = await page('kmSlowAgain');
+  assert.deepEqual(got.missed, []);
+  const stuck = got.snap('stuck');
+  assert.equal(stuck.texts['made-note'], 'No vault was made. Can\'t read the NEAR contract right now.');
+  const confirm = got.snap('confirm');
+  assert.match(confirm.text, /Passkey made\..*Second key read from the signer\./);
+  assert.doesNotMatch(confirm.text, /No vault was made|Reading the second key/);
+  // One read after the tap on Read again: it was waited out, not cut at 15 s and asked again.
+  const again = got.kmReads.filter((at) => at > stuck.at);
+  assert.equal(again.length, 1, `reads after Read again: ${again.map((at) => at - stuck.at).join(', ')}`);
+  assert.ok(confirm.at - again[0] >= 16_000, `${confirm.at - again[0]} ms`);
+  assert.deepEqual(got.calls.map((c) => c.call), ['create'], 'still the one passkey');
 });
 
 // ---------------------------------------------------------------- B9c
