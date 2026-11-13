@@ -26,21 +26,26 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 export class NearReader {
-  constructor({ urls, timeoutMs = 4000, fetchFn = (...a) => globalThis.fetch(...a), nowFn = () => Date.now(), staleBlocks = 3 }) {
+  /**
+   * `hedgeMs` and `budgetMs` (PAGE_READS), when set, make a view or block read ask the next host after hedgeMs with no
+   * answer, without dropping the one still out, and give the whole read budgetMs. Unset (the relay, the cron Worker, the
+   * tools), each host gets timeoutMs and the next is asked only after it, as before. `timers` is the clock, for a test.
+   */
+  constructor({ urls, timeoutMs = 4000, fetchFn = (...a) => globalThis.fetch(...a), nowFn = () => Date.now(), staleBlocks = 3, hedgeMs = null, budgetMs = null, timers = TIMERS }) {
     if (!Array.isArray(urls) || urls.length === 0) throw new Error('NearReader needs at least one URL');
-    Object.assign(this, { urls, timeoutMs, fetchFn, nowFn, staleBlocks });
+    Object.assign(this, { urls, timeoutMs, fetchFn, nowFn, staleBlocks, hedgeMs, budgetMs, timers });
     this.first = 0;
     this.maxHeight = 0;
     this.id = 0;
   }
 
-  async once(url, method, params) {
+  async once(url, method, params, signal = AbortSignal.timeout(this.timeoutMs)) {
     const res = await this.fetchFn(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ jsonrpc: '2.0', id: (this.id += 1), method, params }),
       redirect: 'error',
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal,
     });
     const text = await res.text();
     let data = null;
@@ -60,14 +65,10 @@ export class NearReader {
   async rpc(method, params, accept = () => true) {
     const tried = [];
     let stale = false;
-    for (let i = 0; i < this.urls.length; i += 1) {
-      const at = (this.first + i) % this.urls.length;
-      const url = this.urls[at];
-      let answer;
-      try {
-        answer = await this.once(url, method, params);
-      } catch (err) {
-        tried.push({ url, error: err.name });
+    const order = this.urls.map((_, i) => (this.first + i) % this.urls.length);
+    for await (const { at, url, answer, error } of this.answers(order, method, params)) {
+      if (error) {
+        tried.push({ url, error: error.name });
         continue;
       }
       const { status, text, data } = answer;
@@ -171,6 +172,96 @@ export class NearReader {
     if (error) return { known: false, settled: false, verbatim: JSON.stringify(error) };
     return { known: true, settled: SETTLED.has(result?.final_execution_status), failure: failureOf(result), value: returnValue(result) };
   }
+
+  /**
+   * The answers to one read, in the order they come: { at, url, sentAt, answer } or { at, url, sentAt, error }. In turn
+   * (no hedgeMs, or a method not in HEDGED): each host once, the next only after the one before has answered or failed,
+   * each within timeoutMs. Hedged: the first host now, the next after hedgeMs with no answer, or at once when an answer
+   * is passed over, every one still out kept; all of it within budgetMs, after which whatever is still out ends as a
+   * TimeoutError and nothing new starts. The host `avoidAt` names is never started by the hedge timer. Leaving the loop
+   * ends whatever is still out, and an answer that comes after that is never seen.
+   */
+  async *answers(order, method, params, { avoidAt = -1 } = {}) {
+    if (this.hedgeMs === null || !HEDGED.has(method)) {
+      for (const at of order) {
+        const url = this.urls[at];
+        const sentAt = this.nowFn();
+        let item;
+        try {
+          item = { at, url, sentAt, answer: await this.once(url, method, params) };
+        } catch (error) {
+          item = { at, url, sentAt, error };
+        }
+        yield item;
+      }
+      return;
+    }
+    const { set, clear } = this.timers;
+    const queue = [];
+    // Each host still out: at -> { url, sentAt, stop }.
+    const out = new Map();
+    let next = 0;
+    let over = false;
+    let wake = null;
+    let hedge = null;
+    const ping = () => {
+      const w = wake;
+      wake = null;
+      w?.();
+    };
+    const settle = (at, outcome) => {
+      const o = out.get(at);
+      if (!o) return;
+      out.delete(at);
+      queue.push({ at, url: o.url, sentAt: o.sentAt, ...outcome });
+      ping();
+    };
+    const budget = set(() => {
+      over = true;
+      clear(hedge);
+      // Ended here, not when the fetch notices its signal: a host that never lets go of the call cannot hold the read.
+      for (const [at, o] of [...out]) {
+        const error = new DOMException('the read took longer than its budget', 'TimeoutError');
+        o.stop.abort(error);
+        settle(at, { error });
+      }
+      ping();
+    }, this.budgetMs);
+    const launch = () => {
+      const at = order[next];
+      next += 1;
+      const url = this.urls[at];
+      const stop = new AbortController();
+      out.set(at, { url, sentAt: this.nowFn(), stop });
+      this.once(url, method, params, stop.signal).then((answer) => settle(at, { answer }), (error) => settle(at, { error }));
+      clear(hedge);
+      hedge = null;
+      if (next < order.length && order[next] !== avoidAt) {
+        hedge = set(() => {
+          hedge = null;
+          if (!over && next < order.length) launch();
+          ping();
+        }, this.hedgeMs);
+      }
+    };
+    try {
+      let passedOver = false;
+      for (;;) {
+        if (queue.length === 0 && !over && next < order.length && (out.size === 0 || passedOver)) launch();
+        passedOver = false;
+        while (queue.length === 0 && out.size > 0) await new Promise((r) => { wake = r; });
+        if (queue.length === 0) return;
+        yield queue.shift();
+        passedOver = true;
+      }
+    } finally {
+      over = true;
+      clear(hedge);
+      clear(budget);
+      for (const o of out.values()) o.stop.abort(new DOMException('another host answered', 'AbortError'));
+      out.clear();
+    }
+  }
 }
 
 export function failureOf(result) {
@@ -187,4 +278,48 @@ export function returnValue(result) {
   const value = result?.status?.SuccessValue;
   if (value === undefined || value === null || value === '') return null;
   return JSON.parse(textDecoder.decode(fromBase64(value)));
+}
+
+/**
+ * A page's reader on a phone network: a view or block read asks the next host after 2.5 s with no answer and gets 15 s
+ * in all, so hosts that each take 6 to 14 s still answer, and a host that never answers costs 2.5 s. A `tx` read goes
+ * in turn, 6 s a host.
+ */
+export const PAGE_READS = Object.freeze({ timeoutMs: 6000, hedgeMs: 2500, budgetMs: 15_000 });
+
+/** Methods whose read is hedged. A `tx` read can wait at the node on purpose (wait_until), so it goes in turn. */
+const HEDGED = new Set(['query', 'block']);
+
+const TIMERS = Object.freeze({ set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) });
+
+/**
+ * A read a tap waits on, asked again when it ended with no answer from any node (RpcDown, StaleRead): after each pause
+ * in `pausesMs` in turn, and never starting after `deadlineMs`. A node's or the contract's own answer, a refusal, is
+ * thrown at once. With PAGE_READS (15 s a pass) a network that never answers throws after about 31 s, one that refuses
+ * at once after about 10 s, and none takes longer than deadlineMs plus one pass.
+ */
+export async function readPatiently(read, { pausesMs = [1000, 3000, 6000], deadlineMs = 30_000, now = () => Date.now(), sleep = (ms) => new Promise((r) => { setTimeout(r, ms); }) } = {}) {
+  const start = now();
+  for (let i = 0; ; i += 1) {
+    try {
+      return await read();
+    } catch (err) {
+      if (!(err instanceof RpcDown || err instanceof StaleRead) || i >= pausesMs.length || now() - start + pausesMs[i] >= deadlineMs) throw err;
+      await sleep(pausesMs[i]);
+    }
+  }
+}
+
+/** What each host did on a read no node answered, for the console: "host TimeoutError, host HTTP 429, ...". */
+export function triedWords(err) {
+  if (!Array.isArray(err?.tried) || err.tried.length === 0) return '';
+  const host = (url) => {
+    try {
+      return new URL(url).host || url;
+    } catch {
+      return url;
+    }
+  };
+  const what = (t) => t.error ?? (t.stale ? 'behind' : `HTTP ${t.status ?? '?'}${t.text ? ` ${t.text.slice(0, 80)}` : ''}`);
+  return err.tried.map((t) => `${host(t.url ?? '?')} ${what(t)}`).join(', ');
 }

@@ -5,8 +5,8 @@
 import {
   bitcoinReader, configWords, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, cancelButton, chooseOnScreen, clock, coinCheck, contractViews, contractWords,
   credentialToFragment, advanceState, credentialsFor, fromBase64Url, fundsPowTarget, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, passkeyErrorWords,
-  passkeyWords, refusalOf, RELAY_METHODS, RelayClient, RelayRefused, relayClause, relaySentNothing, relayWords, requestState, resetWords, rotateArgs, rotateDigest, RpcDown, rpIdHashOf, SkewTracker,
-  solvePow, spendKeys, spkToAddress, StaleRead, unreadRelayWords, upgradeWords, ViewRefused, waitWords,
+  PAGE_READS, passkeyWords, refusalOf, RELAY_METHODS, RelayClient, RelayRefused, relayClause, relaySentNothing, relayWords, requestState, resetWords, rotateArgs, rotateDigest, RpcDown,
+  rpIdHashOf, SkewTracker, solvePow, spendKeys, spkToAddress, StaleRead, triedWords, unreadRelayWords, upgradeWords, ViewRefused, waitWords,
 } from '/site/lib/index.mjs';
 import { addressPrefix, parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
@@ -96,7 +96,7 @@ function failureWords(err) {
 }
 
 /** The raw words of an error, for the console only. */
-const rawWords = (err) => [err?.code, err?.verbatim ?? (err?.name && err?.message ? `${err.name}: ${err.message}` : err?.message) ?? String(err)].filter(Boolean).join(': ');
+const rawWords = (err) => [err?.code, err?.verbatim ?? (err?.name && err?.message ? `${err.name}: ${err.message}` : err?.message) ?? String(err), triedWords(err)].filter(Boolean).join(': ');
 
 async function main() {
   fitWordmark();
@@ -113,7 +113,7 @@ async function main() {
   document.getElementById('chip').textContent = config.labels.chip;
   fitWordmark();
 
-  const reader = new NearReader({ urls: config.rpc, timeoutMs: 6000 });
+  const reader = new NearReader({ urls: config.rpc, ...PAGE_READS });
   const views = contractViews(reader, config.contract);
   const relay = new RelayClient({ relay: config.relay, funds: config.funds });
   // Needs no contract and no relay: the contract this config names may already be gone when a deploy asks for it.

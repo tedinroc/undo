@@ -5,7 +5,7 @@ export * from './clock.mjs';
 export * from './config.mjs';
 export * from './fragment.mjs';
 export * from './intents.mjs';
-export { failureOf, NearReader, returnValue, RpcDown, StaleRead, ViewRefused } from './near-read.mjs';
+export { failureOf, NearReader, PAGE_READS, readPatiently, returnValue, RpcDown, StaleRead, triedWords, ViewRefused } from './near-read.mjs';
 export * from './passkey-source.mjs';
 export * from './pending.mjs';
 export * from './plain-words.mjs';

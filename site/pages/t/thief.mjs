@@ -2,8 +2,8 @@
 // phone is the contract: this page never hears from it. The stolen key stays in this tab and leaves only as signatures.
 import {
   advanceState, bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, buildFragment, buildPropose, clock, configWords, contractViews, contractWords, digits,
-  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, panicOf, parseFragment, postTxOnce, RelayClient, relaySentNothing, relayWords,
-  RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything, SkewTracker, spkToAddress, StaleRead, ViewRefused,
+  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, PAGE_READS, panicOf, parseFragment, postTxOnce, RelayClient, relaySentNothing,
+  relayWords, RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything, SkewTracker, spkToAddress, StaleRead, triedWords, ViewRefused,
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
@@ -81,7 +81,7 @@ function plain(state, sentence, { verbatim = '', address = null, retry = null, s
 }
 
 /** The raw words of an error, for the console only. A screen says a sentence instead. */
-const rawWords = (err) => [err?.code, err?.verbatim ?? err?.message ?? String(err)].filter(Boolean).join(': ');
+const rawWords = (err) => [err?.code, err?.verbatim ?? err?.message ?? String(err), triedWords(err)].filter(Boolean).join(': ');
 
 // ---------------------------------------------------------------- the clock
 
@@ -937,7 +937,7 @@ async function boot() {
   $('chip').textContent = S.config.labels.chip;
   fitWordmark();
 
-  S.reader = new NearReader({ urls: [...S.config.rpc] });
+  S.reader = new NearReader({ urls: [...S.config.rpc], ...PAGE_READS });
   S.views = contractViews(S.reader, S.config.contract);
   S.btc = bitcoinReader(S.config.esplora);
   S.relay = new RelayClient({ relay: S.config.relay, funds: S.config.funds });
