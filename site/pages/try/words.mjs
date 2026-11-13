@@ -348,6 +348,8 @@ function nextText(v) {
       if (v.still === 'contract') return say(NEXT.stillContract);
       return say(NEXT.making);
     case 'funding': return say(NEXT.funding, v.bitcoin);
+    // Step 3's checks, from the listing until the count or a T row: nothing is tappable, and nothing yet to watch.
+    case 'checking': return say(NEXT.boot);
     case 'count': case 'sending': return say(NEXT.watch);
     case 'refused': return say(NEXT.refused);
     case 'asking': return v.here ? say(NEXT.askingHere) : say(NEXT.askingPhone);

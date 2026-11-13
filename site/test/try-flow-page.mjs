@@ -546,6 +546,8 @@ globalThis.fetch = async (url, init = {}) => {
     // `fee`: the node's fee estimate in sat/vB, which the scenario can raise and drop (T1 with a fee that takes the coin).
     // `feeDown`: the fee read alone fails (a busy node), while the address reads answer.
     if (path === '/fee-estimates' && live.feeDown) return new Response('busy', { status: 503 });
+    // `feeHang`: the fee read gets no answer at all, until the page's own timeout ends it (a node that hangs).
+    if (path === '/fee-estimates' && live.feeHang) return new Promise((_, reject) => { init.signal?.addEventListener('abort', () => reject(init.signal.reason)); });
     if (path === '/fee-estimates') return json({ 1: live.fee ?? 1.0, 6: live.fee ?? 1.0 });
     if (path === `/tx/${COIN.txid}`) return json({ txid: COIN.txid, vout: [{ value: COIN.value }] });
     if (path.startsWith(`/tx/${COIN.txid}/outspend/`)) return json({ spent: coinSpent });

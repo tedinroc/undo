@@ -133,7 +133,7 @@ const ROWS = [
   { step: 'make', state: 'making', still: 'contract' }, { step: 'make', state: 'stuck', fail: 'M8' }, { step: 'make', state: 'stuck', fail: 'M9' },
   { step: 'fund', state: 'funding' }, { step: 'fund', state: 'stuck', fail: 'D1' }, { step: 'fund', state: 'stuck', fail: 'D2' },
   { step: 'fund', state: 'stuck', fail: 'D3' }, { step: 'fund', state: 'stuck', fail: 'D4' },
-  { step: 'steal', state: 'count' }, { step: 'steal', state: 'sending' }, { step: 'steal', state: 'refused' },
+  { step: 'steal', state: 'checking' }, { step: 'steal', state: 'count' }, { step: 'steal', state: 'sending' }, { step: 'steal', state: 'refused' },
   { step: 'steal', state: 'asking', here: true }, { step: 'steal', state: 'asking', here: false },
   { step: 'steal', state: 'stuck', fail: 'T1' }, { step: 'steal', state: 'stuck', fail: 'T1r' }, { step: 'steal', state: 'stuck', fail: 'T1b' },
   { step: 'steal', state: 'stuck', fail: 'T2' }, { step: 'steal', state: 'stuck', fail: 'T3' }, { step: 'steal', state: 'stuck', fail: 'T4' },
@@ -167,6 +167,11 @@ test('T5: every state and failure row has exactly one Next sentence, short, with
   for (const [name, entry] of Object.entries(NEXT)) {
     assert.ok([...seen].some((text) => text.startsWith(entry.parts[0])), `NEXT.${name} is never reached by the walk`);
   }
+});
+
+test('T5: step 3\'s checking screen, from the listing until the count or a T row, says only that nothing is to tap yet', () => {
+  assert.equal(nextOf({ ...BASE, step: 'steal', state: 'checking' }).text, 'Nothing to tap yet.');
+  assert.doesNotMatch(nextOf({ ...BASE, step: 'steal', state: 'checking' }).text, /lists the coin|Watch what/);
 });
 
 test('T5: the run time is said only when it was measured', () => {

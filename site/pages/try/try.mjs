@@ -1066,9 +1066,10 @@ function coinListed(coins) {
   const total = coins.reduce((sum, c) => sum + c.value, 0);
   line('balance', 'big', satsText(total), { id: 'balance' });
   T.card = null;
-  paint();
   // A step-2 read of the script or the fee that failed is waiting out its pause: it reads again now (prepTheft).
   T.prepWake?.();
+  // armSteal draws step 3 before its first await, so step 2's screen, which waits for this listing, is never drawn
+  // beside the listed coin.
   armSteal();
 }
 
@@ -1091,9 +1092,17 @@ async function prepTheft() {
   }
 }
 
-/** With the coin listed: every check, then the count, only while the page is on screen. */
+/**
+ * With the coin listed: every check, then the count, only while the page is on screen. Step 3's checking screen goes up
+ * at once, the listed balance and "Checking before the theft · N s", while the checks' reads are out (the script and
+ * the fee read again when step 2's failed, check_propose, the relay's status): step 2's lines wait for this listing.
+ */
 async function armSteal() {
   T.title = say(W.stepSteal);
+  T.lines = T.lines.filter((l) => l.key === 'balance');
+  T.countFrom = Date.now();
+  T.dock = countSlot('checking', W.slotChecking);
+  go('steal', 'checking');
   for (;;) {
     if (T.ended) return;
     const why = await stealChecks();
@@ -1116,9 +1125,9 @@ async function stealChecks() {
   const stuck = (fail, text, { final = false, everyMs, dock } = {}) => {
     T.lines = T.lines.filter((l) => l.key === 'balance');
     line('notice', 'warn', text, { id: 'notice' });
-    // "Checking before the theft · N s" counts from when the checks first held the theft back, and on through their
-    // retries: not from step 2's start, whose coin wait is not this check.
-    if (T.step !== 'steal' || T.state !== 'stuck') T.countFrom = Date.now();
+    // "Checking before the theft · N s" counts from when step 3's checks began (armSteal's checking screen), and on
+    // through their retries: not from step 2's start, whose coin wait is not this check.
+    if (T.step !== 'steal' || (T.state !== 'stuck' && T.state !== 'checking')) T.countFrom = Date.now();
     T.dock = dock ?? (final ? actionButton('start-over', say(W.startOver), () => leave('/try/', 'assign')) : countSlot('checking', W.slotChecking));
     go('steal', 'stuck', fail);
     return { fail, final, everyMs };
