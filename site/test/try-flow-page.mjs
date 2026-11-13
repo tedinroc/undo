@@ -494,6 +494,8 @@ globalThis.fetch = async (url, init = {}) => {
   if (u.startsWith('https://rpc.example.test')) {
     const { method: m, params } = JSON.parse(init.body);
     if (live.rpcDown) return new Response('down', { status: 503 });
+    // `blockMs`: the chain's clock (a block read) answers that much later, while every other read answers as usual.
+    if (m === 'block' && live.blockMs) await sleep(live.blockMs);
     if (m === 'block') return rpc({ header: { hash: '1'.repeat(32), height: 1000, timestamp_nanosec: `${Date.now()}000000` } });
     if (m === 'tx') return rpc({ final_execution_status: 'EXECUTED_OPTIMISTIC', status: { SuccessValue: '' }, receipts_outcome: [] });
     if (m === 'query' && params.request_type === 'view_access_key_list') return rpc({ keys: [], block_height: 1000, block_hash: '1'.repeat(32) });

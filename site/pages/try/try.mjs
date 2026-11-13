@@ -58,6 +58,8 @@ const T = {
   stuckWords: null, vaultReads: 0,
   // The passkey call a tap is waiting on: { abort, answered }. A later tap replaces it, and its answer is then dropped.
   call: null,
+  // The K_m read under way (readKm): its onKm draws only while it is the latest.
+  kmRun: null,
   passkey: null, keys: null, prepared: null, fundPow: null,
   v: null, vault: null, credB64: null, seed: null, made: false, listed: false, address: null,
   theft: null, coins: null, spend: null, nodeWords: null, proposeHash: null, noRequestTimer: null,
@@ -675,9 +677,19 @@ async function readKm() {
   dropLine('notice');
   T.dock = slot('km', say(W.slotKm));
   go('make', 'km');
+  const run = {};
+  T.kmRun = run;
+  // The line and the dock are about K_m alone: once K_m is in they say it is read, though prepareVault may wait up to
+  // 2 s more for the clock read sent with it. The dock's slot stays, empty, where Confirm comes up.
+  const onKm = () => {
+    if (T.kmRun !== run || T.step !== 'make' || T.state !== 'km') return;
+    line('km', 'done', say(W.kmRead));
+    T.dock = slot('km-in', '');
+    paint();
+  };
   let prepared;
   try {
-    prepared = await prepareVault(ctx, T.passkey, { keys: T.keys });
+    prepared = await prepareVault(ctx, T.passkey, { keys: T.keys, onKm });
   } catch (err) {
     logRaw('the second key', rawWords(err));
     dropLine('km');

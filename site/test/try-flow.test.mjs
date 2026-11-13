@@ -112,6 +112,9 @@ const RUNS = {
   // As listedFeeDown with a fee read that hangs (no answer until its own 6 s timeout, a try and its retry): the listing
   // comes while that read is out, so step 3's checks wait it out, then read once more, before T1.
   listedFeeHang: later({ feeHang: true, hideCoin: true, steps: [...MADE, { until: { step: 'fund' }, max: 20_000 }, { wait: 1500 }, { set: { hideCoin: false } }, { until: { id: 'balance' }, max: 10_000 }, { snap: 'listed' }, { until: { fail: 'T1' }, max: 40_000 }, { snap: 't1' }, { set: { feeHang: false } }, { until: { state: 'count' }, max: 15_000 }, { snap: 'count' }] }),
+  // K_m answers at once and the chain's clock read sent with it 6.5 s late, so the page waits 2 s more for the clock
+  // (prepareVault's grace, the boot's clock reading in hand) before Confirm.
+  kmClockSlow: later({ steps: [{ set: { blockMs: 6500 } }, { tap: 'make' }, { until: { id: 'confirm' }, max: 15_000 }, { snap: 'confirm' }, { set: { blockMs: 0 } }, { tap: 'confirm' }, { until: { step: 'fund' }, max: 20_000 }, { snap: 'fund' }] }),
   // No answer from the relay for the coin (D2), and a short rate_limited on every ask (D5).
   fundNoAnswer: later({ fund: ['fail'], steps: [...MADE, { until: { text: UNSURE_COIN }, max: 20_000 }, { snap: 'unsure' }, { wait: 2500 }, { snap: 'later' }] }),
   fundLimited: later({ fund: [{ status: 429, body: { ok: false, code: 'rate_limited', message: 'another funding holds the coin', retry_after_s: 1 } }], steps: [...MADE, { until: { text: UNSURE_COIN }, max: 30_000 }, { snap: 'unsure' }] }),
@@ -496,6 +499,36 @@ test('step 3\'s checks: from the moment Mutinynet lists the coin, step 3\'s chec
     if (name === 'happy') assert.ok(endAt - listed.at < 1000, `${name}: the count ${endAt - listed.at} ms after the listing`);
     assert.equal(page.posts('tx').filter((p) => p.at < endAt).length, 0, name);
   }
+});
+
+test('the line that reads the second key goes once K_m is in, though the clock read sent with it is still out; Confirm then comes as before', T, async () => {
+  const page = await RUNS.kmClockSlow;
+  assert.deepEqual(page.missed, []);
+  const rpcName = (p) => {
+    const body = JSON.parse(p.body);
+    return body.method === 'query' ? body.params.method_name ?? body.params.request_type : body.method;
+  };
+  const km = page.sent.find((p) => p.url.startsWith('https://rpc.example.test') && rpcName(p) === 'derived_public_key');
+  assert.ok(km, 'no K_m read');
+  const kmIn = km.at + 20;
+  const reading = page.drawn.find((d) => d.text.includes('Reading the second key'));
+  assert.ok(reading, 'the reading line was never drawn');
+  const gone = page.drawn.find((d) => d.at > reading.at && !d.text.includes('Reading the second key'));
+  const confirmAt = firstAt(page, (t) => t.startsWith('make/confirm:'));
+  assert.ok(gone && confirmAt !== null);
+  // The clock read held Confirm back about 2 s past K_m: the case this is about.
+  assert.ok(confirmAt - kmIn >= 1800, `Confirm ${confirmAt - kmIn} ms after K_m`);
+  // The line and its dock went once K_m was in, not when Confirm came.
+  assert.ok(gone.at - kmIn < 400, `"Reading the second key" stayed ${gone.at - kmIn} ms after K_m was in`);
+  assert.ok(page.drawn.every((d) => d.at < gone.at || !d.text.includes('Reading the second key')), 'said again that it reads the second key');
+  // Until Confirm: K_m read, nothing to tap, and the dock's slot empty where Confirm comes up.
+  const waiting = [...new Set(page.drawn.filter((d) => d.at >= gone.at && d.at < confirmAt).map((d) => d.text))];
+  assert.deepEqual(waiting, ['make/km: 1 · Make Passkey made. It can sync to your other devices. Second key read from the signer. || NEXT Nothing to tap yet. The Confirm button comes up here. || DOCK  || ASIDE ']);
+  assert.match(page.snap('confirm').text, /Second key read from the signer\./);
+  // And the vault is made from there, the sheet in its tap.
+  assert.equal(page.snap('fund').step, 'fund');
+  assert.deepEqual(page.calls.map((c) => c.call), ['create', 'get']);
+  assert.ok(allInTap(page));
 });
 
 test('M8: two reads that cross, a Check again the node answers late and a later one that fails: the later read draws the line', T, async () => {
