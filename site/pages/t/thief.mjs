@@ -2,8 +2,8 @@
 // phone is the contract: this page never hears from it. The stolen key stays in this tab and leaves only as signatures.
 import {
   advanceState, bitcoinReader, btcAddressLabel, btcAddressLink, btcTxLabel, btcTxLink, buildFragment, buildPropose, clock, configWords, contractViews, contractWords, digits,
-  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, PAGE_READS, panicOf, parseFragment, postTxOnce, RelayClient, relaySentNothing,
-  relayWords, RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything, SkewTracker, spkToAddress, StaleRead, triedWords, ViewRefused,
+  keyAloneSpend, loadConfig, logRaw, NearReader, nearTxLabel, nearTxLink, noNodeWords, nodeRefusalWords, PAGE_READS, panicOf, parseFragment, postTxOnce, readPatiently, RelayClient,
+  relaySentNothing, relayWords, RpcDown, requestState, scriptMatchesVault, seedMatchesVault, sendEverything, SkewTracker, spkToAddress, StaleRead, triedWords, ViewRefused,
 } from '/site/lib/index.mjs';
 import { parseTx, txid as txidOf } from '/tools/lib/btc.mjs';
 import { fromHex, toHex } from '/tools/lib/bytes.mjs';
@@ -483,10 +483,11 @@ async function ask() {
   setState('asking', 'wait');
   $('term-1').textContent = 'Asking the NEAR contract';
   $('glow').style.opacity = '0';
-  S.vault = await S.views.vault(S.vaultHex);
+  // Both at once, each asked again while no node answers: nothing goes to the relay until both are in.
+  const [vault, block] = await Promise.all([readPatiently(() => S.views.vault(S.vaultHex)), readPatiently(() => S.reader.blockTime())]);
+  S.vault = vault;
   // A request may already be there from a press whose answer got lost.
   const seenBefore = new Set(S.vault.pending);
-  const block = await S.reader.blockTime();
   S.tracker.add(block);
   const to = destinationSpk($('to').value, network());
   const args = buildPropose({
@@ -506,8 +507,13 @@ async function ask() {
   startPolling();
 }
 
+/**
+ * The request the proposal made: a pending id that was not there before. After 60 reads it says no request appeared,
+ * and only when its last read got the vault: while the reads fail, that would be said of a contract nobody read, so it
+ * reads on until one answers.
+ */
 async function findRequest(before, hash) {
-  for (let i = 0; i < 60; i += 1) {
+  for (let i = 0; ; i += 1) {
     const vault = await S.views.vault(S.vaultHex).catch(() => null);
     const fresh = vault?.pending.filter((id) => !before.has(id)) ?? [];
     if (fresh.length) return Math.max(...fresh);
@@ -520,11 +526,13 @@ async function findRequest(before, hash) {
         throw err;
       }
     }
+    if (i >= 59 && vault) {
+      const err = new Error('the transaction was sent and no new request appeared on the contract');
+      err.code = 'no_request';
+      throw err;
+    }
     await sleep(500);
   }
-  const err = new Error('the transaction was sent and no new request appeared on the contract');
-  err.code = 'no_request';
-  throw err;
 }
 
 // ---------------------------------------------------------------- reading the request
