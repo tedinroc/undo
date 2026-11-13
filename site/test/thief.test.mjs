@@ -1183,6 +1183,48 @@ describe('the thief tab in Chrome [mock-signer]', { skip, timeout: 1_500_000 }, 
     await shot('28-no-request');
   });
 
+  test('every NEAR read takes 1.5 s: what waits on no other read goes out together, so the tab is armed after three rounds of reads, not seven', { timeout: 120_000 }, async () => {
+    const v = await makeVault();
+    const HOLD_MS = 1500;
+    let out = 0;
+    let most = 0;
+    let reads = 0;
+    const onPaused = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.method !== 'Fetch.requestPaused') return;
+      const { requestId, request } = data.params;
+      if (request.method !== 'POST') {
+        cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+        return;
+      }
+      reads += 1;
+      out += 1;
+      most = Math.max(most, out);
+      setTimeout(() => {
+        out -= 1;
+        cdp.send('Fetch.continueRequest', { requestId }).catch(() => {});
+      }, HOLD_MS);
+    };
+    cdp.ws.addEventListener('message', onPaused);
+    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: `${stage.config.rpc[0]}*`, requestStage: 'Request' }] });
+    try {
+      const start = Date.now();
+      await openThief(v, { to: LOCAL_TO, k: v.seedHex });
+      await waitState('armed', 60_000);
+      await waitFor('Send enabled', async () => !(await js('document.getElementById("send").disabled')), 60_000);
+      const took = Date.now() - start;
+      // One after another: instance, vault, clock, then the vault, its wait, its script, then check_propose, 10.5 s.
+      // Together: instance, vault and clock; then the vault, its wait and its script; then check_propose.
+      assert.ok(most >= 3, `at most ${most} NEAR reads out at once`);
+      assert.ok(reads >= 7, `${reads} reads`);
+      assert.ok(took < 10_000, `armed after ${took} ms`);
+      assert.equal(await textOf('armed-note'), '');
+    } finally {
+      await cdp.send('Fetch.disable');
+      cdp.ws.removeEventListener('message', onPaused);
+    }
+  });
+
   test('NEAR RPC unreachable: after three bad reads the clock stops and dims and says so, then picks up from the chain', { timeout: 120_000 }, async () => {
     const v = await makeVault();
     await toArmed(v, {});

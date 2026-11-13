@@ -300,16 +300,27 @@ function onFieldInput() {
   }
 }
 
+/** A read started now and awaited later. Marked handled here, so one the page never waits for raises no alarm. */
+function started(promise) {
+  promise.catch(() => {});
+  return promise;
+}
+
 /** Reads the coins and the contract's numbers, and draws armed or short. Keeps what is in the fields. */
 async function refreshArmed() {
   if (S.state !== 'armed' && S.state !== 'short') return undefined;
+  // The vault, its wait and its script wait on no other read, so they go out together. Each is awaited where the page
+  // used to send it, so what a failure shows is what it showed when they went one after another.
+  const vaultRead = started(S.views.vault(S.vaultHex));
+  const delayRead = started(S.views.delayNow(S.vaultHex));
+  const scriptRead = S.script ? null : started(S.views.script(S.vaultHex));
   try {
-    S.vault = await S.views.vault(S.vaultHex);
+    S.vault = await vaultRead;
     if (!S.vault?.active) return plain('no_vault', 'This tab can\'t find that vault on this contract, or it is not active yet.');
     root.dataset.guardOnline = String(S.vault.guard_online);
-    root.dataset.delayMs = String(await S.views.delayNow(S.vaultHex));
+    root.dataset.delayMs = String(await delayRead);
     if (!S.script) {
-      const script = fromHex(await S.views.script(S.vaultHex));
+      const script = fromHex(await (scriptRead ?? S.views.script(S.vaultHex)));
       if (!scriptMatchesVault(script, S.vault)) return plain('no_vault', 'The contract\'s script does not pay this vault\'s address, so this page stops.');
       S.script = script;
     }
@@ -320,8 +331,10 @@ async function refreshArmed() {
   }
   if (S.vault) {
     try {
+      // The fee estimates wait on nothing, so they go out with the coins.
+      const estimatesRead = S.btc.feeEstimates().catch(() => null);
       S.coins = coinsOf(await S.btc.utxos(S.vault.address));
-      const estimates = await S.btc.feeEstimates().catch(() => null);
+      const estimates = await estimatesRead;
       S.feeRate = Math.max(2, Math.ceil(estimates?.['6'] ?? 2));
       S.btcDown = null;
     } catch (err) {
@@ -961,12 +974,17 @@ async function boot() {
 }
 
 async function loadVault() {
+  // The contract's instance, the vault and the clock wait on no other read, so they go out together. Each is awaited
+  // where the page used to send it, so what a failure shows is what it showed when they went one after another.
+  const instanceRead = started(S.views.instance());
+  const vaultRead = started(S.views.vault(S.vaultHex));
+  const blockRead = started(S.reader.blockTime());
   try {
-    S.instance = await S.views.instance();
+    S.instance = await instanceRead;
     if (S.instance.network === 'mainnet') return plain('no_config', 'This page is a demo for test coins only, and this contract is not on a test network.');
-    S.vault = await S.views.vault(S.vaultHex);
+    S.vault = await vaultRead;
     if (!S.vault || !S.vault.active) return plain('no_vault', 'This tab can\'t find that vault on this contract, or it is not active yet.');
-    S.tracker.add(await S.reader.blockTime());
+    S.tracker.add(await blockRead);
     S.lastBlockRead = Date.now();
     if (S.requestId === null) {
       const chainNow = () => {
