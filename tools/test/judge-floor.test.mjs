@@ -1588,7 +1588,7 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.doesNotMatch(lead, /\b(first|always|every|never)\b/i);
   // The film: its poster, small, linked to the page that plays it, and a caption that says what it is.
   const film = readmeBetween(lead, '## Problem');
-  assert.match(film, /^\n\[<img src="site\/pages\/film\/poster\.png" width="200" alt="The film's opening frame, large type on black: Your Bitcoin key was just stolen\. Under it, the thief tab, its stolen key blurred, set to send everything, 2,000 sats\.">\]\(https:\/\/undo-btc\.pages\.dev\/\)\n\n\[The film\]\(https:\/\/undo-btc\.pages\.dev\/\): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device\. The narration is a synthetic voice\.\n$/);
+  assert.match(film, /^\n\[<img src="site\/pages\/film\/poster\.png" width="200" alt="The film's opening frame, large type on black: Your Bitcoin key was just stolen\. Under it, the thief tab, its stolen-key field blurred, set to send everything, 2,000 sats\.">\]\(https:\/\/undo-btc\.pages\.dev\/\)\n\n\[The film\]\(https:\/\/undo-btc\.pages\.dev\/\): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device\. The narration is a synthetic voice\.\n$/);
   // That is the film's own record: a real device's take, Face ID the author's report, the thief tab on a second device.
   assert.equal(filmTake.device_as_reported.user_verification, 'Face ID');
   assert.match(filmTake.device_as_reported.tabs, /headless Chrome on a Mac, a second device/);
@@ -1617,9 +1617,16 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.match(read('CLAIMS.md'), new RegExp(`\\(${earlier + final} of ${earlier + final} executes\\)`), 'and C12 says the same number');
   assert.match(bullets[0], /The contract asks them to sign only after a request's public wait has run out \(C01\)/);
   // What has not run is said where the feature is claimed.
-  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; and once from a real phone on the live pages, 2026-11-12: /);
-  // The real phone's run: the device is the author's report, said as such, and the hash is the record's, checked by tier A.
-  assert.ok(bullets[1].includes(`a cancel from an iPhone, as the author reported it (${phone.device_as_reported.device}, ${phone.device_as_reported.os}, ${phone.device_as_reported.browser}, with the thief tab a second Safari tab on the same phone; no chain says which device held a passkey, and its assertion reads user verified, not how), NEAR testnet tx \`${phone.cancel.tx}\`, in a block ${(phone.cancel.block_after_the_proposal_ms / 1000).toFixed(1)} s after the proposal's, which \`./verify.sh A\` checks again.`), bullets[1]);
+  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; and twice from a real phone on the live pages, each a cancel from an iPhone in Safari, as the author reported it \(no chain says which device held a passkey, and each assertion reads user verified, not how\), and each checked again by `\.\/verify\.sh A`: /);
+  // The two runs from a real phone, the same two that Not done yet and Try it list: each device is the author's report,
+  // said as such, and each hash and block time is its record's, both of which tier A checks again.
+  assert.deepEqual([phone.device_as_reported.browser, filmTake.device_as_reported.browser], ['Safari', 'Safari']);
+  assert.match(filmTake.device_as_reported.tabs, /the thief tab \/t\/ ran in headless Chrome on a Mac, a second device/);
+  assert.equal(phone.vault_made_block_utc.slice(0, 10), '2026-11-12');
+  assert.equal(filmTake.started_utc.slice(0, 10), '2026-11-13');
+  assert.ok(bullets[1].endsWith(`: ${phone.vault_made_block_utc.slice(0, 10)}, an ${phone.device_as_reported.device} on ${phone.device_as_reported.os}, with the thief tab a second Safari tab on the same phone, NEAR testnet tx \`${phone.cancel.tx}\`, in a block ${(phone.cancel.block_after_the_proposal_ms / 1000).toFixed(1)} s after the proposal's; and ${filmTake.started_utc.slice(0, 10)}, the take the film is cut from, with the thief tab in headless Chrome on a Mac, a second device, NEAR testnet tx \`${filmTake.cancel.tx}\`, in a block ${(filmTake.cancel.block_after_the_proposal_ms / 1000).toFixed(1)} s after the proposal's.`), bullets[1]);
+  // Never the film's chip as the cancel's time: the bullet gives the chain's block time only.
+  assert.doesNotMatch(bullets[1], /0:41|41 s/);
   assert.match(read('CLAIMS.md'), /Several pending requests killed by one call, on testnet: \*\*not yet run\*\*/, 'C17 says the same of testnet');
   assert.match(bullets[2], /`propose_btc` and `execute` only/);
   // The agent is a command-line tool, and a script drove the recorded run: no model is in this repository.

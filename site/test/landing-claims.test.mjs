@@ -70,16 +70,20 @@ test('the film is published with its own capture record: the file that record na
   assert.doesNotMatch(note, /not yet run/);
   assert.match(readme0(), new RegExp(`\\[\`${phone.cancel.tx}\`\\]\\(https://testnet\\.near\\.rocks/tx/${phone.cancel.tx}\\)`), 'the README links that hash');
   assert.match(note, /The narration is a synthetic voice \(AI text-to-speech\)\./);
-  // The slot's label says what plays, and that it starts muted with its words on screen; no script has to correct it.
-  assert.match(landing, /<video id="film"[^>]*aria-label="The film, about a minute: [^"]*It starts muted, and every spoken line is also on screen\."/);
+  // The slot's label says what plays, and that it starts muted with what each line says on screen, not that every word is
+  // (the voice's "Bitcoin says no" is the page's REFUSED BY BITCOIN); no script has to correct it.
+  assert.match(landing, /<video id="film"[^>]*aria-label="The film, about a minute: [^"]*It starts muted, and what each spoken line says is also on screen\."/);
+  assert.doesNotMatch(landing, /every spoken line/);
   assert.doesNotMatch(landing, /not published yet/);
   assert.doesNotMatch(landingJs, /setAttribute\('aria-label'/);
   // The link card's words and the poster's, as they are drawn: the card is the headline, the name and the line under it;
-  // the poster, the film's first frame, is the headline over the thief tab with the stolen key blurred.
+  // the poster, the film's first frame, is the headline over the thief tab with the stolen-key field blurred: a blurred row
+  // of random characters, never the key, whose glyphs were never painted (proofs/film-take.json, redaction).
   for (const prop of ['property="og:image:alt"', 'name="twitter:image:alt"']) {
     assert.match(landing, new RegExp(`<meta ${prop} content="The film's headline, large type on black: Your Bitcoin key was just stolen\\. Under it: Undo for Bitcoin\\. A cancel button for Bitcoin\\. NEAR can refuse; it can't take\\.">`));
   }
-  assert.match(landing, /aria-label="The film, about a minute: [^"]*Its first frame is the headline over the thief tab, the stolen key blurred\. /);
+  assert.match(landing, /aria-label="The film, about a minute: [^"]*Its first frame is the headline over the thief tab, the stolen-key field blurred\. /);
+  assert.match(take.redaction.method, /^key glyphs never painted .*a blurred row of random characters \(never the key\)/);
   // The README says the same of the voice, next to the line about AI coding assistance.
   const readme = readFileSync(join(REPO, 'README.md'), 'utf8');
   assert.match(readme, /with AI coding assistance \(Claude\)\. The film's narration is a synthetic voice \(AI text-to-speech\), not a recording of a person\./);
