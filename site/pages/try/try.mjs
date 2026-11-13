@@ -1295,7 +1295,9 @@ async function ask() {
   go('steal', 'asking');
   let sent;
   try {
-    sent = await steps.proposeTheft(ctx, { vaultHex: T.v, script: T.theft.script, seed: T.seed, spend: T.spend, to: T.theft.to });
+    // R10: proposeTheft posts only while the page is on screen. Hidden after its reads, it holds with this screen as it
+    // is (nothing here says the request was sent until the relay answers), and reads again once the page is shown.
+    sent = await steps.proposeTheft(ctx, { vaultHex: T.v, script: T.theft.script, seed: T.seed, spend: T.spend, to: T.theft.to, visible: isVisible, whenVisible });
   } catch (err) {
     if (T.step === 'steal') askFailed(err);
     return;

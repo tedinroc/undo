@@ -204,6 +204,7 @@ html.dataset = new Proxy({ step: 'intro', state: 'boot' }, {
   set(target, key, value) {
     target[key] = value;
     queueMicrotask(() => globalThis.lookNow?.());
+    globalThis.onDrawn?.(key, value);
     return true;
   },
 });
@@ -229,6 +230,18 @@ const doc = {
 };
 Object.defineProperty(doc, 'hidden', { get: () => hidden });
 Object.defineProperty(doc, 'visibilityState', { get: () => (hidden ? 'hidden' : 'visible') });
+// `hideOn: { state }`: the page is hidden, and told so, right after it draws that state, once (as a person who leaves the
+// moment that screen comes up): in the microtask after data-state is set, where a MutationObserver would see it.
+const hides = [];
+globalThis.onDrawn = (key, value) => {
+  if (key !== 'state' || !live.hideOn || value !== live.hideOn.state) return;
+  live.hideOn = null;
+  queueMicrotask(() => {
+    hidden = true;
+    hides.push(wall() - t0);
+    fire('document', 'visibilitychange');
+  });
+};
 globalThis.document = doc;
 globalThis.window = globalThis;
 globalThis.addEventListener = (type, fn) => { (heard.window[type] ??= []).push(fn); };
@@ -615,7 +628,7 @@ for (const step of opts.steps ?? []) {
 look();
 clearInterval(watcher);
 process.stdout.write(`${JSON.stringify({
-  snaps, calls, sent, fetches, relayGets: relayGets.length, fundAsks, missed, went, opened: opened.length, historyLog, drawn,
+  t0, snaps, calls, sent, fetches, relayGets: relayGets.length, fundAsks, missed, went, opened: opened.length, historyLog, drawn, hides,
   local: globalThis.localStorage.dump(), session: globalThis.sessionStorage.dump(), consoleLines, secrets, undoRun: globalThis.undoRun, timings: globalThis.undoTimings,
   dom: html.innerText, wake,
 })}\n`, () => process.exit(0));

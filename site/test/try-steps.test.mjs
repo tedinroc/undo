@@ -194,6 +194,53 @@ test('R10: the key-alone send is not posted while the page is not on screen', as
   }
 });
 
+test('R10: the thief\'s proposal is posted only while the page is on screen; hidden during its reads, it waits, reads again, then posts', async () => {
+  const { p2wshSpk, spendKeys } = await import('../lib/index.mjs');
+  const { toHex } = await import('../../tools/lib/bytes.mjs');
+  const seed = new Uint8Array(32).fill(7);
+  const script = Uint8Array.of(0x51);
+  const order = [];
+  let shown = true;
+  let reads = 0;
+  let show = null;
+  const ctx = {
+    config: { contract: 'c.testnet' },
+    views: {
+      vault: async () => {
+        reads += 1;
+        order.push(`vault ${reads}`);
+        // A read takes a turn of the event loop, as a fetch does; reads in a loop stop here.
+        await new Promise((r) => { setImmediate(r); });
+        if (reads > 20) throw new Error('the vault was read in a loop');
+        // The page goes off screen while its first read of the vault is out.
+        if (reads === 1) shown = false;
+        return { id: VAULT, k_s: toHex(spendKeys(seed).ks.pub), script_pubkey: toHex(p2wshSpk(script)), spend_nonce: reads, pending: [3] };
+      },
+    },
+    reader: { blockTime: async () => { order.push('block'); return { blockMs: 1_700_000_000_000 + reads * 60_000 }; } },
+    skew: { add: () => {} },
+    relay: { call: async (method, args) => { order.push(`${method} ${shown ? 'shown' : 'HIDDEN'} nonce ${args.nonce} expires ${args.expires_at}`); return { hash: 'h' }; } },
+  };
+  const whenVisible = () => {
+    order.push('visible?');
+    return shown ? Promise.resolve() : new Promise((r) => { show = r; });
+  };
+  const asked = steps.proposeTheft(ctx, { vaultHex: VAULT, script, seed, spend: { inputs: [{ txid: 'aa'.repeat(32), vout: 0, value: 5000 }], amount: 4000 }, to: Uint8Array.of(0, 20, ...new Uint8Array(20)), visible: () => shown, whenVisible });
+  for (let i = 0; i < 50 && !show; i += 1) await new Promise((r) => { setImmediate(r); });
+  assert.ok(show, 'it did not wait for the page');
+  assert.deepEqual(order, ['visible?', 'vault 1', 'block', 'visible?'], 'it posted, or read again, while hidden');
+  shown = true;
+  show();
+  const sent = await asked;
+  assert.deepEqual(order.slice(4), ['vault 2', 'block', `propose_btc shown nonce 2 expires ${1_700_000_000_000 + 2 * 60_000 + 30 * 60_000}`]);
+  assert.deepEqual([...sent.seenBefore], [3]);
+  // On screen throughout: one read of each, then the POST, as before.
+  order.length = 0;
+  reads = 1;
+  await steps.proposeTheft(ctx, { vaultHex: VAULT, script, seed, spend: { inputs: [{ txid: 'aa'.repeat(32), vout: 0, value: 5000 }], amount: 4000 }, to: Uint8Array.of(0, 20, ...new Uint8Array(20)), visible: () => shown, whenVisible });
+  assert.deepEqual(order, ['visible?', 'vault 2', 'block', `propose_btc shown nonce 2 expires ${1_700_000_000_000 + 2 * 60_000 + 30 * 60_000}`]);
+});
+
 test('R4: the owner half reads only the contract; a null is believed after three; a second request is not its to handle', async () => {
   const NOW = Date.now();
   const vault = (pending, epoch = 2) => ({ pending, spend_epoch: epoch, frozen_until: null });

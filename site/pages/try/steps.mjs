@@ -138,18 +138,25 @@ export async function sendKeyAlone(ctx, { address, seed, script, to, feeRate, vi
 /**
  * The thief asks the NEAR contract, as the thief tab's ask(): the vault read fresh (its pending list, so a request that
  * was already there is not taken for this one), the chain's clock, propose_btc's arguments signed with the spend key,
- * and the relay. Resolves to { hash, seenBefore }; throws the relay's RelayRefused or a read's error.
+ * and the relay. Only from a page on screen (R10): `whenVisible` resolves when it is, and `visible()` is asked right
+ * before the POST, with nothing awaited between the two. A page that went off screen during the reads sends nothing:
+ * it waits until it is shown, then reads the vault and the clock again, so the proposal is built from reads made then.
+ * Resolves to { hash, seenBefore }; throws the relay's RelayRefused or a read's error.
  */
-export async function proposeTheft(ctx, { vaultHex, script, seed, spend, to }) {
-  const vault = await ctx.views.vault(vaultHex);
-  const seenBefore = new Set(vault.pending);
-  const block = await ctx.reader.blockTime();
-  ctx.skew.add(block);
-  const args = buildPropose({
-    contract: ctx.config.contract, vault, script, seed, inputs: spend.inputs, to, amount: spend.amount, nonce: vault.spend_nonce, expiresAt: block.blockMs + 30 * 60_000,
-  });
-  const sent = await ctx.relay.call('propose_btc', args);
-  return { hash: sent.hash, seenBefore };
+export async function proposeTheft(ctx, { vaultHex, script, seed, spend, to, visible = () => true, whenVisible = async () => {} }) {
+  for (;;) {
+    await whenVisible();
+    const vault = await ctx.views.vault(vaultHex);
+    const seenBefore = new Set(vault.pending);
+    const block = await ctx.reader.blockTime();
+    ctx.skew.add(block);
+    if (!visible()) continue;
+    const args = buildPropose({
+      contract: ctx.config.contract, vault, script, seed, inputs: spend.inputs, to, amount: spend.amount, nonce: vault.spend_nonce, expiresAt: block.blockMs + 30 * 60_000,
+    });
+    const sent = await ctx.relay.call('propose_btc', args);
+    return { hash: sent.hash, seenBefore };
+  }
 }
 
 /**

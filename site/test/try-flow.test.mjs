@@ -87,6 +87,10 @@ const RUNS = {
   // The red bar's 3 s are 3 s on screen: shown for 50 ms at a time, eight times, it never ends early; then 3 s shown.
   hiddenRefusal: later({ steps: [...MADE, { until: { state: 'refused' }, max: 20_000 }, { hide: true }, { wait: 600 }, ...Array.from({ length: 8 }, () => [{ show: true }, { wait: 50 }, { hide: true }, { wait: 600 }]).flat(), { snap: 'hidden' }, { show: true }, { snap: 'shown' }, { until: { state: 'asking' }, max: 10_000 }, { snap: 'asking' }] }),
   quietHidden: later({ steps: [...MADE, { until: { state: 'count' }, max: 20_000 }, { hideQuiet: true }, { wait: 4500 }, { snap: 'hidden' }, { show: true }, { wait: 50 }, { snap: 'shown' }, ...END] }),
+  // W3: hidden the moment the page draws "Asking the NEAR contract" (its read of the vault already out), for 5 s; then
+  // shown, and on to the end. With every answer 20 ms late, and 600 ms late from the refusal on.
+  askHidden: later({ steps: [...MADE, { until: { state: 'refused' }, max: 30_000 }, { set: { hideOn: { state: 'asking' } } }, { until: { state: 'asking' }, max: 10_000 }, { wait: 5000 }, { snap: 'hidden' }, { show: true }, ...END] }),
+  askHiddenSlow: later({ steps: [...MADE, { until: { state: 'refused' }, max: 30_000 }, { set: { netMs: 600, hideOn: { state: 'asking' } } }, { until: { state: 'asking' }, max: 10_000 }, { wait: 5000 }, { snap: 'hidden' }, { show: true }, ...END] }),
   proposeLost: later({ post: { propose_btc: 'timeoutListed' }, steps: [...MADE, ...END] }),
   neverListed: later({ proposeNotListed: true, steps: [...MADE, { until: { fail: 'T8' }, max: 50_000 }, { wait: 1500 }, { snap: 'end' }] }),
   ...(CANCEL_HERE ? {
@@ -383,6 +387,43 @@ test('the refusal\'s 3 s are time on screen: glimpses of the page while it is mo
   // Nine glimpses of 50 ms at most: never close to 3 s on screen before the last show.
   assert.ok(asking.at - shown.at >= 2400, `the thief asked ${asking.at - shown.at} ms after the page came back`);
   assert.ok(page.posts('propose_btc').every((p) => p.at >= shown.at && !p.hidden));
+});
+
+test('W3 R10: hidden the moment the thief starts asking NEAR, nothing goes to the relay until the page is shown; the proposal is then built from reads made after', T, async () => {
+  const rpcOf = (p) => {
+    const body = JSON.parse(p.body);
+    return body.method === 'query' ? body.params.method_name ?? body.params.request_type : body.method;
+  };
+  for (const name of ['askHidden', 'askHiddenSlow']) {
+    const page = await RUNS[name];
+    assert.deepEqual(page.missed, [], name);
+    assert.equal(page.hides.length, 1, `${name}: not hidden as asking was drawn`);
+    const hidden = page.snap('hidden');
+    // Held while hidden: still asking, and nothing on the screen says the request was sent.
+    assert.equal(`${hidden.step}/${hidden.state}/${hidden.fail}`, 'steal/asking/null', name);
+    assert.match(hidden.text, /Asking the NEAR contract/, name);
+    assert.doesNotMatch(hidden.text, /NEAR testnet tx/, `${name}: a tx line for a proposal not sent`);
+    // No POST to the relay, the coin's dispenser or Bitcoin while hidden; the proposal once, after the page was shown.
+    const sends = page.sent.filter((p) => p.url === '/api/relay' || p.url === '/api/funds' || p.url.endsWith('/api/tx'));
+    assert.deepEqual(sends.filter((p) => p.hidden).map((p) => p.method), [], `${name}: sent while hidden`);
+    const proposals = page.posts('propose_btc');
+    assert.equal(proposals.length, 1, name);
+    assert.ok(proposals[0].at >= hidden.at, `${name}: the proposal went out at ${proposals[0].at} ms, the page was shown at ${hidden.at} ms`);
+    // Built from reads made once the page was back: the vault's read again, and the chain's clock too (the proposal's
+    // expiry is 30 min from a block read after the 5 s off screen, not before them).
+    const ownReads = page.sent.filter((p) => p.url.startsWith('https://rpc.example.test') && p.at >= hidden.at && p.at < proposals[0].at).map(rpcOf);
+    assert.ok(ownReads.includes('vault') && ownReads.includes('block'), `${name}: read after the show ${JSON.stringify(ownReads)}`);
+    const expires = JSON.parse(proposals[0].body).args.expires_at;
+    const left = expires - (page.t0 + proposals[0].at);
+    assert.ok(left > 30 * 60_000 - 2500, `${name}: the proposal expires ${left} ms after it was sent, from a clock read before the page was hidden`);
+    // While hidden no reads in a loop: only the ones under way when the page went.
+    const hiddenReads = page.sent.filter((p) => p.hidden && p.url.startsWith('https://rpc.example.test')).map(rpcOf);
+    assert.ok(hiddenReads.length <= 3, `${name}: ${hiddenReads.length} reads while hidden ${JSON.stringify(hiddenReads)}`);
+    // And the run goes on as on any other: the request, then Cancel and the recap (v2) or the phone page (v1).
+    assert.ok(allInTap(page), name);
+    if (CANCEL_HERE) assert.equal(page.snap('end').step, 'recap', name);
+    else assert.equal(page.went.length, 1, name);
+  }
 });
 
 test('M8: two reads that cross, a Check again the node answers late and a later one that fails: the later read draws the line', T, async () => {
