@@ -1,30 +1,10 @@
 # Undo for Bitcoin
 
-**A testnet Bitcoin vault with a public waiting period and a passkey cancel.**
-
-For this vault, Bitcoin requires both the spend key and a signature from NEAR Chain Signatures. A public NEAR contract asks for that second signature only after the waiting period; the owner's passkey can cancel the request before then. NEAR alone cannot spend the coins, and a cold recovery key can exit after a Bitcoin timelock without NEAR.
-
-**Status:** NEAR testnet + Mutinynet (Bitcoin signet) · unaudited prototype · no mainnet funds.
-A cancel stops a pending signing request; it does not reverse a Bitcoin transaction that has already been fully signed or broadcast.
-
-[Watch the film](https://undo-btc.pages.dev/) · [Try a test-coin cancel](https://undo-btc.pages.dev/try/) · [Run the checks](#run-it) · [Claims and evidence](CLAIMS.md) · [Trust model](#who-can-do-what-and-what-happens-if-each-is-gone)
+A cancel button for native Bitcoin, on test networks: Bitcoin itself refuses a stolen spend key alone, NEAR Chain Signatures gives the second signature when a public NEAR contract asks, and the contract asks only after a public wait that your phone's passkey can cancel. NEAR alone cannot take the coins; with no NEAR, a cold key gets them out after a Bitcoin timelock.
 
 [<img src="site/pages/film/poster.png" width="200" alt="The film's opening frame, large type on black: Your Bitcoin key was just stolen. Under it, the thief tab, its stolen-key field blurred, set to send everything, 2,000 sats.">](https://undo-btc.pages.dev/)
 
-<details>
-<summary>Recording provenance</summary>
-
 [The film](https://undo-btc.pages.dev/): about a minute, cut from one take on test networks: the phone page in Safari on the author's iPhone, from that iPhone's own screen recording, with Face ID, as the author reported it, and the thief tab in headless Chrome on a Mac, a second device. The drawn tiles after the cancel show the final build's run of 2026-11-11. The narration is a synthetic voice.
-
-</details>
-
-## Start here
-
-| You want to… | Start with |
-|---|---|
-| See the idea in a minute | [Watch the film](https://undo-btc.pages.dev/), then inspect its linked transaction hashes |
-| Try the interaction | [Steal a test coin](https://undo-btc.pages.dev/try/); requires a passkey-capable browser and the shared testnet relay |
-| Review the engineering | [Run the checks](#run-it), [read the claims](CLAIMS.md), and inspect [who can do what](#who-can-do-what-and-what-happens-if-each-is-gone) |
 
 ## Problem
 
@@ -51,6 +31,19 @@ Track hints this leans on: chain abstraction (open), function-call keys and agen
 
 ## Run it
 
+**Status:** NEAR testnet + Mutinynet (Bitcoin signet) · unaudited prototype · no mainnet funds.
+A cancel stops a pending signing request; it does not reverse a Bitcoin transaction that has already been fully signed or broadcast.
+
+### Choose a path
+
+| You want to… | Start with |
+|---|---|
+| See the idea in a minute | [Watch the film](https://undo-btc.pages.dev/), then inspect its linked transaction hashes |
+| Try the interaction | [Steal a test coin](https://undo-btc.pages.dev/try/); requires a passkey-capable browser and the shared testnet relay |
+| Review the engineering | [Run the checks](#run-it), [read the claims](CLAIMS.md), and inspect [who can do what](#who-can-do-what-and-what-happens-if-each-is-gone) |
+
+### Run the checks
+
 No key, no wallet, no browser. Tier A needs Node 20+ and Rust for its consensus checks; Tier B needs Rust. Start from a fresh clone:
 
 ```bash
@@ -60,11 +53,11 @@ cd undo
 ./verify.sh A    # read-only checks against public testnet RPCs and recorded transactions
 ```
 
-These commands do not create a vault or send a transaction. The optional `./demo.sh` below does send testnet calls through the shared relay. Each command prints one line per check; these are the recorded/expected outcomes, not results from your machine:
+These commands do not create a vault or send a transaction. The optional `./demo.sh` below does send testnet calls through the shared relay. Each command prints one line per check; these are the recorded/expected outcomes, not results from your machine. In this table, “Expected today” refers to the recorded state on 2026-11-14:
 
 | Run | Takes | Ends with |
 |---|---|---|
-| `./verify.sh A` | 1 to 3 min, most of it waiting on public RPCs; the first run also builds the referee in `tools/rust-check` | Expected for the 2026-11-14 state: `TIER A: 74 PASS, 0 SKIP, 0 FAIL, 3 INFO`, exit 0. C11 reads that the test contract has no full-access key: the deploy's was deleted on 2026-11-14 (NEAR testnet tx `2H4ShHVE3CngLWuo7nLC7uze6zxCoFMoX8SLpgQwAjyF`), so its code changes only through `upgrade_propose` and its 1 h public wait (see Operator below). The other lines read the deployed contract, fetch the real NEAR testnet and Mutinynet transactions in `proofs/` again, the final build's co-signed spend and cold-key escape among them, and re-verify their signatures here, fetch the live phone page's Cancel again and verify its passkey signature here, for the film's take and for the one-device run, both from a real phone (an iPhone, as the author reported it), and for the earlier film's take in headless Chrome, read the agent run's twelve transactions for who signed each and how it ended, and run a recovery-file dry run and a static check |
+| `./verify.sh A` | 1 to 3 min, most of it waiting on public RPCs; the first run also builds the referee in `tools/rust-check` | Expected today: `TIER A: 74 PASS, 0 SKIP, 0 FAIL, 3 INFO`, exit 0. C11 reads that the test contract has no full-access key: the deploy's was deleted on 2026-11-14 (NEAR testnet tx `2H4ShHVE3CngLWuo7nLC7uze6zxCoFMoX8SLpgQwAjyF`), so its code changes only through `upgrade_propose` and its 1 h public wait (see Operator below). The other lines read the deployed contract, fetch the real NEAR testnet and Mutinynet transactions in `proofs/` again, the final build's co-signed spend and cold-key escape among them, and re-verify their signatures here, fetch the live phone page's Cancel again and verify its passkey signature here, for the film's take and for the one-device run, both from a real phone (an iPhone, as the author reported it), and for the earlier film's take in headless Chrome, read the agent run's twelve transactions for who signed each and how it ended, and run a recovery-file dry run and a static check |
 | `./demo.sh` | 1.5 to 3 min | `PASS demo-1` to `PASS demo-5`, then `DEMO PASS`. On the contract `deploy/testnet.json` names, through its relay: a throwaway vault with a software passkey, a proposal to a new address, a passkey cancel, and a send back to the vault's own address that the live signer signs after its 1:00 wait. No coin moves, but its NEAR calls are real NEAR testnet transactions, which the relay pays for |
 | `./verify.sh B` | under 1 min once compiled; 1 to 2 on the first run, which compiles | `TIER B PASS`: the vault state machine and the Bitcoin consensus tests, offline |
 
