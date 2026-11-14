@@ -1,8 +1,9 @@
 // The landing page and the replay. Static checks first: every hash on either page is one proofs/ recorded, under its
 // chain's name, and the replay's record is exactly what tools/replay-run.mjs builds from proofs/: the final build's
 // runs, with the cancel from the take of the live pages, which is another vault and says so. Then one headless
-// Chrome on a built site: the first screen at 390x844 and 375x667, the film playing muted in its slot, the status line
-// naming the config's contract, the replay stepping through, and no CSP complaint. Screenshots go to UNDO_SHOT_DIR
+// Chrome on a built site: the first screen at 390x844 and 375x667, and from 320 to 1080 wide, the film playing muted in
+// its slot, the Steal button opening /try/, the status line naming the config's contract, the replay stepping through,
+// and no CSP complaint. Screenshots go to UNDO_SHOT_DIR
 // when it is set. Skipped, and it says so, without Chrome.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -139,9 +140,24 @@ test('landing: "From the film:", "From the final build\'s run" and "From an earl
   assert.equal(run.final.hashes[0].what, 'the spend it co-signed after a 10:00 wait');
   assert.equal(g2.cosigned.check.delay_ms, 600_000);
   assert.notEqual(run.earlier.contract, run.final.contract);
-  // The words under the replay button and beside the try link say what each is.
+  // The words under the replay button and under the Steal button say what each is.
   assert.match(landing, /<p class="small">A replay of the final build's recorded runs, with their real hashes\. Test coins only, on Mutinynet and NEAR testnet\.<\/p>/);
-  assert.match(landing, /<a id="try-link" class="link" href="\/p\/">Try a cancel yourself<\/a>: one browser with a passkey and two tabs, on a phone or a computer, or a phone and a laptop\. A relay pays the NEAR gas, and its daily limit is shared, so it can be full\.<\/p>/);
+  assert.match(landing, /<p id="try-note" class="small">Rob yourself, then undo it: one page, three passkey prompts, test coins only\. A relay pays the NEAR gas, and its daily limit is shared, so it can be full\. Two devices instead: <a id="phone-link" class="link" href="\/p\/">the phone page<\/a>\.<\/p>/);
+});
+
+test('landing: "Steal a test coin" is a white button to /try/ on the first screen, above "Watch a recorded run", and the two-device path stays linked under it', () => {
+  const first = landing.slice(landing.indexOf('<section class="first">'), landing.indexOf('<section class="below"'));
+  // One button, the same white .go as the replay's, its words the spec's, its link the one-page run.
+  assert.equal(first.match(/<a id="try-link" /g)?.length, 1);
+  assert.match(first, /<a id="try-link" class="go" href="\/try\/">Steal a test coin<\/a>\n\s*<p id="try-note" class="small">/);
+  assert.ok(first.indexOf('id="try-link"') < first.indexOf('id="replay-link"'), 'the Steal button sits above the replay button');
+  assert.match(first, /<p id="try-note" class="small">[^\n]*<\/p>\n\s*<a id="replay-link" class="go" href="\/replay\/">Watch a recorded run<\/a>/);
+  // The two-device path is still one tap away; the old line that sent a phone to two tabs is gone.
+  assert.match(first, /<a id="phone-link" class="link" href="\/p\/">the phone page<\/a>/);
+  assert.doesNotMatch(landing, /Try a cancel yourself/);
+  assert.equal(landing.match(/href="\/try\/"/g).length, 1, 'one link to /try/');
+  // /try/ is a page the build ships.
+  assert.ok(readFileSync(join(PAGES, 'try/index.html'), 'utf8').includes('<title>Undo · try it</title>'));
 });
 
 test('every hash on both pages is in proofs/, and every long hex or base58 string on them is one of those hashes', () => {
@@ -206,7 +222,7 @@ test('landing: the story, the closing line, "Why not 2-of-3?", the privacy line,
   assert.equal(first.match(/Chain Signatures/g).length, 1);
   assert.doesNotMatch(text, /Chain Signatures[^.]*\b(signs|waits)\b[^.]*\b(only|after)\b/i);
   assert.doesNotMatch(text, /AI agent|Let your/i);
-  assert.doesNotMatch(text, /Steal a test coin|one tap/i);
+  assert.doesNotMatch(text, /one tap/i);
   assert.doesNotMatch(text, /\b\d+ (vaults|cancels|strangers|users)\b/i);
 });
 
@@ -301,7 +317,7 @@ const waitFor = async (expr, ms = 5000) => {
   throw new Error(`timed out: ${expr}`);
 };
 
-test('Chrome 390x844: chip, film slot, sentence and replay link on the first screen; no sideways scroll; the film plays in its slot, muted, 4:5, about a minute', { skip, timeout: 60_000 }, async () => {
+test('Chrome 390x844: chip, film slot, sentence and the Steal button on the first screen, the replay link under it; no sideways scroll; the film plays in its slot, muted, 4:5, about a minute', { skip, timeout: 60_000 }, async () => {
   problems.length = 0;
   await viewport(390, 844);
   await cdp.open(`${served.testnet.origin}/`);
@@ -312,10 +328,13 @@ test('Chrome 390x844: chip, film slot, sentence and replay link on the first scr
   assert.deepEqual([playing.w, playing.h], [1080, 1350], 'the film is 4:5, as its slot and its poster are');
   assert.ok(playing.seconds >= 60 && playing.seconds <= 75, `the film runs ${playing.seconds} s`);
   assert.deepEqual([playing.muted, playing.controls, playing.loop, playing.paused, playing.error], [true, true, true, false, null]);
-  for (const sel of ['#chip', '#film-slot', '#sentence', '.trust', '#replay-link']) {
+  for (const sel of ['#chip', '#film-slot', '#sentence', '.trust', '#try-link']) {
     const b = await box(sel);
     assert.ok(b.top >= 0 && b.bottom <= 844 && b.width > 0, `${sel} is not on the first screen: ${JSON.stringify(b)}`);
   }
+  // The replay button comes right under the Steal button's line.
+  const [note, replay] = [await box('#try-note'), await box('#replay-link')];
+  assert.ok(replay.top >= note.bottom && replay.top - note.bottom <= 24, `the replay link starts at ${replay.top}, the line above it ends at ${note.bottom}`);
   assert.match(await cdp.page("return document.querySelector('.trust').textContent;"), /^The second signature comes from NEAR Chain Signatures, when that contract asks\./, 'the first screen names Chain Signatures');
   // Nothing on the first screen moves by itself: no animation or transition on its text.
   assert.deepEqual(await cdp.page("return [...document.querySelectorAll('.copy *')].filter((e) => { const c = getComputedStyle(e); return c.animationName !== 'none' || parseFloat(c.transitionDuration) > 0; }).map((e) => e.className || e.id);"), []);
@@ -332,14 +351,14 @@ test('Chrome 390x844: chip, film slot, sentence and replay link on the first scr
   assert.deepEqual(problems, []);
 });
 
-test('Chrome 375x667: the film shrinks so the replay link stays above the fold', { skip, timeout: 30_000 }, async () => {
+test('Chrome 375x667: the film shrinks so the Steal button stays above the fold', { skip, timeout: 30_000 }, async () => {
   await viewport(375, 667);
   await cdp.open(`${served.testnet.origin}/`);
-  const link = await box('#replay-link');
-  assert.ok(link.bottom <= 667, `the replay link ends at ${link.bottom}`);
+  const link = await box('#try-link');
+  assert.ok(link.bottom <= 667, `the Steal button ends at ${link.bottom}`);
   // With room to spare, so a font a few pixels taller does not push it under the fold; and the line that names
   // Chain Signatures is above it.
-  assert.ok(link.bottom <= 667 - 24, `the replay link ends at ${link.bottom}, too near the fold`);
+  assert.ok(link.bottom <= 667 - 24, `the Steal button ends at ${link.bottom}, too near the fold`);
   const trust = await box('.trust');
   assert.ok(trust.top >= 0 && trust.bottom <= link.top, 'the Chain Signatures line is on the first screen, above the link');
   assert.ok((await box('#film-slot')).width >= 180, 'and the film is still a film');
@@ -374,9 +393,41 @@ test('Chrome 1440x900: two columns, the whole first screen in view', { skip, tim
   const film = await box('#film-slot');
   const copy = await box('#sentence');
   assert.ok(copy.left > film.right, 'the copy sits beside the film');
-  for (const sel of ['#film-slot', '#sentence', '#replay-link']) assert.ok((await box(sel)).bottom <= 900, sel);
+  for (const sel of ['#film-slot', '#sentence', '#try-link', '#replay-link']) assert.ok((await box(sel)).bottom <= 900, sel);
   await shot('landing-1440x900');
   assert.deepEqual(problems, []);
+});
+
+test('Chrome 320 to 1080 wide: no sideways scroll, the Steal button whole and on one line, on the first screen of every phone size the page is laid out for, the replay link under it', { skip, timeout: 90_000 }, async () => {
+  const sizes = [[320, 568], [346, 700], [360, 640], [375, 667], [375, 812], [390, 664], [390, 844], [414, 896], [428, 926], [600, 900], [768, 1024], [899, 900], [900, 700], [1080, 800], [1080, 1350]];
+  for (const [w, hgt] of sizes) {
+    await viewport(w, hgt, w < 900);
+    await cdp.open(`${served.testnet.origin}/`);
+    const at = `${w}x${hgt}`;
+    const width = await cdp.page('return document.documentElement.clientWidth;');
+    assert.equal(await cdp.page('return document.documentElement.scrollWidth;'), width, `${at}: sideways scroll`);
+    const [link, note, replay] = [await box('#try-link'), await box('#try-note'), await box('#replay-link')];
+    assert.ok(link.left >= 16 - 0.5 && link.right <= width - 16 + 0.5, `${at}: the Steal button runs into the gutter: ${JSON.stringify(link)}`);
+    assert.ok(link.height <= 49, `${at}: the Steal button wraps: ${link.height} px tall`);
+    assert.ok(link.bottom <= note.top && note.bottom <= replay.top, `${at}: the Steal button, its line and the replay link are not in that order`);
+    // The 320x568 screen is below the sizes the first screen is laid out for (the replay link did not fit there either).
+    if (hgt >= 640) assert.ok(link.bottom <= hgt, `${at}: the Steal button ends at ${link.bottom}, under the fold`);
+  }
+});
+
+test('Chrome: the Steal button opens /try/ in the same tab, and /try/\'s own script runs there', { skip, timeout: 60_000 }, async () => {
+  // The local build: no relay (every /api/ answers 503) and no NEAR node (127.0.0.1:9), so nothing here reaches a network.
+  problems.length = 0;
+  await viewport(390, 844);
+  await cdp.open(`${served.local.origin}/`);
+  assert.equal(await cdp.page("return document.getElementById('try-link').href;"), `${served.local.origin}/try/`);
+  assert.equal(await cdp.page("return document.getElementById('try-link').target;"), '');
+  await cdp.page("document.getElementById('try-link').click(); return true;");
+  await waitFor("location.pathname === '/try/' && document.title === 'Undo · try it' && document.documentElement.dataset.state !== 'boot'", 20000);
+  assert.equal(await cdp.page('return document.documentElement.dataset.step;'), 'intro');
+  await shot('landing-try-click-390x844');
+  // What fails there is the relay and the node this build has none of; no script error, no CSP refusal of a page file.
+  assert.deepEqual(problems.filter((p) => !/\/api\/|127\.0\.0\.1:9\b/.test(p)), []);
 });
 
 test('Chrome, local config: the chip says local, and the recorded hashes still name the chains they are on', { skip, timeout: 30_000 }, async () => {
