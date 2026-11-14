@@ -1,5 +1,7 @@
-# Runs on every push: ./verify.sh B (the vault state machine and the Bitcoin consensus tests), the
-# offline Node tests, and the relay mutants on the site tests. No secrets, no network calls of its own
+# Runs on every push: ./verify.sh B (the vault state machine and the Bitcoin consensus tests) and the
+# offline Node tests. The relay mutants on the site tests run only when started by hand (workflow_dispatch):
+# with 251 mutants they need more than 45 min on a hosted runner, and the timed phone-page tests they run
+# four at a time can miss their windows there. No secrets, no network calls of its own
 # beyond fetching crates and packages, no keys, no deploys, and it commits nothing. Tier A reads live
 # networks, so it is run by hand, not here.
 name: verify
@@ -84,8 +86,9 @@ jobs:
 
   relay-mutants:
     name: relay and page mutants, site tests only
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
