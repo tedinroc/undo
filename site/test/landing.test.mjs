@@ -204,7 +204,7 @@ test('landing: the name, the chip before any script, a 2:1 link card, and the fi
   assert.ok(film.indexOf('moov') < film.indexOf('mdat'), 'the index comes first, so it starts before it has all arrived');
 });
 
-test('landing: the story, the closing line, "Why not 2-of-3?", the privacy line, the status line and the repo; no AI line, no self-steal, no numbers', () => {
+test('landing: the story, the closing line, "Why not 2-of-3?", the privacy line, the status line and the repo; no AI line, no "one tap", no numbers', () => {
   // Inline spans join their words; every other tag is a break.
   const text = landing.replace(/<\/?span[^>]*>/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
   for (const phrase of [

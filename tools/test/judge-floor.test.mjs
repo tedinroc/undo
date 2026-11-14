@@ -168,12 +168,13 @@ function esplora({ outspend, outspendV1 = { spent: true, txid: s2v1.coin_return.
 
 /**
  * tier-a.mjs with no cargo on PATH, NEAR at a dead port, and Esplora at `esploraUrl`. `archivalUrl` puts a stand-in
- * where the archival RPC is, and `rpcUrl` one where the replay's views go. `repo` runs a copy of this tree's tier A
- * instead, with the records that copy holds. Async: the stand-ins answer from here.
+ * where the archival RPC is, `rpcUrl` one where the replay's views go, and `liveUrl` one where the deployed contract's
+ * account, access keys and status are read. `repo` runs a copy of this tree's tier A instead, with the records that
+ * copy holds. Async: the stand-ins answer from here.
  */
-function tierA({ esploraUrl, referee, archivalUrl = DEAD, rpcUrl = DEAD, repo = REPO }) {
+function tierA({ esploraUrl, referee, archivalUrl = DEAD, rpcUrl = DEAD, liveUrl = DEAD, repo = REPO }) {
   const config = JSON.parse(read('deploy/testnet.json'));
-  config.rpc = [DEAD];
+  config.rpc = [liveUrl];
   config.replay = { ...config.replay, near_rpc: [rpcUrl], near_archival_rpc: [archivalUrl], mutinynet_esplora: esploraUrl };
   const path = join(work, `tier-a-${Math.random().toString(36).slice(2)}.json`);
   writeFileSync(path, JSON.stringify(config));
@@ -285,9 +286,11 @@ const c14Chain = JSON.parse(read('tools/test/fixtures/c14-archival.json'));
 function archival(change = () => {}, base = c14Chain) {
   const chain = structuredClone(base);
   change(chain);
-  // A fixture's queries are kept under the words of the question: an account at a block, or a view and its arguments.
-  const asked = (q = {}) => (q.request_type === 'view_account' ? `view_account ${q.account_id} @${q.block_id}`
-    : q.request_type === 'call_function' ? `call_function ${q.account_id} ${q.method_name} ${Buffer.from(q.args_base64 ?? '', 'base64').toString('utf8')}` : '');
+  // A fixture's queries are kept under the words of the question: an account at a block (or at "final"), an account's
+  // access-key list, or a view and its arguments.
+  const asked = (q = {}) => (q.request_type === 'view_account' ? `view_account ${q.account_id} @${q.block_id ?? q.finality}`
+    : q.request_type === 'view_access_key_list' ? `view_access_key_list ${q.account_id} @${q.block_id ?? q.finality}`
+      : q.request_type === 'call_function' ? `call_function ${q.account_id} ${q.method_name} ${Buffer.from(q.args_base64 ?? '', 'base64').toString('utf8')}` : '');
   const server = createServer((req, res) => {
     let body = '';
     req.on('data', (c) => { body += c; });
@@ -335,6 +338,74 @@ test('tier A, C14: every recorded transaction of the agent run is fetched again 
     everyLineHasAClaim(r.lines);
   } finally {
     node.close();
+  }
+});
+
+// ---------------------------------------------------------------- tier A, C11: the deployed contract, with no key left
+
+// What public RPC answers about the contract deploy/testnet.json names: its account and status as captured, and its
+// access-key list as it reads since the deploy's full-access key was deleted, empty.
+const v1Locked = JSON.parse(read('tools/test/fixtures/v1-locked.json'));
+
+test('tier A, C11: the deployed contract with no access key left passes C13, C11 and C06; function-call keys alone still pass C11, and a full-access key on it fails C11 in its own words', { timeout: 300_000 }, async () => {
+  const config = JSON.parse(read('deploy/testnet.json'));
+  const keysAt = `view_access_key_list ${config.contract} @final`;
+  const account = v1Locked.query[`view_account ${config.contract} @final`];
+  assert.deepEqual(v1Locked.query[keysAt].keys, [], 'the fixture is the locked contract: no key at all');
+  assert.equal(account.code_hash, base58Encode(fromHex(config.wasm_sha256)), 'the captured account runs the wasm the config records');
+  const made = (permission) => ({ public_key: `ed25519:${base58Encode(sha256(utf8(`a made-up key, ${JSON.stringify(permission)}`)))}`, access_key: { nonce: 1, permission } });
+  const full = made('FullAccess');
+  const call = made({ FunctionCall: { allowance: null, receiver_id: config.contract, method_names: ['heartbeat'] } });
+  const cases = [
+    ['no key at all', () => {}, `PASS C11 [live-testnet] ${config.contract} has no full-access key (no access key at all): code changes only through upgrade_propose and its public wait`],
+    ['a function-call key alone', (chain) => { chain.query[keysAt].keys = [call]; }, `PASS C11 [live-testnet] ${config.contract} has no full-access key (1 function-call key(s)): code changes only through upgrade_propose and its public wait`],
+    ['a full-access key beside it', (chain) => { chain.query[keysAt].keys = [call, full]; }, `FAIL C11 [live-testnet] access keys: ${config.contract} has 1 full-access key(s): ${full.public_key}. Its owner could replace the code at once, without the upgrade wait`],
+  ];
+  for (const [what, change, want] of cases) {
+    const node = await archival(change, { tx: {}, block: {}, ...v1Locked });
+    try {
+      const r = await tierA({ esploraUrl: `${DEAD}/api`, referee: REFEREE, liveUrl: node.url });
+      const lines = r.lines.filter((l) => /^(PASS|FAIL|SKIP|INFO) (C13|C11|C06) \[live-testnet\]/.test(l));
+      assert.equal(lines.length, 3, `${what}\n${r.out}`);
+      assert.ok(lines[0].startsWith(`PASS C13 [live-testnet] ${config.contract} runs code hash ${account.code_hash}, the sha256 ${config.wasm_sha256} of the wasm in `), `${what}\n${r.out}`);
+      assert.equal(lines[1], want, `${what}\n${r.out}`);
+      assert.equal(lines[2], `PASS C06 [live-testnet] ${config.contract} status answers ok=true, verbatim:`, `${what}\n${r.out}`);
+      // The status view says the upgrade wait the README and CLAIMS give, 1 h, in its own words.
+      assert.ok(r.out.includes('\n    no upgrade pending. New code would wait 60 min in public\n'), `${what}\n${r.out}`);
+      // With the referee, the only FAIL a run against this stand-in can print is C11's.
+      if (REFEREE) {
+        const fails = r.lines.filter((l) => l.startsWith('FAIL '));
+        assert.deepEqual(fails, want.startsWith('FAIL') ? [want] : [], `${what}\n${r.out}`);
+        assert.equal(r.code, want.startsWith('FAIL') ? 1 : 0, `${what}\n${r.out}`);
+        assert.match(r.out, new RegExp(`\\nTIER A: \\d+ PASS, \\d+ SKIP, ${fails.length} FAIL, \\d+ INFO in \\d+ s\\n`), `${what}\n${r.out}`);
+      }
+      everyLineHasAClaim(r.lines);
+    } finally {
+      node.close();
+    }
+  }
+});
+
+test('the lock: README and CLAIMS name the same deletion of the deploy\'s full-access key, 2026-11-14, say no text that it is still on, and say what is left: upgrade_propose and its 1 h public wait', () => {
+  const readme = read('README.md');
+  const claims = read('CLAIMS.md');
+  // The DeleteKey's NEAR testnet hash and its time, the same in every place that names them.
+  const runIt = /C11 reads that the test contract has no full-access key: the deploy's was deleted on 2026-11-14 \(NEAR testnet tx `([^`]+)`\), so its code changes only through `upgrade_propose` and its 1 h public wait \(see Operator below\)\./.exec(readme);
+  const header = /The deployer's full-access key was deleted from it on 2026-11-14 \(NEAR testnet tx `([^`]+)`, ([^ ]+) UTC\), and no full-access key is left on it: against it `\.\/verify\.sh A` prints `PASS` for C11, C13 compares its code with `358c63bf…`, and C06 prints its `status`\. Its code changes only through `upgrade_propose` and its 1 h public wait, which the operator can still start; no key can delete the account, and the code it runs has no call that would\./.exec(claims);
+  const row = /\| NEAR testnet tx `([^`]+)`, 2026-11-14 ([^ ]+) UTC: the deletion of the deployer's full-access key from `v1\.s\.undo-btc\.testnet`/.exec(claims);
+  assert.ok(runIt && header && row, 'README\'s Run it row, the CLAIMS header and the C11 row each name the deletion');
+  assert.deepEqual([runIt[1], header[1], row[1]], [row[1], row[1], row[1]], 'one transaction');
+  assert.equal(header[2], row[2], 'one time');
+  assert.match(row[1], /^([1-9A-HJ-NP-Za-km-z]{43,44})$/, 'a NEAR transaction hash, once it is filled in');
+  assert.match(row[2], /^(\d\d:\d\d)$/, 'HH:MM UTC, once it is filled in');
+  // The operator cannot skip the public wait, for new code or for deleting the account.
+  assert.ok(readme.includes('| Change code, or delete the contract account, without that public wait (C11 checks that the instance `deploy/testnet.json` names has no full-access key: the deploy\'s was deleted on 2026-11-14), spend, or forge your cancel |'));
+  // "no call that would": nothing in the contract deletes an account.
+  const dir = join(REPO, 'contracts/undo/src');
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.rs'))) assert.doesNotMatch(readFileSync(join(dir, f), 'utf8'), /delete_account/, f);
+  // Nothing says the key is still there, or that C11 fails today.
+  for (const [f, text] of [['README.md', readme], ['CLAIMS.md', claims]]) {
+    assert.doesNotMatch(text, /still on the test contract|still has that key|keeps (its|the) deployer's full-access key|C11 fails|The one FAIL is C11|1 FAIL`/, f);
   }
 });
 
@@ -1652,13 +1723,15 @@ test('README: the lead says what only this entry has, with the contract as the o
   const notDone = readmeBetween('## Not done yet', '## Run it').split('\n').filter((l) => l.startsWith('- '));
   assert.deepEqual(notDone, [
     '- A Cancel from a real phone has run twice on the phone page, each from an iPhone in Safari, as the author reported it: with the thief tab as a second Safari tab on that iPhone, 2026-11-12, and with the thief tab in headless Chrome on a Mac, a second device, 2026-11-13, the take the film is cut from (C05); and once on `/try/`, from an iPhone, as the author reported it, 2026-11-14, a run `./verify.sh A` does not read. From any other phone, and from a laptop or desktop with its own passkey: **not yet run**.',
-    '- The lock: the deploy\'s full-access key is still on the test contract, so its holder could replace the code at once, and C11 fails in `./verify.sh A`.',
     '- Mainnet: not deployed and not run (C19). Test networks only.',
     '- An audit: the code is unaudited.',
     '- A NEAR AI model signature for the guard\'s hold, checked on testnet: **not yet run** (C08).',
   ]);
   const claimsText = read('CLAIMS.md');
-  assert.match(claimsText, /\| C11 \|.*`\.\/verify\.sh A` prints FAIL on `v1\.s\.undo-btc\.testnet`, the instance of the final build, which keeps its deployer's full-access key/);
+  // The deploy's full-access key is gone: nothing lists the lock as not done, and C11 names the deletion and the PASS.
+  assert.doesNotMatch(notDone.join('\n'), /full-access|C11|lock/i);
+  assert.match(claimsText, /\| C11 \|.*\| NEAR testnet tx `[^`]+`, 2026-11-14 [^|]* UTC: the deletion of the deployer's full-access key from `v1\.s\.undo-btc\.testnet`, the instance of the final build\. Since then `\.\/verify\.sh A` prints PASS for C11 on it; from its deploy, 2026-11-10, until then it printed FAIL\./);
+  assert.doesNotMatch(claimsText, /keeps (its|the) deployer's full-access key/);
   assert.match(claimsText, /\| C19 \| On mainnet: .*\*\*not run\*\*: this build has no mainnet deploy/);
   assert.match(claimsText, /\| C08 \|.*A real NEAR AI signature checked on testnet: \*\*not yet run\*\*/);
   // C05 names the real phone's cancel, its flags as read, and the device as the author's report, not the chain's.
@@ -1809,14 +1882,17 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   assert.match(reading, /^\*\*Reading the lines\.\*\* Each `\.\/verify\.sh` line is `PASS`, `SKIP` or `FAIL`, a claim number from \[CLAIMS\.md\]\(CLAIMS\.md\), and a label for where it ran; /);
   assert.ok(reading.includes('A `./demo.sh` line carries its step, `demo-1` to `demo-5`, where the claim number goes.'));
   for (let i = 1; i <= 5; i += 1) assert.ok(read('tools/demo/demo.mjs').includes(`'demo-${i}'`), `demo-${i} is a line demo.sh prints`);
-  // The first command's row says what to expect, and that its one FAIL is this entry's own report about itself.
+  // The first command's row says what to expect: no FAIL, and C11 in the words its PASS line prints, since the deploy's
+  // full-access key was deleted.
   const rowA = run.split('\n').find((l) => l.startsWith('| `./verify.sh A` |'));
-  assert.match(rowA, /^\| `\.\/verify\.sh A` \| 1 to 3 min, [^|]+ \| Expected today: `TIER A: \d+ PASS, 0 SKIP, 1 FAIL, \d+ INFO`, exit 1\. The one FAIL is C11, which this entry reports about itself: /);
+  assert.match(rowA, /^\| `\.\/verify\.sh A` \| 1 to 3 min, [^|]+ \| Expected today: `TIER A: \d+ PASS, 0 SKIP, 0 FAIL, \d+ INFO`, exit 0\. C11 reads that the test contract has no full-access key: the deploy's was deleted on 2026-11-14 \(NEAR testnet tx `[^`]+`\), so its code changes only through `upgrade_propose` and its 1 h public wait \(see Operator below\)\. The other lines /);
+  assert.match(read('tools/verify/tier-a.mjs'), /has no full-access key \(\$\{.+?'no access key at all'\}\): code changes only through upgrade_propose and its public wait`\);/, 'C11\'s own words when it passes');
   assert.ok(rowA.includes('fetch the live phone page\'s Cancel again and verify its passkey signature here'));
   // The same total is the last one in the row of what was built, so the two cannot drift apart.
   const total = /Expected today: `TIER A: (\d+) PASS/.exec(rowA)[1];
   const builtRow = readme.split('\n').find((l) => l.startsWith('| `verify.sh`, `demo.sh`, `CLAIMS.md` |'));
-  assert.ok(builtRow.endsWith(`with the lines for the film's take, from a real phone with the thief tab on a second device (an iPhone, as the author reported it), ${total} PASS and the same FAIL |`), `the last run named there has ${total} PASS`);
+  assert.ok(builtRow.includes('with the lines for the film\'s take, from a real phone with the thief tab on a second device (an iPhone, as the author reported it), 73 PASS and the same FAIL; '), 'the runs before the lock keep their FAIL');
+  assert.ok(builtRow.endsWith(`; 2026-11-14, after the deploy's full-access key was deleted, ${total} PASS and no FAIL |`), `the last run named there has ${total} PASS`);
   assert.ok(rowA.includes('for the film\'s take and for the one-device run, both from a real phone (an iPhone, as the author reported it), and for the earlier film\'s take in headless Chrome'), 'the three takes are fetched again');
   const tryIt = readmeBetween('## Try it', '### Try a cancel yourself');
   const doCells = tryIt.split('\n').filter((l) => l.startsWith('| ') && !l.startsWith('| Do |')).map((l) => /^\| ([^|]+) \|/.exec(l)[1]);
