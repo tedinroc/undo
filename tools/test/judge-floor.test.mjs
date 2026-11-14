@@ -8,7 +8,7 @@
 // skip and say so.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -1624,7 +1624,7 @@ test('README: the lead says what only this entry has, with the contract as the o
   assert.match(read('CLAIMS.md'), new RegExp(`\\(${earlier + final} of ${earlier + final} executes\\)`), 'and C12 says the same number');
   assert.match(bullets[0], /The contract asks them to sign only after a request's public wait has run out \(C01\)/);
   // What has not run is said where the feature is claimed.
-  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; and twice from a real phone on the live pages, each a cancel from an iPhone in Safari, as the author reported it \(no chain says which device held a passkey, and each assertion reads user verified, not how\), and each checked again by `\.\/verify\.sh A`: /);
+  assert.match(bullets[1], /That ran with software passkeys and Chrome's virtual authenticator, on NEAR testnet with one request pending and on a local node with several; and twice from a real phone on the live phone page, each a cancel from an iPhone in Safari, as the author reported it \(no chain says which device held a passkey, and each assertion reads user verified, not how\), and each checked again by `\.\/verify\.sh A`: /);
   // The two runs from a real phone, the same two that Not done yet and Try it list: each device is the author's report,
   // said as such, and each hash and block time is its record's, both of which tier A checks again.
   assert.deepEqual([phone.device_as_reported.browser, filmTake.device_as_reported.browser], ['Safari', 'Safari']);
@@ -1651,7 +1651,7 @@ test('README: the lead says what only this entry has, with the contract as the o
   // said again where it belongs, in the same words where a test already holds them.
   const notDone = readmeBetween('## Not done yet', '## Run it').split('\n').filter((l) => l.startsWith('- '));
   assert.deepEqual(notDone, [
-    '- A Cancel from a real phone has run twice, each from an iPhone in Safari, as the author reported it: with the thief tab as a second Safari tab on that iPhone, 2026-11-12, and with the thief tab in headless Chrome on a Mac, a second device, 2026-11-13, the take the film is cut from (C05). From any other phone, and from a laptop or desktop with its own passkey: **not yet run**.',
+    '- A Cancel from a real phone has run twice on the phone page, each from an iPhone in Safari, as the author reported it: with the thief tab as a second Safari tab on that iPhone, 2026-11-12, and with the thief tab in headless Chrome on a Mac, a second device, 2026-11-13, the take the film is cut from (C05); and once on `/try/`, from an iPhone, as the author reported it, 2026-11-14, a run `./verify.sh A` does not read. From any other phone, and from a laptop or desktop with its own passkey: **not yet run**.',
     '- The lock: the deploy\'s full-access key is still on the test contract, so its holder could replace the code at once, and C11 fails in `./verify.sh A`.',
     '- Mainnet: not deployed and not run (C19). Test networks only.',
     '- An audit: the code is unaudited.',
@@ -1836,6 +1836,17 @@ test('README: the commands are listed once, with what a SKIP means beside them; 
   assert.doesNotMatch(tryIt, /\bG2\b/, 'no term before Terms');
   assert.match(seeCells['Open `/p/` in a browser that has a passkey, then follow the four steps below'], /From a real phone this ran twice, from an iPhone in Safari each time, as the author reported it: with both pages on that iPhone, 2026-11-12, and with the thief tab in headless Chrome on a Mac, 2026-11-13 \(below\) \|$/);
   assert.match(seeCells['Open https://undo-btc.pages.dev'], /Under it, that take's four hashes and three from the final build's run, each linked to an explorer \|$/);
+  // /try/ from a real phone: the device and CANCELLED are the author's report, said as such and no more (no browser,
+  // model or Face ID), and its Cancel is a hash on the README's one NEAR explorer. No record holds that run, so the row
+  // says ./verify.sh A does not read it, which stays true only while no proof and no file of tier A names the hash.
+  const tryRow = seeCells['Press **Steal a test coin** (`/try/`) in a browser that has a passkey'];
+  const tryCancel = /its Cancel, `cancel_all_and_rotate`, is NEAR testnet tx \[`([1-9A-HJ-NP-Za-km-z]{43,44})`\]\(https:\/\/testnet\.near\.rocks\/tx\/\1\), in a block \d+ s before the thief's request would have unlocked\. `\.\/verify\.sh A` does not read this run \|$/.exec(tryRow)?.[1];
+  assert.ok(tryCancel, tryRow);
+  assert.ok(tryRow.includes('It goes through the same relay, whose daily limits are shared (below). From a real phone this ran once, 2026-11-14, to CANCELLED, on an iPhone, as the author reported it: '), tryRow);
+  assert.doesNotMatch(tryRow, /Safari|Face ID|Touch ID|iPhone \d|iOS/, 'nothing of the device the author did not report');
+  const tierAFiles = [...readdirSync(join(REPO, 'proofs')).map((f) => `proofs/${f}`), ...readdirSync(join(REPO, 'tools/verify')).map((f) => `tools/verify/${f}`), 'verify.sh'];
+  for (const f of tierAFiles) assert.ok(!read(f).includes(tryCancel), `${f} names the /try/ run's Cancel, so the README's "does not read" is no longer true`);
+  assert.ok(readme.includes('; and once on `/try/`, from an iPhone, as the author reported it, 2026-11-14, a run `./verify.sh A` does not read.'), 'Not done yet says the same');
   assert.equal(replay.film.hashes.length, 4);
   // The steps' paragraph says what ran from a real phone, with the chain's hashes and the device as the author's report.
   const steps = readmeBetween('### Try a cancel yourself', '1. On the phone, open https://undo-btc.pages.dev/p/ in Safari or Chrome itself, not inside X or Telegram, and tap **Make a test vault**, then **Confirm with your passkey**: two passkey prompts. This makes a passkey for undo-btc.pages.dev and a vault on NEAR testnet.');
